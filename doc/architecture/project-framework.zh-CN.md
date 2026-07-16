@@ -120,8 +120,8 @@ kotlin {
 应用版本集中在根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=1
-VERSION_NAME=0.1.0
+VERSION_CODE=2
+VERSION_NAME=0.1.1
 ```
 
 `VERSION_NAME` 使用稳定 SemVer，正式 tag 必须精确为 `v${VERSION_NAME}`；`VERSION_CODE` 必须高于上一稳定 tag。CI 不从 tag 或 run number 动态覆盖源码版本，避免本地构建、设置页展示、APK文件名和发布记录出现漂移。
@@ -218,7 +218,7 @@ frpc-stcp-visitor-go/
 
 `frpc-stcp-visitor-go/` 保存真实 frp GoMobile wrapper 源码。`bridge-versions.properties` 固定 bridge、Go、x/mobile 和 Android API 版本；禁止在构建脚本中使用 `gomobile@latest`。基础 frp 固定为 `github.com/fatedier/frp@v0.69.1`，`cmd/preparefrp` 校验上游 module sum、zip SHA 和待修改文件 SHA 后应用 `downstream/frp-v0.69.1-p1/` 中的最小补丁，不直接修改 Go module cache。补丁修复动态 visitor 配置与 Control 安装的竞态、传播真实 listener bind 状态，并暴露 config revision、control epoch 和阻塞式 `WaitVisitorReady`。
 
-`build-aar.ps1` / `build-aar.sh` 使用固定工具链生成 AAR，经过 `cmd/normalizezip` 规范化 ZIP 顺序和时间戳后，输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.2-frp0.69.1-p1` 发布到本地 Maven 仓库 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖；制品同时生成 sources、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。AAR 的 `META-INF/OCDECK/` 内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance，外部 sidecar 用于 Gradle 与发布门禁复核。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表，`cmd/checkaar` 校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。GoMobile 的 `-javapkg` 前缀对应反射入口 `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`。`internal/anetcompat` 用标准库网络接口函数替换 `github.com/wlynxg/anet`，并在主 module 显式继承 frp 的 yamux replacement。
+`build-aar.ps1` / `build-aar.sh` 使用固定工具链生成 AAR，经过 `cmd/normalizezip` 规范化 ZIP 顺序和时间戳后，输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.4-frp0.69.1-p1` 发布到本地 Maven 仓库 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖；制品同时生成 sources、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。AAR 的 `META-INF/OCDECK/` 内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance，外部 sidecar 用于 Gradle 与发布门禁复核。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表，`cmd/checkaar` 校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。App 打包会将 `libgojni.so` 排除在 Android Gradle Plugin 后续 strip transform 之外，使 Release APK 保留这些已验证的 AAR 字节；APK 门禁仍会重新校验 hash、ELF metadata、对齐和 stripped 状态。GoMobile 的 `-javapkg` 前缀对应反射入口 `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`。`internal/anetcompat` 用标准库网络接口函数替换 `github.com/wlynxg/anet`，并在主 module 显式继承 frp 的 yamux replacement。
 
 未生成 AAR 时 Android Debug 仍可编译，STCP 连接运行时返回明确不可用错误；Release 的 `preReleaseBuild` 必须执行 `checkGoMobileBridgeAar`，逐字节校验 AAR checksum、固定 API signature、内外 bridge/frp provenance、法律文本、许可证、native metadata 和 AAR 内各 ABI `libgojni.so` 哈希。`-PrequireGoMobileBridge=true` 可将相同门禁应用到 Debug/CI 构建。静态门禁通过后，发布前仍必须在目标 ABI 和 16KB page-size 设备上完成真实 native load 与 STCP 闭环验证，不能只以 ELF/JVM 检查代替设备测试。
 

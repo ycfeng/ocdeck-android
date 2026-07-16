@@ -137,6 +137,13 @@ android {
         }
     }
 
+    packaging {
+        jniLibs {
+            // GoMobile output is already stripped; preserve its AAR-verified bytes.
+            keepDebugSymbols += "**/libgojni.so"
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21

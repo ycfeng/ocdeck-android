@@ -4,7 +4,7 @@
 
 OC Deck is a native Android client for [OpenCode](https://github.com/anomalyco/opencode). It connects to an OpenCode Server that you operate or trust. Note: OC Deck is not built by, endorsed by, or affiliated with the OpenCode project or Anomaly.
 
-> **Pre-1.0 warning:** version `0.1.0` is under active development. Features, storage formats, network behavior, and compatibility may change. Keep backups of important work and avoid relying on OC Deck as the only way to access a server.
+> **Pre-1.0 warning:** version `0.1.1` is under active development. Features, storage formats, network behavior, and compatibility may change. Keep backups of important work and avoid relying on OC Deck as the only way to access a server.
 
 ## Requirements
 
@@ -85,7 +85,7 @@ Debug builds can compile without a generated GoMobile AAR, but STCP is unavailab
 
 ## Screenshots
 
-Screenshots are intentionally not included in the `0.1.0` project facade. Add only reviewed screenshots that reflect the current Android UI and contain no server addresses, project paths, session content, credentials, or other sensitive data.
+Screenshots are intentionally not included in the `0.1.1` project facade. Add only reviewed screenshots that reflect the current Android UI and contain no server addresses, project paths, session content, credentials, or other sensitive data.
 
 ## Support and Contributing
 

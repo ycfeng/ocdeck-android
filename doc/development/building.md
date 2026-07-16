@@ -71,18 +71,18 @@ macOS/Linux:
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
 ```
 
-The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.2-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.4-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
 
 ## Release Builds
 
 Application versions come only from root `gradle.properties`:
 
 ```properties
-VERSION_CODE=1
-VERSION_NAME=0.1.0
+VERSION_CODE=2
+VERSION_NAME=0.1.1
 ```
 
-Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts.
+Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts. The App packaging configuration preserves the already-stripped `libgojni.so` bytes verified in the GoMobile AAR; APK release checks independently revalidate native-byte binding, ELF metadata, 16KB alignment, and stripped state.
 
 The public workflow produces only these signed APKs and `SHA256SUMS`:
 
@@ -98,4 +98,5 @@ It does not produce a universal APK, AAB, or Play upload artifact. See the [rele
 - A bridge build fails immediately if Go or NDK differs from `bridge-versions.properties`.
 - An absent bridge is permitted only for builds that do not set `-PrequireGoMobileBridge=true`; STCP remains unavailable in those builds.
 - A changed generated AAR under an unchanged bridge coordinate is rejected as an immutability violation.
+- If APK native-byte binding fails while the AAR gate passes, confirm that App packaging still excludes the already-stripped `libgojni.so` from Android Gradle Plugin's native strip transform. Do not weaken the byte-binding check or replace the AAR hash.
 - Release signing failures must be fixed in local or GitHub Environment configuration. Never weaken certificate checks or print secrets to diagnose them.

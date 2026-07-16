@@ -20,15 +20,15 @@ The first public artifact set is fixed to:
 
 The workflow does not create a universal APK, AAB, or Play upload artifact. GitHub sideload users must download the APK matching their device ABI.
 
-The application ID is `io.github.ycfeng.ocdeck`, version `0.1.0` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
+The application ID is `io.github.ycfeng.ocdeck`, version `0.1.1` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
 
 ## 2. Version Rules
 
 The only source of the application version is root `gradle.properties`:
 
 ```properties
-VERSION_CODE=1
-VERSION_NAME=0.1.0
+VERSION_CODE=2
+VERSION_NAME=0.1.1
 ```
 
 Requirements:
@@ -146,6 +146,7 @@ The release scripts also verify:
 - Each APK has exactly one signer, and the certificate fingerprint equals `RELEASE_CERT_SHA256`.
 - Each APK passes `apksigner` and 16KB `zipalign`, contains only its target ABI, and includes `libgojni.so` whose SHA-256 exactly matches the corresponding AAR entry.
 - APK native libraries pass ELF machine, all-`PT_LOAD` 16KB alignment, and stripped-state checks.
+- App packaging preserves the already-stripped AAR `libgojni.so` bytes instead of applying Android Gradle Plugin's native strip transform a second time; the independent APK checks above prevent this exclusion from weakening native validation.
 - `assets/legal/` in each APK is byte-identical to the current LICENSE, NOTICE, third-party notices, trademark statement, merged license text, and every individual license.
 - `META-INF/OCDECK/` in the AAR contains the current legal texts, licenses, exact Java API, and bridge/frp provenance.
 - External checksum/API/provenance/native sidecars are bound to the embedded content and exact AAR bytes.
@@ -160,5 +161,6 @@ The bridge is statically produced for four GoMobile ABIs, while the public appli
 - GoMobile build fails: confirm the runner has the exact Go and NDK versions, then inspect checksum, API signature, provenance, native metadata, or reproducibility failures.
 - Signing fails: check the four Environment secrets, complete Base64 JKS content, alias, and passwords without printing any secret.
 - Certificate fingerprint fails: stop the release and verify that the Environment JKS is the established app-signing key. Do not change the expected fingerprint merely to bypass continuity protection.
+- APK native-byte binding fails after the AAR gate passes: confirm the App packaging exclusion for the already-stripped `libgojni.so`; do not accept transformed bytes, replace the AAR hash, or weaken the APK checks.
 - A physical-device or real STCP gate fails or is incomplete: do not publish. Fix and repeat the gate or defer the release.
 - The GitHub Release already exists: do not overwrite it or move the tag. Fix the issue, increment the version, and create a new tag.

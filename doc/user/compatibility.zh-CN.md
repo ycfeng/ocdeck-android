@@ -33,7 +33,7 @@ OC Deck 是独立社区维护的 pre-1.0 OpenCode Server Android 客户端。它
 | OpenCode Server | 其他任意版本 | Unknown | API 兼容性仍在演进，当前没有持续维护的服务端版本矩阵。 |
 | HTTP(S) 直连 | URL 有效且可访问的服务端，可选 Basic 认证 | Supported | 客户端已实现该连接模式；网络、TLS、认证和服务端行为仍取决于实际部署。 |
 | SSH 转发 | 受支持 Android 设备与兼容 SSH 端点 | Supported | 客户端已实现本地转发、host key 校验、密码/私钥模式及相应状态单测；尚无广泛设备和服务端互操作记录。 |
-| STCP bridge 制品 | 固定 GoMobile bridge `0.3.2-frp0.69.1-p1` | Tested | 自动门禁校验 checksum、Java API、provenance、ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态和可复现性。 |
+| STCP bridge 制品 | 固定 GoMobile bridge `0.3.4-frp0.69.1-p1` | Tested | 自动门禁校验 checksum、Java API、provenance、ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态和可复现性。 |
 | Native 加载 | 已记录的 `0.1.0` 真机发布门禁验证 | Tested | 维护者已记录签名候选 APK 成功完成 native load 和应用启动。具体设备与 ABI 信息未公开，因此这不是完整设备或逐 ABI 矩阵；后续候选版本仍须重复执行该门禁。 |
 | 16KB page size | 已记录的 `0.1.0` 16KB page-size Android 真机发布门禁验证 | Tested | 维护者已记录应用在 16KB page-size 真机上成功启动并完成 native load。具体设备信息未公开，静态对齐检查仍只属于前置条件。 |
 | STCP 端到端 | 已记录的 `0.1.0` Android 真机经真实 frps/STCP 连接 OpenCode Server 验证 | Tested | 维护者已记录 listener readiness、隧道内 `/global/health`、代表性 REST、全局/项目 SSE，以及受控重连期间保留已有 UI 数据均通过。具体部署版本未公开；这不构成 OpenCode Server 版本支持声明。 |

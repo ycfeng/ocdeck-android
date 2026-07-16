@@ -20,15 +20,15 @@
 
 工作流不生成 universal APK、AAB 或 Play 上传制品。GitHub 侧载用户应下载与设备 ABI 对应的 APK。
 
-应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.1.0` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
+应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.1.1` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
 
 ## 2. 版本规则
 
 应用版本的唯一源码位于根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=1
-VERSION_NAME=0.1.0
+VERSION_CODE=2
+VERSION_NAME=0.1.1
 ```
 
 要求：
@@ -146,6 +146,7 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 - 每个 APK 只有一个 signer，证书指纹与 `RELEASE_CERT_SHA256` 一致。
 - 每个 APK 通过 `apksigner` 和 16KB `zipalign`，只包含对应 ABI；其中 `libgojni.so` 的 SHA-256 与 AAR 对应 entry 完全一致。
 - APK native library 重新通过 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态检查。
+- App 打包会保留 AAR 中已经 stripped 的 `libgojni.so` 原始字节，不再重复应用 Android Gradle Plugin 的 native strip transform；上述独立 APK 校验确保该排除规则不会降低 native 门禁。
 - 每个 APK 中的 `assets/legal/` 与当前 LICENSE、NOTICE、第三方通知、商标声明、合并许可证和每份单独许可证逐字节一致。
 - AAR 的 `META-INF/OCDECK/` 包含当前法律文本、许可证、精确 Java API 和 bridge/frp provenance。
 - 外部 checksum/API/provenance/native sidecar 与内嵌内容及精确 AAR 字节相互绑定。
@@ -160,5 +161,6 @@ Bridge 静态生成四个 GoMobile ABI，但公开应用发布只包含 `arm64-v
 - GoMobile 构建失败：确认 runner 安装精确 Go/NDK 版本，并检查 checksum、API signature、provenance、native metadata 或可复现性门禁。
 - 签名失败：检查四个 Environment secret、JKS Base64 是否完整以及 alias/密码是否匹配；不得在日志中输出 secret。
 - 证书指纹失败：停止发布并确认 Environment 中的 JKS 是既有 app-signing key；不得通过修改预期指纹绕过连续性保护。
+- AAR 门禁通过后 APK native 字节绑定仍失败：确认 App 打包保留已经 stripped 的 `libgojni.so`；不得接受 transform 后的字节、替换 AAR hash 或降低 APK 校验。
 - 真机或真实 STCP 门禁失败或未完成：不得发布。修复并重做门禁，或推迟版本。
 - GitHub Release 已存在：不要覆盖 Release 或移动同名 tag；修复问题后递增版本并创建新 tag。

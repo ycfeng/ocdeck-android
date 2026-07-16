@@ -35,5 +35,6 @@
 - [GitHub Actions 发布流程](release/github-actions.zh-CN.md)（[English](release/github-actions.md)）
 - [发布检查清单](release/checklist.zh-CN.md)（[English](release/checklist.md)）
 - [变更日志](../CHANGELOG.md)
+- [0.1.1 发布说明](../release-notes/v0.1.1.md)
 - [0.1.0 发布说明](../release-notes/v0.1.0.md)
 - [双语发布说明模板](../.github/release-notes-template.md)

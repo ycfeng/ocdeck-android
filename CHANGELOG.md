@@ -13,7 +13,18 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the prepared `0.1.0` scope. / 尚无超出预备 `0.1.0` 范围的变更。
+No changes have been assigned beyond the `0.1.1` release. / 尚无超出 `0.1.1` 发布范围的变更。
+
+## [0.1.1] - 2026-07-16
+
+### Fixed / 修复
+
+- Preserve each AAR-verified `libgojni.so` byte-for-byte in Release APKs instead of allowing Android Gradle Plugin to strip the already-stripped GoMobile library again. Existing release gates continue to verify native-byte binding, ELF machine, 16KB alignment, and stripped state. / Release APK 逐字节保留 AAR 已验证的 `libgojni.so`，不再允许 Android Gradle Plugin 对已经 stripped 的 GoMobile library 再次 strip；现有发布门禁继续校验 native 字节绑定、ELF machine、16KB 对齐和 stripped 状态。
+
+### Changed / 变更
+
+- Incremented the application version to `0.1.1` (`VERSION_CODE=2`) after the prepared `v0.1.0` tag did not produce a formal GitHub Release. / 在预备的 `v0.1.0` tag 未产出正式 GitHub Release 后，将应用版本提升为 `0.1.1`（`VERSION_CODE=2`）。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.4-frp0.69.1-p1` because the AAR now embeds the `0.1.1` legal inventory; the ABI-specific native library bytes remain unchanged. / 由于 AAR 现内嵌 `0.1.1` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.4-frp0.69.1-p1`；各 ABI 的 native library 字节保持不变。
 
 ## [0.1.0] - Not yet formally released / 尚未正式发布
 
