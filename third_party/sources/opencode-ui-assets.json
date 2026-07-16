@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "component": "OpenCode UI vectors adapted for Android",
+  "upstreamRepository": "https://github.com/anomalyco/opencode",
+  "upstreamCommit": "4ed4f749e644ffb5b279fb30b7b915e743d80142",
+  "upstreamVersion": "v1.17.7",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025 opencode",
+  "licenseFile": "third_party/licenses/MIT.txt",
+  "hashAlgorithm": "SHA-256",
+  "hashScope": "Local Android vector XML bytes",
+  "conversion": "Upstream SVG/TSX path geometry converted or adapted to Android vector XML; dimensions, grouping, colors, strokes, and launcher/splash treatment may differ.",
+  "assetCount": 15,
+  "assets": [
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "arrow-left",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_arrow_left.xml",
+      "sizeBytes": 427,
+      "sha256": "ce7a07405bd130b64381747abb3f56dc52cd9957ac9dca02479e71ff1f69dc91"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "arrow-up",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_arrow_up.xml",
+      "sizeBytes": 453,
+      "sha256": "e9110f42f0592db7e63ffb5c198a5d73a4af5e07a459586b34a605ae86384a1b"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "check",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_check_linear.xml",
+      "sizeBytes": 392,
+      "sha256": "08c60388a30919b0d7f30dce7768be8634c2d48f411b65276f102cb17db4028b"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "chevron-down",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_chevron_down.xml",
+      "sizeBytes": 402,
+      "sha256": "748d6213136886589aece7c23c1ed9d46d8c7c342f1f16364b2b61b460524a71"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "chevron-left",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_chevron_left.xml",
+      "sizeBytes": 371,
+      "sha256": "57989259981b7465d9c69b9f39840889a49ce9e917757a46c100f0022cc2a6b9"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "chevron-right",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_chevron_right.xml",
+      "sizeBytes": 370,
+      "sha256": "d680187689b645a25b8e73d1dcd9109296633fc1f2c3f3dbde120ec486ddf3cf"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "console",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_console.xml",
+      "sizeBytes": 418,
+      "sha256": "b765c05f6d6eee1d41ca5c65956f44979ce5ad246dc424d8031bce1ceeeef524"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "copy",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_copy.xml",
+      "sizeBytes": 450,
+      "sha256": "dba57f4792a76f92bddf9cd369278dc302721754e082e520b49bd3f515daf9a1"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "menu",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_menu.xml",
+      "sizeBytes": 390,
+      "sha256": "10ee288a070400cfd4febeaba351f1a9943d33c08a1e05577e88f178bbf3ebc0"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "plus",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_plus.xml",
+      "sizeBytes": 443,
+      "sha256": "d3a2d534fdd5420b56b447f44d13c326eb43aa5b1a96954d6c9468b8c903eaeb"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "magnifying-glass",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_search.xml",
+      "sizeBytes": 590,
+      "sha256": "19bb07292830d495d4d4b5cc4caeaca6c5a191945174d94bb551bf1407807c3e"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "settings-gear",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_settings_gear.xml",
+      "sizeBytes": 1006,
+      "sha256": "6f6943fa4961c1f5b0fed628177b04758911d9e60d53c7e94fefe515b4ab672d"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "plus",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_sidebar_plus.xml",
+      "sizeBytes": 443,
+      "sha256": "0d35a309bfee433955d33c8860e42d3174639fd7aabc327b2379dc8cba52ae7b"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "status",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_status.xml",
+      "sizeBytes": 364,
+      "sha256": "2a1e0c6cc15209713d12e855da40f0b62498b4d409003743462cafd51acd643e"
+    },
+    {
+      "upstreamPath": "packages/ui/src/components/icon.tsx",
+      "upstreamSymbol": "stop",
+      "relationship": "path-geometry-match",
+      "localPath": "app/src/main/res/drawable/ic_opencode_stop.xml",
+      "sizeBytes": 295,
+      "sha256": "b34dfd96f9c1cd043fd3d73acadc7d2109a598348b397cfb9f81cfdbeee0f857"
+    }
+  ]
+}

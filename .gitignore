@@ -1,0 +1,35 @@
+*.iml
+.gradle/
+.idea/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+app/build/
+.playwright-cli
+tmp
+
+# Kotlin local state
+.kotlin/
+
+# Android packaged outputs
+app/release/
+frpc-stcp-visitor/libs/*.aar
+frpc-stcp-visitor/libs/*.jar
+*.apk
+*.aab
+*.ap_
+
+# Android signing / credential files
+signing.properties
+keystore.properties
+keystore/
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# Python local state
+__pycache__/
+*.py[cod]

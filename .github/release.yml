@@ -1,0 +1,34 @@
+changelog:
+  exclude:
+    labels:
+      - release-notes/skip
+  categories:
+    - title: "Breaking changes / 破坏性变更"
+      labels:
+        - release-notes/breaking
+    - title: "Security / 安全"
+      labels:
+        - release-notes/security
+    - title: "Features / 功能"
+      labels:
+        - release-notes/feature
+        - enhancement
+    - title: "Fixes / 修复"
+      labels:
+        - release-notes/fix
+        - bug
+    - title: "Compatibility and migrations / 兼容性与迁移"
+      labels:
+        - release-notes/compatibility
+        - release-notes/migration
+    - title: "Documentation / 文档"
+      labels:
+        - documentation
+    - title: "Dependencies and maintenance / 依赖与维护"
+      labels:
+        - dependencies
+        - release-notes/maintenance
+        - ci
+    - title: "Other changes / 其他变更"
+      labels:
+        - "*"

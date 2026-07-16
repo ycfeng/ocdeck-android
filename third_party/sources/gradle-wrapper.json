@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "component": "Gradle Wrapper",
+  "version": "9.6.1",
+  "upstreamRepository": "https://github.com/gradle/gradle",
+  "upstreamTag": "v9.6.1",
+  "upstreamCommit": "309d128bd9fe8c0b71311878fc660b9cbaa07c51",
+  "distributionUrl": "https://services.gradle.org/distributions/gradle-9.6.1-bin.zip",
+  "distributionSha256": "9c0f7faeeb306cb14e4279a3e084ca6b596894089a0638e68a07c945a32c9e14",
+  "wrapperJarPath": "gradle/wrapper/gradle-wrapper.jar",
+  "wrapperJarSha256": "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7",
+  "license": "Apache-2.0",
+  "licenseFile": "third_party/licenses/Apache-2.0.txt"
+}

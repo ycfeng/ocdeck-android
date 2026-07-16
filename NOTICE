@@ -1,0 +1,25 @@
+OC Deck
+Copyright (c) 2026 ycfeng <https://github.com/ycfeng>
+
+OC Deck original code is licensed under the MIT License found in LICENSE.
+
+OC Deck is an independent community client for OpenCode Server. It is not
+built by, endorsed by, sponsored by, or affiliated with the OpenCode project
+or Anomaly.
+
+This distribution includes third-party software and assets under their own
+licenses. Required notices, source references, versions, modifications, and
+license locations are recorded in THIRD_PARTY_NOTICES.txt and third_party/.
+
+The bundled OpenCode audio assets come from anomalyco/opencode commit
+cd34f5e07c33dee8f06ef07a437193e41c39d90f under the MIT License, Copyright
+(c) 2025 opencode.
+
+Android vector resources adapted from OpenCode's non-brand UI icon source are traced
+to anomalyco/opencode commit 4ed4f749e644ffb5b279fb30b7b915e743d80142
+under the MIT License, Copyright (c) 2025 opencode. Copyright permission does
+not grant trademark rights or imply endorsement.
+
+The embedded frp component is based on upstream commit
+8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb and is distributed as patched
+version v0.69.1-p1 under Apache License 2.0. Modified by OC Deck contributors.

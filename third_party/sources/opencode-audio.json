@@ -1,0 +1,285 @@
+{
+  "schemaVersion": 1,
+  "component": "OpenCode UI notification sounds",
+  "upstreamRepository": "https://github.com/anomalyco/opencode",
+  "upstreamCommit": "cd34f5e07c33dee8f06ef07a437193e41c39d90f",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025 opencode",
+  "licenseFile": "third_party/licenses/MIT.txt",
+  "hashAlgorithm": "SHA-256",
+  "hashScope": "Local bytes distributed from app/src/main/res/raw",
+  "verifiedAgainstUpstream": true,
+  "assetCount": 45,
+  "assets": [
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-01.aac",
+      "localPath": "app/src/main/res/raw/alert_01.aac",
+      "sizeBytes": 6304,
+      "sha256": "8233be923e97649a092ab3d3ac0069d5896f287b071de6b1219ac8d5bb2a7a1d"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-02.aac",
+      "localPath": "app/src/main/res/raw/alert_02.aac",
+      "sizeBytes": 4688,
+      "sha256": "d3c4f9213fb164e8ef8f618a1651744d8e68ccfffb59d0f26c48c7a4a20fd9ac"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-03.aac",
+      "localPath": "app/src/main/res/raw/alert_03.aac",
+      "sizeBytes": 1605,
+      "sha256": "463561b43e791b33c3ac85edf33d7075ca8bf9dd756cdf491b28eff0d708509b"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-04.aac",
+      "localPath": "app/src/main/res/raw/alert_04.aac",
+      "sizeBytes": 5317,
+      "sha256": "cd0c49fd878f87bb89348976dee463cec6dfefbabc00eae3a9f441c060799950"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-05.aac",
+      "localPath": "app/src/main/res/raw/alert_05.aac",
+      "sizeBytes": 5207,
+      "sha256": "64cac86466c355f559d55281777dc89f9007ff2ec7f6df255f0e0a4a58ae62f9"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-06.aac",
+      "localPath": "app/src/main/res/raw/alert_06.aac",
+      "sizeBytes": 7407,
+      "sha256": "5ef1191d213c49d76b57005e87b9ad76b5dc30909d4f9fd6499460ee91e1a623"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-07.aac",
+      "localPath": "app/src/main/res/raw/alert_07.aac",
+      "sizeBytes": 5186,
+      "sha256": "358b3beca0075f6543a2c48407a4ab1a243ff36622432e2ad44f12fcb63eb865"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-08.aac",
+      "localPath": "app/src/main/res/raw/alert_08.aac",
+      "sizeBytes": 6321,
+      "sha256": "8a286a304fb20fcb8e5fe99a0209133ef861d39e8401f809f7d443f157c0d355"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-09.aac",
+      "localPath": "app/src/main/res/raw/alert_09.aac",
+      "sizeBytes": 3835,
+      "sha256": "3ca77eda9514a49897e8f37298a26432a9055cec48abc280d49e4738e1be56e4"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/alert-10.aac",
+      "localPath": "app/src/main/res/raw/alert_10.aac",
+      "sizeBytes": 6686,
+      "sha256": "b77bde51fb7a66820b7aa752f99a115db1a5e91ba646e2b85f5c6656d8f1f69a"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-01.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_01.aac",
+      "sizeBytes": 3065,
+      "sha256": "9bfd8ef0a8c34d650a784dd6caf2456f666e9db8c0ee66ddadfcbdb9d933a961"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-02.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_02.aac",
+      "sizeBytes": 4011,
+      "sha256": "76cf9edf64859dd4ec3336b078e2417aede01ed3b65ac6680243ec0e20556892"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-03.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_03.aac",
+      "sizeBytes": 4385,
+      "sha256": "7f80f85df7ace2216fa48f763f4e764a201f95377c83f82aeec3991cdca9d13d"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-04.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_04.aac",
+      "sizeBytes": 5578,
+      "sha256": "c4b67c58ff98acbe050a0b1ebbae7127ea38f90231326ccc046a41b68e45c89e"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-05.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_05.aac",
+      "sizeBytes": 3830,
+      "sha256": "448e4c1325806f1f19629c2fd380c7faaea9b16aae08b16ca667732830c317c7"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-06.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_06.aac",
+      "sizeBytes": 5615,
+      "sha256": "61e9936de40af5c0ade401a7cbb333f36ae74f3d6cdee27c604fd1d19a93da83"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-07.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_07.aac",
+      "sizeBytes": 4036,
+      "sha256": "e53ff9d090b3e2151ea3a921be64588368a605e2d170915902be6071c5578e2e"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-08.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_08.aac",
+      "sizeBytes": 5301,
+      "sha256": "bc2e809b6215aceb6e898696d0e665e4f1501c638c6bbdd3670f1e1e101b5681"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-09.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_09.aac",
+      "sizeBytes": 12087,
+      "sha256": "b14bc3b68809394877b32a3aa47b77ce4c813e0d1b05a0ac402764a67a15af80"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/bip-bop-10.aac",
+      "localPath": "app/src/main/res/raw/bip_bop_10.aac",
+      "sizeBytes": 3206,
+      "sha256": "43530162ae4a41ed668d27438a7c395443e433384bbbc9cc3a0b06162baf2fb7"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-01.aac",
+      "localPath": "app/src/main/res/raw/nope_01.aac",
+      "sizeBytes": 1760,
+      "sha256": "ab796ebe22f0259aaa34bef9a99e3fe58e29472baf23e28f739c695dcc5b06b5"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-02.aac",
+      "localPath": "app/src/main/res/raw/nope_02.aac",
+      "sizeBytes": 4186,
+      "sha256": "c7195b9f20591fb92b4dd91ce4c09a682685b31d023d0feb1c5b306e4868047b"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-03.aac",
+      "localPath": "app/src/main/res/raw/nope_03.aac",
+      "sizeBytes": 3768,
+      "sha256": "748f50a244b17a1a2f5020bc253adc1319f29c8b563b390e09627daa91b989c6"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-04.aac",
+      "localPath": "app/src/main/res/raw/nope_04.aac",
+      "sizeBytes": 1875,
+      "sha256": "1b66e7a5a4d8996715a54aa6e76b44f8279f9fc49dac64b0e191c1f74a75fca4"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-05.aac",
+      "localPath": "app/src/main/res/raw/nope_05.aac",
+      "sizeBytes": 4797,
+      "sha256": "38d7cffd1a292fa4cc8a1b56e6813f20fecf7dcb847e611f12a1db773aec2449"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-06.aac",
+      "localPath": "app/src/main/res/raw/nope_06.aac",
+      "sizeBytes": 2812,
+      "sha256": "c66fc4375da47a9ec7d1a817664808c12bff638f03ccd8a7cb9ba0b3091f78fb"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-07.aac",
+      "localPath": "app/src/main/res/raw/nope_07.aac",
+      "sizeBytes": 2095,
+      "sha256": "c9051c0e936c4454f0c89387f390ca564f8d7c271abb849d0d78fb9218b5ef9c"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-08.aac",
+      "localPath": "app/src/main/res/raw/nope_08.aac",
+      "sizeBytes": 4240,
+      "sha256": "392ac09ab0684408827061f73e09b07ee24628b41925ee04ab22241d052488d5"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-09.aac",
+      "localPath": "app/src/main/res/raw/nope_09.aac",
+      "sizeBytes": 2994,
+      "sha256": "d5c457878c3f344b71729dceab73bcdc605f1e3482b5e63bd536000e55eb9393"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-10.aac",
+      "localPath": "app/src/main/res/raw/nope_10.aac",
+      "sizeBytes": 2302,
+      "sha256": "00a8eb1f31a257511cf9cf5d54c9d51c0d9d74e52406cc758cb3c942693834b6"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-11.aac",
+      "localPath": "app/src/main/res/raw/nope_11.aac",
+      "sizeBytes": 5767,
+      "sha256": "c4c597b022db454788272e63dc57aa20ed88f73bb538f4ea1960e928d6bf5b5b"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/nope-12.aac",
+      "localPath": "app/src/main/res/raw/nope_12.aac",
+      "sizeBytes": 5722,
+      "sha256": "9da6a90d2ca6b44bf35a70fefabfa5677e4d485b6951a7defe8d522c02be08f1"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/staplebops-01.aac",
+      "localPath": "app/src/main/res/raw/staplebops_01.aac",
+      "sizeBytes": 3888,
+      "sha256": "01ad688048bca68a31ae6d1134f0977de6d35eb51242c983c441aec672b91c5a"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/staplebops-02.aac",
+      "localPath": "app/src/main/res/raw/staplebops_02.aac",
+      "sizeBytes": 3542,
+      "sha256": "8b1fd2613b45b306cf4583ad292ccd03bab7e44ccf49bba9e4059b7e6e9a70a5"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/staplebops-03.aac",
+      "localPath": "app/src/main/res/raw/staplebops_03.aac",
+      "sizeBytes": 5310,
+      "sha256": "11a4746dc8f7e3b59cb7c7e0bb3ee76177da8b5fc4377880c7df130d018e5b09"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/staplebops-04.aac",
+      "localPath": "app/src/main/res/raw/staplebops_04.aac",
+      "sizeBytes": 4667,
+      "sha256": "3c229ecbdffa1ad997995f5364dc3768e242aaf88f98b4bc382bb3b09cb77812"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/staplebops-05.aac",
+      "localPath": "app/src/main/res/raw/staplebops_05.aac",
+      "sizeBytes": 3461,
+      "sha256": "eee4ab649627f64124092c489560797532a4e01def9eaa850bc40cb105790311"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/staplebops-06.aac",
+      "localPath": "app/src/main/res/raw/staplebops_06.aac",
+      "sizeBytes": 4282,
+      "sha256": "997ed9a6ddb3a31729fec3d8a555332580e61ae7c04b8a83446d36f85b80bcab"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/staplebops-07.aac",
+      "localPath": "app/src/main/res/raw/staplebops_07.aac",
+      "sizeBytes": 4627,
+      "sha256": "1e91ea070fe77ec2f981fd23ae360b8bde91b224f730d080b89e23a078341320"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/yup-01.aac",
+      "localPath": "app/src/main/res/raw/yup_01.aac",
+      "sizeBytes": 4419,
+      "sha256": "bf3c7b6c62794322aded954d7f6d8900674d912eeb9db62f60346c12c3e094aa"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/yup-02.aac",
+      "localPath": "app/src/main/res/raw/yup_02.aac",
+      "sizeBytes": 3767,
+      "sha256": "b01c245018696f1d1de65096b79d83e95e0ce2b44cbfda26d931ce4fe59868e0"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/yup-03.aac",
+      "localPath": "app/src/main/res/raw/yup_03.aac",
+      "sizeBytes": 7180,
+      "sha256": "09f3964143c6159eb632a7a1fdb7a202f794499d79a110c8b86a50878922e188"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/yup-04.aac",
+      "localPath": "app/src/main/res/raw/yup_04.aac",
+      "sizeBytes": 8376,
+      "sha256": "a9e0293c1811f3e6ebf164da595a9070101a61c02621d2ea4c34b3f5dc0922a4"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/yup-05.aac",
+      "localPath": "app/src/main/res/raw/yup_05.aac",
+      "sizeBytes": 5423,
+      "sha256": "6bf29e0ad7d591822dc7f5b720529db755525aa0e019b534132ffb9e837aa534"
+    },
+    {
+      "upstreamPath": "packages/ui/src/assets/audio/yup-06.aac",
+      "localPath": "app/src/main/res/raw/yup_06.aac",
+      "sizeBytes": 2878,
+      "sha256": "e165c0c29c0a9e0d567634ab73c7fc7ab741531398c608512a49f43c22b95d35"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ocdeck_launcher_background">#121716</color>
+    <color name="ocdeck_splash_background">#F2F5F1</color>
+    <color name="opencode_window_background">#FAFAFA</color>
+</resources>

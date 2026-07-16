@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "component": "github.com/fatedier/frp",
+  "downstreamVersion": "v0.69.1-p1",
+  "upstreamVersion": "v0.69.1",
+  "upstreamRepository": "https://github.com/fatedier/frp",
+  "upstreamCommit": "8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb",
+  "moduleSum": "h1:ZlkUCAO4HHyGmTOZ0q7k2PvFW2PmmPon+vyeyHDdZWA=",
+  "goModSum": "h1:h6UP/0bhnurYzBPORBgbP+aZByDMpzWOErJNNoFdoJo=",
+  "upstreamModuleZipSha256": "cf0ab420407f5024a2ae7722dc3e4a1db2303a8abc71aa4a41486c7fa5593533",
+  "license": "Apache-2.0",
+  "licenseFile": "third_party/licenses/Apache-2.0.txt",
+  "modifiedBy": "OC Deck contributors",
+  "patches": [
+    {
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p1/0001-transport-readiness.patch",
+      "sha256": "f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b",
+      "modifiedFiles": [
+        "client/control.go",
+        "client/service.go",
+        "client/visitor/visitor_manager.go"
+      ],
+      "addedFiles": [
+        "client/runtime_state.go",
+        "client/runtime_state_test.go",
+        "client/visitor/visitor_manager_runtime_test.go"
+      ],
+      "patchedFiles": [
+        "client/control.go",
+        "client/runtime_state.go",
+        "client/runtime_state_test.go",
+        "client/service.go",
+        "client/visitor/visitor_manager.go",
+        "client/visitor/visitor_manager_runtime_test.go"
+      ]
+    }
+  ],
+  "upstreamFileSha256BeforePatch": {
+    "client/control.go": "edbf19177e41cc0de94bf58ce7b94b637654ca332cc1ac8a5d06e55926acc7e2",
+    "client/service.go": "221243c35349e2ac028b72b5e625a05f5866c57620757822637d9f1af9b7fda7",
+    "client/visitor/visitor_manager.go": "353145720ab44e6908896b9336968ac61294f2cd3b1d333dc3731f79648c9799"
+  }
+}

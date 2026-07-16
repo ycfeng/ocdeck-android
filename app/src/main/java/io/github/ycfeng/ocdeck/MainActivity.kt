@@ -1,0 +1,73 @@
+package io.github.ycfeng.ocdeck
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.ycfeng.ocdeck.app.OpenCodeApp
+import io.github.ycfeng.ocdeck.core.notification.OpenCodeNotificationTarget
+import io.github.ycfeng.ocdeck.data.settings.AppColorSchemePreference
+import io.github.ycfeng.ocdeck.data.settings.AppLanguagePreference
+import io.github.ycfeng.ocdeck.data.settings.localized
+import io.github.ycfeng.ocdeck.ui.theme.OpenCodeTheme
+import kotlinx.coroutines.flow.MutableStateFlow
+
+class MainActivity : ComponentActivity() {
+    private val notificationTarget = MutableStateFlow<OpenCodeNotificationTarget?>(null)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.Theme_OpenCode)
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+        notificationTarget.value = intent.openCodeNotificationTarget()
+
+        val appContainer = (application as OpenCodeApplication).container
+        setContent {
+            val colorSchemePreference by appContainer.appSettingsStore.colorSchemePreference
+                .collectAsStateWithLifecycle(AppColorSchemePreference.System)
+            val languagePreference by appContainer.appSettingsStore.languagePreference
+                .collectAsStateWithLifecycle(AppLanguagePreference.System)
+            val currentNotificationTarget by notificationTarget.collectAsStateWithLifecycle()
+            val baseContext = LocalContext.current
+            val localizedContext = remember(baseContext, languagePreference) {
+                baseContext.localized(languagePreference)
+            }
+            CompositionLocalProvider(LocalContext provides localizedContext) {
+                OpenCodeTheme(colorSchemePreference = colorSchemePreference) {
+                    OpenCodeApp(
+                        appContainer = appContainer,
+                        notificationTarget = currentNotificationTarget,
+                        onNotificationTargetConsumed = { notificationTarget.value = null },
+                    )
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        notificationTarget.value = intent.openCodeNotificationTarget()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        (application as OpenCodeApplication).container.appConnectionCoordinator.onForeground()
+    }
+}
+
+private fun Intent.openCodeNotificationTarget(): OpenCodeNotificationTarget? {
+    val target = OpenCodeNotificationTarget(
+        serverId = getStringExtra(OpenCodeNotificationTarget.ExtraServerId).orEmpty(),
+        directory = getStringExtra(OpenCodeNotificationTarget.ExtraDirectory).orEmpty(),
+        sessionId = getStringExtra(OpenCodeNotificationTarget.ExtraSessionId),
+    )
+    return target.takeIf { it.isValid() }
+}

@@ -1,0 +1,35 @@
+# Default ownership for the entire repository.
+* @ycfeng
+
+# Repository governance and automation.
+/.github/ @ycfeng
+/.github/CODEOWNERS @ycfeng
+
+# Build, versioning, signing, and dependency configuration.
+/gradle.properties @ycfeng
+/build.gradle.kts @ycfeng
+/settings.gradle.kts @ycfeng
+/app/build.gradle.kts @ycfeng
+/gradle/ @ycfeng
+/signing.properties.example @ycfeng
+
+# Native bridge and patched frp supply chain.
+/frpc-stcp-visitor/ @ycfeng
+/frpc-stcp-visitor-go/ @ycfeng
+
+# Security-sensitive application boundaries.
+/app/src/main/java/io/github/ycfeng/ocdeck/core/security/ @ycfeng
+/app/src/main/java/io/github/ycfeng/ocdeck/core/network/ @ycfeng
+
+# Security, privacy, licensing, notices, and trademarks.
+/SECURITY.md @ycfeng
+/SECURITY.zh-CN.md @ycfeng
+/PRIVACY.md @ycfeng
+/PRIVACY.zh-CN.md @ycfeng
+/LICENSE @ycfeng
+/NOTICE @ycfeng
+/THIRD_PARTY_NOTICES.txt @ycfeng
+/THIRD_PARTY_NOTICES.zh-CN.txt @ycfeng
+/TRADEMARKS.md @ycfeng
+/TRADEMARKS.zh-CN.md @ycfeng
+/third_party/ @ycfeng

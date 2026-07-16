@@ -1,0 +1,353 @@
+schema_version = 1
+audited_on = "2026-07-14"
+app_version = "0.1.0"
+application_id = "io.github.ycfeng.ocdeck"
+min_android_api = 26
+bridge_version = "0.3.2-frp0.69.1-p1"
+bridge_maven_coordinate = "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.2-frp0.69.1-p1"
+
+[audit]
+android_configuration = ":app:releaseRuntimeClasspath"
+go_targets = ["android/arm64", "android/arm", "android/386", "android/amd64"]
+go_modfile = "frpc-stcp-visitor-go/build/frp-patched.mod"
+notes = "AndroidX is represented by resolved artifact families. Go modules are the union reached by Android arm64, arm, 386, and amd64 dependency walks."
+
+[[components]]
+id = "ocdeck"
+name = "OC Deck original code"
+kind = "project"
+version = "0.1.0"
+license = "MIT"
+license_file = "../LICENSE"
+source = "."
+
+[[components]]
+id = "androidx"
+name = "AndroidX and Jetpack Compose runtime"
+kind = "android-runtime"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+source = "https://android.googlesource.com/platform/frameworks/support/"
+resolved_artifact_families = [
+  "androidx.activity:* @ 1.13.0",
+  "androidx.annotation:annotation @ 1.10.0",
+  "androidx.annotation:annotation-experimental @ 1.4.1",
+  "androidx.arch.core:* @ 2.2.0",
+  "androidx.asynclayoutinflater:* @ 1.0.0",
+  "androidx.autofill:* @ 1.0.0",
+  "androidx.collection:* @ 1.5.0",
+  "androidx.compose:compose-bom @ 2026.06.01 (resolution platform; no packaged classes)",
+  "androidx.compose.animation:* @ 1.11.4",
+  "androidx.compose.foundation:* @ 1.11.4",
+  "androidx.compose.material:material-ripple* @ 1.11.4",
+  "androidx.compose.material3:* @ 1.4.0",
+  "androidx.compose.runtime:* @ 1.11.4",
+  "androidx.compose.ui:* @ 1.11.4",
+  "androidx.concurrent:concurrent-futures @ 1.1.0",
+  "androidx.coordinatorlayout:* @ 1.0.0",
+  "androidx.core:core and core-ktx @ 1.18.0",
+  "androidx.core:core-viewtree @ 1.0.0",
+  "androidx.cursoradapter:* @ 1.0.0",
+  "androidx.customview:* @ 1.0.0",
+  "androidx.datastore:* @ 1.2.1, excluding datastore-preferences-external-protobuf",
+  "androidx.documentfile:* @ 1.0.0",
+  "androidx.drawerlayout:* @ 1.0.0",
+  "androidx.dynamicanimation:* @ 1.0.0",
+  "androidx.emoji2:* @ 1.4.0",
+  "androidx.graphics:graphics-path @ 1.0.1",
+  "androidx.interpolator:* @ 1.0.0",
+  "androidx.legacy:* @ 1.0.0",
+  "androidx.lifecycle:* @ 2.10.0",
+  "androidx.loader:* @ 1.0.0",
+  "androidx.localbroadcastmanager:* @ 1.0.0",
+  "androidx.navigation:* @ 2.9.8",
+  "androidx.navigationevent:* @ 1.0.0",
+  "androidx.print:* @ 1.0.0",
+  "androidx.profileinstaller:* @ 1.4.0",
+  "androidx.recyclerview:* @ 1.0.0",
+  "androidx.savedstate:* @ 1.4.0",
+  "androidx.slidingpanelayout:* @ 1.0.0",
+  "androidx.startup:* @ 1.2.0",
+  "androidx.swiperefreshlayout:* @ 1.0.0",
+  "androidx.tracing:* @ 1.2.0",
+  "androidx.transition:* @ 1.6.0",
+  "androidx.versionedparcelable:* @ 1.1.1",
+  "androidx.viewpager:* @ 1.0.0",
+  "androidx.window:* @ 1.5.0",
+]
+
+[[components]]
+id = "androidx-datastore-external-protobuf"
+name = "AndroidX DataStore repackaged proto-lite"
+kind = "android-runtime"
+version = "1.2.1"
+license = "BSD-3-Clause"
+license_file = "licenses/BSD-3-Clause.txt"
+coordinates = ["androidx.datastore:datastore-preferences-external-protobuf:1.2.1"]
+source = "https://android.googlesource.com/platform/frameworks/support/"
+
+[[components]]
+id = "kotlin"
+name = "Kotlin standard library and JetBrains annotations"
+kind = "android-runtime"
+version = "2.4.0 / annotations 23.0.0"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+coordinates = ["org.jetbrains.kotlin:kotlin-stdlib:2.4.0", "org.jetbrains:annotations:23.0.0"]
+source = "https://github.com/JetBrains/kotlin"
+
+[[components]]
+id = "kotlinx"
+name = "kotlinx.coroutines and kotlinx.serialization"
+kind = "android-runtime"
+version = "1.11.0"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+coordinates = [
+  "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0",
+  "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0",
+  "org.jetbrains.kotlinx:kotlinx-serialization-core:1.11.0",
+  "org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0",
+]
+source = "https://github.com/Kotlin"
+
+[[components]]
+id = "square-networking"
+name = "OkHttp, Okio, and Retrofit"
+kind = "android-runtime"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+coordinates = [
+  "com.squareup.okhttp3:okhttp:5.4.0",
+  "com.squareup.okhttp3:okhttp-android:5.4.0",
+  "com.squareup.okhttp3:okhttp-sse:5.4.0",
+  "com.squareup.okio:okio:3.17.0",
+  "com.squareup.okio:okio-jvm:3.17.0",
+  "com.squareup.retrofit2:retrofit:3.0.0",
+  "com.squareup.retrofit2:converter-kotlinx-serialization:3.0.0",
+]
+source = "https://github.com/square"
+
+[[components]]
+id = "markwon"
+name = "Markwon"
+kind = "android-runtime"
+version = "4.6.2"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+coordinates = [
+  "io.noties.markwon:core:4.6.2",
+  "io.noties.markwon:recycler:4.6.2",
+  "io.noties.markwon:recycler-table:4.6.2",
+  "io.noties.markwon:ext-tables:4.6.2",
+]
+source = "https://github.com/noties/Markwon"
+
+[[components]]
+id = "commonmark-java"
+name = "commonmark-java"
+kind = "android-runtime"
+version = "0.13.0"
+license = "BSD-2-Clause"
+license_file = "licenses/BSD-2-Clause.txt"
+coordinates = [
+  "com.atlassian.commonmark:commonmark:0.13.0",
+  "com.atlassian.commonmark:commonmark-ext-gfm-tables:0.13.0",
+]
+source = "https://github.com/commonmark/commonmark-java"
+
+[[components]]
+id = "prism4j"
+name = "Prism4j"
+kind = "android-runtime"
+version = "2.0.0"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+coordinates = ["io.noties:prism4j:2.0.0"]
+source = "https://github.com/noties/Prism4j"
+
+[[components]]
+id = "jsch"
+name = "JSch"
+kind = "android-runtime"
+version = "2.28.3"
+license = "BSD-3-Clause"
+license_file = "licenses/BSD-3-Clause.txt"
+coordinates = ["com.github.mwiede:jsch:2.28.3"]
+source = "https://github.com/mwiede/jsch"
+
+[[components]]
+id = "jsch-embedded-jzlib"
+name = "JZlib code embedded in JSch"
+kind = "android-runtime-embedded"
+version = "bundled in JSch 2.28.3"
+license = "BSD-3-Clause"
+license_file = "licenses/BSD-3-Clause.txt"
+parent_coordinate = "com.github.mwiede:jsch:2.28.3"
+source = "https://github.com/mwiede/jsch/tree/jsch-2.28.3"
+
+[[components]]
+id = "jsch-embedded-jbcrypt"
+name = "jBCrypt code embedded in JSch"
+kind = "android-runtime-embedded"
+version = "bundled in JSch 2.28.3"
+license = "ISC"
+license_file = "licenses/ISC.txt"
+parent_coordinate = "com.github.mwiede:jsch:2.28.3"
+source = "https://github.com/mwiede/jsch/tree/jsch-2.28.3"
+
+[[components]]
+id = "bouncycastle"
+name = "Bouncy Castle Provider"
+kind = "android-runtime"
+version = "1.84"
+license = "MIT"
+license_file = "licenses/MIT.txt"
+coordinates = ["org.bouncycastle:bcprov-jdk18on:1.84"]
+source = "https://github.com/bcgit/bc-java"
+
+[[components]]
+id = "java-annotations-support"
+name = "JSpecify and Guava listenablefuture compatibility artifact"
+kind = "android-runtime"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+coordinates = ["org.jspecify:jspecify:1.0.0", "com.google.guava:listenablefuture:1.0"]
+source = "https://github.com/jspecify/jspecify"
+
+[[components]]
+id = "gradle-wrapper"
+name = "Gradle Wrapper and Gradle distribution"
+kind = "build-tooling"
+version = "9.6.1"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+source = "https://github.com/gradle/gradle/tree/v9.6.1"
+provenance_file = "sources/gradle-wrapper.json"
+
+[[components]]
+id = "go-runtime"
+name = "Go runtime, standard library, and x/mobile binding tooling/code"
+kind = "native-runtime-and-tooling"
+version = "Go 1.26.4 / x/mobile v0.0.0-20260611195102-4dd8f1dbf5d2"
+license = "BSD-3-Clause"
+license_file = "licenses/BSD-3-Clause.txt"
+source = "https://go.googlesource.com/go/"
+
+[[components]]
+id = "frp-patched"
+name = "frp patched downstream"
+kind = "native-static"
+version = "v0.69.1-p1"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+source = "https://github.com/fatedier/frp/commit/8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb"
+provenance_file = "sources/frp.json"
+modified_by = "OC Deck contributors"
+
+[[components]]
+id = "go-static-apache-2.0"
+name = "Go modules statically linked under Apache-2.0"
+kind = "native-static"
+license = "Apache-2.0"
+license_file = "licenses/Apache-2.0.txt"
+modules = [
+  "github.com/coreos/go-oidc/v3@v3.14.1",
+  "github.com/fatedier/golib@v0.7.0",
+  "github.com/go-jose/go-jose/v4@v4.0.5",
+  "github.com/pires/go-proxyproto@v0.7.0",
+  "github.com/spf13/cobra@v1.8.0",
+  "github.com/tjfoc/gmsm@v1.4.1",
+  "github.com/vishvananda/netlink@v1.3.0",
+  "github.com/vishvananda/netns@v0.0.4",
+  "gopkg.in/ini.v1@v1.67.0",
+  "gopkg.in/yaml.v2@v2.4.0",
+  "k8s.io/apimachinery@v0.28.8",
+  "k8s.io/utils@v0.0.0-20230406110748-d93618cff8a2",
+  "sigs.k8s.io/json@v0.0.0-20221116044647-bc3834ca7abd",
+]
+
+[[components]]
+id = "go-static-mit"
+name = "Go modules statically linked under MIT"
+kind = "native-static"
+license = "MIT"
+license_file = "licenses/MIT.txt"
+modules = [
+  "github.com/armon/go-socks5@v0.0.0-20160902184237-e75332964ef5",
+  "github.com/Azure/go-ntlmssp@v0.1.0",
+  "github.com/klauspost/cpuid/v2@v2.2.6",
+  "github.com/klauspost/reedsolomon@v1.12.0",
+  "github.com/pelletier/go-toml/v2@v2.2.0",
+  "github.com/pion/dtls/v3@v3.0.10",
+  "github.com/pion/logging@v0.2.4",
+  "github.com/pion/stun/v3@v3.1.1",
+  "github.com/pion/transport/v4@v4.0.1",
+  "github.com/quic-go/quic-go@v0.55.0",
+  "github.com/samber/lo@v1.47.0",
+  "github.com/templexxx/xorsimd@v0.4.3",
+  "github.com/xtaci/kcp-go/v5@v5.6.13",
+  "golang.zx2c4.com/wireguard@v0.0.0-20231211153847-12269c276173",
+  "sigs.k8s.io/yaml@v1.3.0",
+]
+
+[[components]]
+id = "go-static-bsd-2-clause"
+name = "Go modules statically linked under BSD-2-Clause"
+kind = "native-static"
+license = "BSD-2-Clause"
+license_file = "licenses/BSD-2-Clause.txt"
+modules = ["github.com/pkg/errors@v0.9.1"]
+
+[[components]]
+id = "go-static-bsd-3-clause"
+name = "Go modules statically linked under BSD-3-Clause"
+kind = "native-static"
+license = "BSD-3-Clause"
+license_file = "licenses/BSD-3-Clause.txt"
+modules = [
+  "github.com/golang/snappy@v0.0.4",
+  "github.com/gorilla/mux@v1.8.1",
+  "github.com/songgao/water@v0.0.0-20200317203138-2b4b6d7c09d8",
+  "github.com/spf13/pflag@v1.0.5",
+  "github.com/templexxx/cpu@v0.1.1",
+  "golang.org/x/crypto@v0.53.0",
+  "golang.org/x/net@v0.56.0",
+  "golang.org/x/oauth2@v0.28.0",
+  "golang.org/x/sync@v0.21.0",
+  "golang.org/x/sys@v0.46.0",
+  "golang.org/x/text@v0.38.0",
+  "golang.org/x/time@v0.10.0",
+]
+
+[[components]]
+id = "fatedier-yamux"
+name = "fatedier/yamux replacement for hashicorp/yamux"
+kind = "native-static"
+version = "v0.0.0-20250825093530-d0154be01cd6"
+license = "MPL-2.0"
+license_file = "licenses/MPL-2.0.txt"
+source = "https://github.com/fatedier/yamux/commit/d0154be01cd6bcb13bd89fe9c3614b2b9395bc72"
+
+[[components]]
+id = "opencode-ui-vectors"
+name = "OpenCode UI vectors adapted for Android"
+kind = "bundled-asset"
+version = "commit 4ed4f749e644ffb5b279fb30b7b915e743d80142"
+license = "MIT"
+license_file = "licenses/MIT.txt"
+source = "https://github.com/anomalyco/opencode/commit/4ed4f749e644ffb5b279fb30b7b915e743d80142"
+provenance_file = "sources/opencode-ui-assets.json"
+asset_count = 15
+trademark_review = "Required; copyright license does not grant trademark rights."
+
+[[components]]
+id = "opencode-audio"
+name = "OpenCode UI notification sounds"
+kind = "bundled-asset"
+version = "commit cd34f5e07c33dee8f06ef07a437193e41c39d90f"
+license = "MIT"
+license_file = "licenses/MIT.txt"
+source = "https://github.com/anomalyco/opencode/commit/cd34f5e07c33dee8f06ef07a437193e41c39d90f"
+provenance_file = "sources/opencode-audio.json"
+asset_count = 45

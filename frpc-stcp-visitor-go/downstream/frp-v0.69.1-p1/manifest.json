@@ -1,0 +1,24 @@
+{
+  "module": "github.com/fatedier/frp",
+  "version": "v0.69.1",
+  "moduleSum": "h1:ZlkUCAO4HHyGmTOZ0q7k2PvFW2PmmPon+vyeyHDdZWA=",
+  "goModSum": "h1:h6UP/0bhnurYzBPORBgbP+aZByDMpzWOErJNNoFdoJo=",
+  "originHash": "8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb",
+  "zipSha256": "cf0ab420407f5024a2ae7722dc3e4a1db2303a8abc71aa4a41486c7fa5593533",
+  "upstreamFiles": {
+    "client/control.go": "edbf19177e41cc0de94bf58ce7b94b637654ca332cc1ac8a5d06e55926acc7e2",
+    "client/service.go": "221243c35349e2ac028b72b5e625a05f5866c57620757822637d9f1af9b7fda7",
+    "client/visitor/visitor_manager.go": "353145720ab44e6908896b9336968ac61294f2cd3b1d333dc3731f79648c9799"
+  },
+  "patches": [
+    "0001-transport-readiness.patch"
+  ],
+  "gofmtFiles": [
+    "client/control.go",
+    "client/runtime_state.go",
+    "client/runtime_state_test.go",
+    "client/service.go",
+    "client/visitor/visitor_manager.go",
+    "client/visitor/visitor_manager_runtime_test.go"
+  ]
+}

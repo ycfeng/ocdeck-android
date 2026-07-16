@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support policy / 支持政策
+    url: https://github.com/ycfeng/ocdeck-android/blob/main/SUPPORT.md
+    about: Read support scope and choose the correct issue form. / 查看支持范围并选择正确的 issue 表单。
+  - name: Security policy / 安全政策
+    url: https://github.com/ycfeng/ocdeck-android/blob/main/SECURITY.md
+    about: Read the private vulnerability reporting policy. Do not disclose vulnerabilities publicly. / 查看私密漏洞报告政策，不得公开披露漏洞。

@@ -1,0 +1,342 @@
+OC DECK THIRD-PARTY NOTICES
+
+Last reviewed: 2026-07-14
+OC Deck application version: 0.1.0
+GoMobile bridge version: 0.3.2-frp0.69.1-p1
+
+This file identifies third-party software and assets used by OC Deck. It does
+not replace the applicable license texts. Copies of the relevant licenses are
+available under third_party/licenses/. The machine-readable audit inventory is
+third_party/components.toml.
+
+Application APKs embed the project notices and license texts under
+assets/legal/. The GoMobile bridge AAR embeds the same project notices,
+individual third-party license texts, its exact Java API, and bridge/frp
+provenance under META-INF/OCDECK/.
+
+OC Deck original code is licensed separately under the repository MIT LICENSE.
+
+===============================================================================
+1. ANDROID AND JVM RUNTIME COMPONENTS
+===============================================================================
+
+Apache License 2.0
+------------------
+
+The following shipped runtime families are licensed under Apache License 2.0:
+
+- AndroidX and Jetpack Compose runtime artifacts, including Activity,
+  Annotation, Collection, Core, DataStore, Lifecycle, Navigation, SavedState,
+  Material 3, Compose Runtime/Foundation/UI, Window, and their resolved
+  AndroidX support dependencies, except the separately listed DataStore
+  external protobuf artifact. Resolved versions and families are listed in
+  third_party/components.toml.
+  Source: https://android.googlesource.com/platform/frameworks/support/
+- Kotlin standard library 2.4.0 and JetBrains annotations 23.0.0.
+  Source: https://github.com/JetBrains/kotlin
+- kotlinx.coroutines 1.11.0 and kotlinx.serialization 1.11.0.
+  Source: https://github.com/Kotlin
+- OkHttp 5.4.0, Okio 3.17.0, Retrofit 3.0.0, and the Retrofit kotlinx
+  serialization converter.
+  Source: https://github.com/square
+- Markwon 4.6.2.
+  Source: https://github.com/noties/Markwon
+- Prism4j 2.0.0.
+  Source: https://github.com/noties/Prism4j
+- JSpecify 1.0.0 and Guava's listenablefuture compatibility artifact 1.0.
+  Sources: https://github.com/jspecify/jspecify and
+  https://github.com/google/guava
+
+License text: third_party/licenses/Apache-2.0.txt
+
+AndroidX DataStore repackaged proto-lite 1.2.1
+----------------------------------------------
+
+Coordinate:
+androidx.datastore:datastore-preferences-external-protobuf:1.2.1
+
+License: BSD-3-Clause
+License text: third_party/licenses/BSD-3-Clause.txt
+Source: https://android.googlesource.com/platform/frameworks/support/
+The fixed artifact's packaged LICENSE.txt contains no copyright line; none is
+invented here.
+
+commonmark-java 0.13.0
+----------------------
+
+Coordinates:
+- com.atlassian.commonmark:commonmark:0.13.0
+- com.atlassian.commonmark:commonmark-ext-gfm-tables:0.13.0
+
+Copyright (c) 2015-2016, Atlassian Pty Ltd
+All rights reserved.
+
+License: BSD-2-Clause
+License text: third_party/licenses/BSD-2-Clause.txt
+Source: https://github.com/commonmark/commonmark-java
+
+JSch 2.28.3
+-----------
+
+Coordinate: com.github.mwiede:jsch:2.28.3
+
+Copyright (c) 2002-2015 Atsuhiko Yamanaka, JCraft,Inc.
+All rights reserved.
+
+License: BSD-3-Clause
+License text: third_party/licenses/BSD-3-Clause.txt
+Source: https://github.com/mwiede/jsch
+
+The fixed JSch JAR also contains the following separately licensed code:
+
+- JZlib
+  Copyright (c) 2000-2011 ymnk, JCraft,Inc. All rights reserved.
+  License: BSD-3-Clause
+  License text: third_party/licenses/BSD-3-Clause.txt
+- jBCrypt
+  Copyright (c) 2006 Damien Miller <djm@mindrot.org>
+  License: ISC
+  License text: third_party/licenses/ISC.txt
+
+The three license files are packaged by JSch under META-INF and are declared
+in the `com.github.mwiede:jsch:2.28.3` POM.
+
+Bouncy Castle Provider 1.84
+---------------------------
+
+Coordinate: org.bouncycastle:bcprov-jdk18on:1.84
+
+Copyright (c) 2000-2023 The Legion of the Bouncy Castle Inc.
+(https://www.bouncycastle.org)
+
+License: MIT-style Bouncy Castle Licence
+License text: third_party/licenses/MIT.txt
+Source: https://github.com/bcgit/bc-java
+
+===============================================================================
+2. GRADLE WRAPPER AND BUILD TOOLING
+===============================================================================
+
+The repository contains Gradle Wrapper files for Gradle 9.6.1. Gradle is
+licensed under Apache License 2.0.
+
+Source: https://github.com/gradle/gradle/tree/v9.6.1
+License text: third_party/licenses/Apache-2.0.txt
+Distribution and wrapper hashes: third_party/sources/gradle-wrapper.json
+
+Build plugins and compilers are used to produce the application but are not
+represented as application runtime libraries unless they also appear in the
+resolved runtime inventory.
+
+===============================================================================
+3. GO RUNTIME, GOMOBILE, FRP, AND STATIC GO MODULES
+===============================================================================
+
+Go runtime, standard library, and x/mobile
+------------------------------------------
+
+The GoMobile library contains Go runtime and standard-library code built with
+Go 1.26.4. The fixed x/mobile toolchain version is
+v0.0.0-20260611195102-4dd8f1dbf5d2.
+
+Copyright 2009 The Go Authors.
+
+License: BSD-3-Clause
+License text: third_party/licenses/BSD-3-Clause.txt
+Sources: https://go.googlesource.com/go/ and
+https://go.googlesource.com/mobile/
+
+frp v0.69.1-p1
+----------------
+
+Upstream module: github.com/fatedier/frp v0.69.1
+Upstream commit: 8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
+Downstream identifier: v0.69.1-p1
+License: Apache-2.0
+License text: third_party/licenses/Apache-2.0.txt
+Source: https://github.com/fatedier/frp/commit/8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
+
+Modified by OC Deck contributors.
+
+Patch:
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p1/0001-transport-readiness.patch
+- SHA-256: f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b
+
+Modified upstream files:
+- client/control.go
+- client/service.go
+- client/visitor/visitor_manager.go
+
+Added downstream files:
+- client/runtime_state.go
+- client/runtime_state_test.go
+- client/visitor/visitor_manager_runtime_test.go
+
+Complete provenance: third_party/sources/frp.json
+
+fatedier/yamux
+--------------
+
+The frp dependency on github.com/hashicorp/yamux is replaced with:
+github.com/fatedier/yamux v0.0.0-20250825093530-d0154be01cd6
+
+Copyright (c) 2014 HashiCorp, Inc.
+
+License: MPL-2.0
+License text: third_party/licenses/MPL-2.0.txt
+Source code: https://github.com/fatedier/yamux/commit/d0154be01cd6bcb13bd89fe9c3614b2b9395bc72
+
+Recipients of an executable containing this MPL-covered component can obtain
+the corresponding Source Code Form from the source link above. OC Deck does
+not modify the yamux module in this build.
+
+Other statically linked Go modules under Apache License 2.0
+----------------------------------------------------------
+
+- github.com/coreos/go-oidc/v3 v3.14.1
+- github.com/fatedier/golib v0.7.0
+- github.com/go-jose/go-jose/v4 v4.0.5
+- github.com/pires/go-proxyproto v0.7.0
+- github.com/spf13/cobra v1.8.0
+- github.com/tjfoc/gmsm v1.4.1
+- github.com/vishvananda/netlink v1.3.0
+- github.com/vishvananda/netns v0.0.4
+- gopkg.in/ini.v1 v1.67.0
+- gopkg.in/yaml.v2 v2.4.0
+- k8s.io/apimachinery v0.28.8
+- k8s.io/utils v0.0.0-20230406110748-d93618cff8a2
+- sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd
+
+License text: third_party/licenses/Apache-2.0.txt
+
+Other statically linked Go modules under the MIT License
+-------------------------------------------------------
+
+- github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
+  Copyright (c) 2014 Armon Dadgar
+- github.com/Azure/go-ntlmssp v0.1.0
+  Copyright (c) 2016 Microsoft
+- github.com/klauspost/cpuid/v2 v2.2.6
+  Copyright (c) 2015 Klaus Post
+- github.com/klauspost/reedsolomon v1.12.0
+  Copyright (c) 2015 Klaus Post
+  Copyright (c) 2015 Backblaze
+- github.com/pelletier/go-toml/v2 v2.2.0
+  Copyright (c) 2021 - 2023 Thomas Pelletier
+- github.com/pion/dtls/v3 v3.0.10
+- github.com/pion/logging v0.2.4
+- github.com/pion/stun/v3 v3.1.1
+- github.com/pion/transport/v4 v4.0.1
+  Copyright (c) 2023 The Pion community <https://pion.ly>
+- github.com/quic-go/quic-go v0.55.0
+  Copyright (c) 2016 the quic-go authors & Google, Inc.
+- github.com/samber/lo v1.47.0
+  Copyright (c) 2022 Samuel Berthe
+- github.com/templexxx/xorsimd v0.4.3
+  Copyright (c) 2019 Temple3x (temple3x@gmail.com)
+- github.com/xtaci/kcp-go/v5 v5.6.13
+  Copyright (c) 2015 xtaci
+- golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
+  The fixed upstream LICENSE contains no copyright line; none is invented here.
+- sigs.k8s.io/yaml v1.3.0
+  Copyright (c) 2014 Sam Ghods
+
+License text: third_party/licenses/MIT.txt
+
+Other statically linked Go modules under BSD-2-Clause
+----------------------------------------------------
+
+- github.com/pkg/errors v0.9.1
+  Copyright (c) 2015, Dave Cheney <dave@cheney.net>
+  All rights reserved.
+
+License text: third_party/licenses/BSD-2-Clause.txt
+
+Other statically linked Go modules under BSD-3-Clause
+----------------------------------------------------
+
+- github.com/golang/snappy v0.0.4
+  Copyright (c) 2011 The Snappy-Go Authors. All rights reserved.
+- github.com/gorilla/mux v1.8.1
+  Copyright (c) 2023 The Gorilla Authors. All rights reserved.
+- github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8
+  Copyright (c) 2016, Song Gao <song@gao.io>
+  All rights reserved.
+- github.com/spf13/pflag v1.0.5
+  Copyright (c) 2012 Alex Ogier. All rights reserved.
+  Copyright (c) 2012 The Go Authors. All rights reserved.
+- github.com/templexxx/cpu v0.1.1
+  Copyright (c) 2018 Temple3x (temple3x@gmail.com)
+  Copyright 2017 The Go Authors
+  Copyright (c) 2015 Klaus Post
+- golang.org/x/crypto v0.53.0
+- golang.org/x/net v0.56.0
+- golang.org/x/oauth2 v0.28.0
+- golang.org/x/sync v0.21.0
+- golang.org/x/sys v0.46.0
+- golang.org/x/text v0.38.0
+- golang.org/x/time v0.10.0
+  Copyright 2009 The Go Authors.
+
+License text: third_party/licenses/BSD-3-Clause.txt
+
+The declared github.com/wlynxg/anet dependency is replaced at build time by
+OC Deck's local internal/anetcompat implementation. No upstream anet source is
+distributed through that replacement.
+
+===============================================================================
+4. BUNDLED OPENCODE UI ASSETS
+===============================================================================
+
+OpenCode UI vectors adapted for Android
+---------------------------------------
+
+OC Deck contains 15 Android vector resources whose path geometry is adapted
+from OpenCode's general UI icon source at:
+
+Repository: https://github.com/anomalyco/opencode
+Commit: 4ed4f749e644ffb5b279fb30b7b915e743d80142
+Upstream files:
+- packages/ui/src/components/icon.tsx
+
+The vectors were converted to Android XML and may have changed dimensions,
+grouping, colors, strokes, or launcher/splash treatment. The complete
+upstream-symbol/local-path map, local byte sizes, and SHA-256 values are in:
+third_party/sources/opencode-ui-assets.json
+
+MIT License
+Copyright (c) 2025 opencode
+
+License text: third_party/licenses/MIT.txt
+
+The copyright license does not grant rights in the OpenCode name or logo. See
+TRADEMARKS.md. Inclusion does not imply endorsement, sponsorship, or
+affiliation.
+
+OpenCode UI notification sounds
+-------------------------------
+
+OC Deck bundles 45 AAC notification sounds copied without byte changes from:
+
+Repository: https://github.com/anomalyco/opencode
+Commit: cd34f5e07c33dee8f06ef07a437193e41c39d90f
+Source directory: packages/ui/src/assets/audio/
+
+MIT License
+Copyright (c) 2025 opencode
+
+The complete upstream/local path map, byte sizes, and SHA-256 values are in:
+third_party/sources/opencode-audio.json
+
+License text: third_party/licenses/MIT.txt
+
+===============================================================================
+5. NO WARRANTY AND VERIFICATION SCOPE
+===============================================================================
+
+Third-party software and assets are provided under their respective license
+terms, including applicable warranty disclaimers. This notice is based on the
+resolved Gradle release runtime graph, the union of Android arm64, arm, 386,
+and amd64 Go dependency walks, fixed source provenance, and local file hashes
+reviewed on the date above. Release-time verification rechecks dependency and
+asset drift, embedded APK/AAR legal metadata, and final native-library bytes.

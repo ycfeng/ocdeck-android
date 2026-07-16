@@ -1,0 +1,116 @@
+name: Feature request / 功能建议
+description: Propose an OC Deck improvement or mobile workflow / 建议 OC Deck 改进或移动端工作流
+title: "[Feature] "
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before prescribing an implementation. Search existing issues first.
+
+        请先描述用户问题，再提出实现方案；提交前请先搜索已有 issue。
+
+        **Never include / 严禁包含：** token, API key, password, cookie, SSH private key, private-key passphrase, host fingerprint, complete configuration, sensitive provider header, private URL, project source code, or complete server response；token、API key、密码、cookie、SSH 私钥、私钥口令、主机指纹、完整配置、Provider 敏感请求头、非公开 URL、项目源码或完整服务器响应。
+
+        Report security vulnerabilities only through [GitHub Private Vulnerability Reporting](https://github.com/ycfeng/ocdeck-android/security/advisories/new). Do not disclose vulnerability details here.
+
+        安全漏洞仅通过 [GitHub 私密漏洞报告](https://github.com/ycfeng/ocdeck-android/security/advisories/new)提交，不得在此披露漏洞细节。
+
+  - type: input
+    id: feature_app_version
+    attributes:
+      label: OC Deck version or commit / OC Deck 版本或 commit
+      description: Use the version you currently use or the commit you evaluated. / 填写当前使用版本或评估所用 commit。
+      placeholder: "0.1.0 or abc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: feature_android_version
+    attributes:
+      label: Android version / Android 版本
+      description: Include the API level when known. / 已知时请包含 API level。
+      placeholder: "Android 15 / API 35"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: feature_abi
+    attributes:
+      label: Device ABI / 设备 ABI
+      options:
+        - arm64-v8a
+        - armeabi-v7a
+        - x86_64
+        - Unknown / 未知
+        - Not applicable / 不适用
+    validations:
+      required: true
+
+  - type: input
+    id: feature_server_version
+    attributes:
+      label: OpenCode Server version / OpenCode Server 版本
+      description: Enter Unknown or Not applicable when appropriate. / 无法获知或不适用时填写 Unknown 或 Not applicable。
+      placeholder: "1.17.7, Unknown, or Not applicable"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: feature_connection_mode
+    attributes:
+      label: Connection mode / 连接模式
+      options:
+        - Direct / 直连
+        - SSH
+        - STCP
+        - Not applicable / 不适用
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature_scenario
+    attributes:
+      label: User scenario or reproduction context / 用户场景或复现上下文
+      description: Explain who needs this, what they are trying to do, and what currently blocks them. / 说明谁需要此功能、目标是什么，以及当前受何阻碍。
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature_proposal
+    attributes:
+      label: Proposed behavior / 建议行为
+      description: Describe the desired mobile behavior and outcome, not only a desktop UI copy. / 描述期望的移动端行为与结果，不要只描述桌面 UI 的照搬。
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature_alternatives
+    attributes:
+      label: Alternatives considered / 考虑过的替代方案
+      description: Optional. Include current workarounds or rejected approaches. / 可选。可填写当前绕过方式或已排除方案。
+
+  - type: textarea
+    id: feature_logs
+    attributes:
+      label: Redacted supporting logs or screenshots / 已脱敏的辅助日志或截图
+      description: Optional. Remove private data before attaching anything. / 可选。附加任何内容前必须移除非公开数据。
+      render: shell
+
+  - type: checkboxes
+    id: feature_log_confirmation
+    attributes:
+      label: Log handling confirmation / 日志处理确认
+      options:
+        - label: I confirm that every attached log is redacted, or that I attached no logs. / 我确认所有附加日志均已脱敏，或未附加日志。
+          required: true
+
+  - type: checkboxes
+    id: feature_sensitive_confirmation
+    attributes:
+      label: Sensitive information confirmation / 敏感信息确认
+      options:
+        - label: I confirm this request contains none of the prohibited sensitive information listed above. / 我确认本建议不包含上方列出的任何禁用敏感信息。
+          required: true

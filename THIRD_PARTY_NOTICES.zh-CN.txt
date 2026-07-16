@@ -1,0 +1,344 @@
+OC DECK 第三方声明
+英文原文：THIRD_PARTY_NOTICES.txt
+本中文译本仅为阅读便利；适用许可条件及解释以英文原文和对应许可证正文为准。
+
+最后审阅日期：2026-07-14
+OC Deck 应用版本：0.1.0
+GoMobile bridge 版本：0.3.2-frp0.69.1-p1
+
+本文件列出 OC Deck 使用的第三方软件和资产。本文件不能替代
+适用的许可证正文。相关许可证的副本可在
+third_party/licenses/ 下获取。机器可读的审计清单位于
+third_party/components.toml。
+
+应用 APK 在 assets/legal/ 下嵌入本项目的声明和许可证正文。
+GoMobile bridge AAR 在 META-INF/OCDECK/ 下嵌入相同的项目声明、
+各第三方许可证正文、其精确 Java API，以及 bridge/frp
+来源信息。
+
+OC Deck 原创代码依据仓库中的 MIT LICENSE 单独授权。
+
+===============================================================================
+1. ANDROID 和 JVM 运行时组件
+===============================================================================
+
+Apache License 2.0
+------------------
+
+以下随应用分发的运行时组件族依据 Apache License 2.0 授权：
+
+- AndroidX 和 Jetpack Compose 运行时制品，包括 Activity、
+  Annotation、Collection、Core、DataStore、Lifecycle、Navigation、SavedState、
+  Material 3、Compose Runtime/Foundation/UI、Window，以及它们解析得到的
+  AndroidX 支持依赖，但下文单独列出的 DataStore
+  外部 protobuf 制品除外。解析得到的版本和组件族列于
+  third_party/components.toml。
+  来源：https://android.googlesource.com/platform/frameworks/support/
+- Kotlin 标准库 2.4.0 和 JetBrains annotations 23.0.0。
+  来源：https://github.com/JetBrains/kotlin
+- kotlinx.coroutines 1.11.0 和 kotlinx.serialization 1.11.0。
+  来源：https://github.com/Kotlin
+- OkHttp 5.4.0、Okio 3.17.0、Retrofit 3.0.0，以及 Retrofit kotlinx
+  serialization converter。
+  来源：https://github.com/square
+- Markwon 4.6.2。
+  来源：https://github.com/noties/Markwon
+- Prism4j 2.0.0。
+  来源：https://github.com/noties/Prism4j
+- JSpecify 1.0.0 和 Guava 的 listenablefuture 兼容制品 1.0。
+  来源：https://github.com/jspecify/jspecify 和
+  https://github.com/google/guava
+
+许可证正文：third_party/licenses/Apache-2.0.txt
+
+AndroidX DataStore 重新打包的 proto-lite 1.2.1
+------------------------------------------------
+
+坐标：
+androidx.datastore:datastore-preferences-external-protobuf:1.2.1
+
+许可证：BSD-3-Clause
+许可证正文：third_party/licenses/BSD-3-Clause.txt
+来源：https://android.googlesource.com/platform/frameworks/support/
+该固定制品所打包的 LICENSE.txt 不含版权行；此处
+未自行添加。
+
+commonmark-java 0.13.0
+----------------------
+
+坐标：
+- com.atlassian.commonmark:commonmark:0.13.0
+- com.atlassian.commonmark:commonmark-ext-gfm-tables:0.13.0
+
+Copyright (c) 2015-2016, Atlassian Pty Ltd
+All rights reserved.
+
+许可证：BSD-2-Clause
+许可证正文：third_party/licenses/BSD-2-Clause.txt
+来源：https://github.com/commonmark/commonmark-java
+
+JSch 2.28.3
+-----------
+
+坐标：com.github.mwiede:jsch:2.28.3
+
+Copyright (c) 2002-2015 Atsuhiko Yamanaka, JCraft,Inc.
+All rights reserved.
+
+许可证：BSD-3-Clause
+许可证正文：third_party/licenses/BSD-3-Clause.txt
+来源：https://github.com/mwiede/jsch
+
+该固定 JSch JAR 还包含以下采用单独许可证授权的代码：
+
+- JZlib
+  Copyright (c) 2000-2011 ymnk, JCraft,Inc. All rights reserved.
+  许可证：BSD-3-Clause
+  许可证正文：third_party/licenses/BSD-3-Clause.txt
+- jBCrypt
+  Copyright (c) 2006 Damien Miller <djm@mindrot.org>
+  许可证：ISC
+  许可证正文：third_party/licenses/ISC.txt
+
+这三个许可证文件由 JSch 打包在 META-INF 下，并在
+`com.github.mwiede:jsch:2.28.3` POM 中声明。
+
+Bouncy Castle Provider 1.84
+---------------------------
+
+坐标：org.bouncycastle:bcprov-jdk18on:1.84
+
+Copyright (c) 2000-2023 The Legion of the Bouncy Castle Inc.
+(https://www.bouncycastle.org)
+
+许可证：MIT-style Bouncy Castle Licence
+许可证正文：third_party/licenses/MIT.txt
+来源：https://github.com/bcgit/bc-java
+
+===============================================================================
+2. GRADLE WRAPPER 和构建工具
+===============================================================================
+
+仓库包含适用于 Gradle 9.6.1 的 Gradle Wrapper 文件。Gradle
+依据 Apache License 2.0 授权。
+
+来源：https://github.com/gradle/gradle/tree/v9.6.1
+许可证正文：third_party/licenses/Apache-2.0.txt
+发行包和 wrapper 哈希：third_party/sources/gradle-wrapper.json
+
+构建插件和编译器用于生成应用；除非它们同时出现在
+解析得到的运行时清单中，否则不将其列作应用
+运行时库。
+
+===============================================================================
+3. GO 运行时、GOMOBILE、FRP 和静态 GO 模块
+===============================================================================
+
+Go 运行时、标准库和 x/mobile
+------------------------------
+
+GoMobile 库包含使用 Go 1.26.4 构建的 Go 运行时和标准库代码。
+固定的 x/mobile 工具链版本为
+v0.0.0-20260611195102-4dd8f1dbf5d2。
+
+Copyright 2009 The Go Authors.
+
+许可证：BSD-3-Clause
+许可证正文：third_party/licenses/BSD-3-Clause.txt
+来源：https://go.googlesource.com/go/ 和
+https://go.googlesource.com/mobile/
+
+frp v0.69.1-p1
+----------------
+
+上游模块：github.com/fatedier/frp v0.69.1
+上游 commit：8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
+下游标识符：v0.69.1-p1
+许可证：Apache-2.0
+许可证正文：third_party/licenses/Apache-2.0.txt
+来源：https://github.com/fatedier/frp/commit/8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
+
+由 OC Deck 贡献者修改。
+
+补丁：
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p1/0001-transport-readiness.patch
+- SHA-256: f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b
+
+已修改的上游文件：
+- client/control.go
+- client/service.go
+- client/visitor/visitor_manager.go
+
+新增的下游文件：
+- client/runtime_state.go
+- client/runtime_state_test.go
+- client/visitor/visitor_manager_runtime_test.go
+
+完整来源信息：third_party/sources/frp.json
+
+fatedier/yamux
+--------------
+
+frp 对 github.com/hashicorp/yamux 的依赖被替换为：
+github.com/fatedier/yamux v0.0.0-20250825093530-d0154be01cd6
+
+Copyright (c) 2014 HashiCorp, Inc.
+
+许可证：MPL-2.0
+许可证正文：third_party/licenses/MPL-2.0.txt
+源代码：https://github.com/fatedier/yamux/commit/d0154be01cd6bcb13bd89fe9c3614b2b9395bc72
+
+获得包含此 MPL 覆盖组件之可执行文件的接收方，可以从上述源代码链接
+获取相应的源代码形式（Source Code Form）。OC Deck 在此构建中
+未修改 yamux 模块。
+
+依据 Apache License 2.0 授权的其他静态链接 Go 模块
+--------------------------------------------------------
+
+- github.com/coreos/go-oidc/v3 v3.14.1
+- github.com/fatedier/golib v0.7.0
+- github.com/go-jose/go-jose/v4 v4.0.5
+- github.com/pires/go-proxyproto v0.7.0
+- github.com/spf13/cobra v1.8.0
+- github.com/tjfoc/gmsm v1.4.1
+- github.com/vishvananda/netlink v1.3.0
+- github.com/vishvananda/netns v0.0.4
+- gopkg.in/ini.v1 v1.67.0
+- gopkg.in/yaml.v2 v2.4.0
+- k8s.io/apimachinery v0.28.8
+- k8s.io/utils v0.0.0-20230406110748-d93618cff8a2
+- sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd
+
+许可证正文：third_party/licenses/Apache-2.0.txt
+
+依据 MIT License 授权的其他静态链接 Go 模块
+-----------------------------------------------
+
+- github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
+  Copyright (c) 2014 Armon Dadgar
+- github.com/Azure/go-ntlmssp v0.1.0
+  Copyright (c) 2016 Microsoft
+- github.com/klauspost/cpuid/v2 v2.2.6
+  Copyright (c) 2015 Klaus Post
+- github.com/klauspost/reedsolomon v1.12.0
+  Copyright (c) 2015 Klaus Post
+  Copyright (c) 2015 Backblaze
+- github.com/pelletier/go-toml/v2 v2.2.0
+  Copyright (c) 2021 - 2023 Thomas Pelletier
+- github.com/pion/dtls/v3 v3.0.10
+- github.com/pion/logging v0.2.4
+- github.com/pion/stun/v3 v3.1.1
+- github.com/pion/transport/v4 v4.0.1
+  Copyright (c) 2023 The Pion community <https://pion.ly>
+- github.com/quic-go/quic-go v0.55.0
+  Copyright (c) 2016 the quic-go authors & Google, Inc.
+- github.com/samber/lo v1.47.0
+  Copyright (c) 2022 Samuel Berthe
+- github.com/templexxx/xorsimd v0.4.3
+  Copyright (c) 2019 Temple3x (temple3x@gmail.com)
+- github.com/xtaci/kcp-go/v5 v5.6.13
+  Copyright (c) 2015 xtaci
+- golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
+  固定的上游 LICENSE 不含版权行；此处未自行添加。
+- sigs.k8s.io/yaml v1.3.0
+  Copyright (c) 2014 Sam Ghods
+
+许可证正文：third_party/licenses/MIT.txt
+
+依据 BSD-2-Clause 授权的其他静态链接 Go 模块
+----------------------------------------------
+
+- github.com/pkg/errors v0.9.1
+  Copyright (c) 2015, Dave Cheney <dave@cheney.net>
+  All rights reserved.
+
+许可证正文：third_party/licenses/BSD-2-Clause.txt
+
+依据 BSD-3-Clause 授权的其他静态链接 Go 模块
+----------------------------------------------
+
+- github.com/golang/snappy v0.0.4
+  Copyright (c) 2011 The Snappy-Go Authors. All rights reserved.
+- github.com/gorilla/mux v1.8.1
+  Copyright (c) 2023 The Gorilla Authors. All rights reserved.
+- github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8
+  Copyright (c) 2016, Song Gao <song@gao.io>
+  All rights reserved.
+- github.com/spf13/pflag v1.0.5
+  Copyright (c) 2012 Alex Ogier. All rights reserved.
+  Copyright (c) 2012 The Go Authors. All rights reserved.
+- github.com/templexxx/cpu v0.1.1
+  Copyright (c) 2018 Temple3x (temple3x@gmail.com)
+  Copyright 2017 The Go Authors
+  Copyright (c) 2015 Klaus Post
+- golang.org/x/crypto v0.53.0
+- golang.org/x/net v0.56.0
+- golang.org/x/oauth2 v0.28.0
+- golang.org/x/sync v0.21.0
+- golang.org/x/sys v0.46.0
+- golang.org/x/text v0.38.0
+- golang.org/x/time v0.10.0
+  Copyright 2009 The Go Authors.
+
+许可证正文：third_party/licenses/BSD-3-Clause.txt
+
+声明的 github.com/wlynxg/anet 依赖在构建时被
+OC Deck 的本地 internal/anetcompat 实现替换。该替换不会
+分发任何上游 anet 源代码。
+
+===============================================================================
+4. 随附的 OPENCODE UI 资产
+===============================================================================
+
+为 Android 改编的 OpenCode UI 矢量资源
+----------------------------------------
+
+OC Deck 包含 15 个 Android 矢量资源，其路径几何改编自
+OpenCode 的通用 UI 图标源：
+
+仓库：https://github.com/anomalyco/opencode
+Commit：4ed4f749e644ffb5b279fb30b7b915e743d80142
+上游文件：
+- packages/ui/src/components/icon.tsx
+
+这些矢量资源已转换为 Android XML，其尺寸、分组、颜色、描边或
+启动图标/启动画面处理可能已有变化。完整的上游符号与本地路径映射、
+本地字节大小和 SHA-256 值位于：
+third_party/sources/opencode-ui-assets.json
+
+MIT License
+Copyright (c) 2025 opencode
+
+许可证正文：third_party/licenses/MIT.txt
+
+该版权许可证不授予使用 OpenCode 名称或徽标的权利。请参阅
+TRADEMARKS.zh-CN.md。纳入这些资源不表示认可、赞助或
+关联关系。
+
+OpenCode UI 通知音效
+--------------------
+
+OC Deck 随附 45 个 AAC 通知音效，这些音效从以下位置复制且字节未作更改：
+
+仓库：https://github.com/anomalyco/opencode
+Commit：cd34f5e07c33dee8f06ef07a437193e41c39d90f
+源目录：packages/ui/src/assets/audio/
+
+MIT License
+Copyright (c) 2025 opencode
+
+完整的上游与本地路径映射、字节大小和 SHA-256 值位于：
+third_party/sources/opencode-audio.json
+
+许可证正文：third_party/licenses/MIT.txt
+
+===============================================================================
+5. 不提供担保及验证范围
+===============================================================================
+
+第三方软件和资产依据各自的许可条款提供，
+包括适用的担保免责声明。本声明基于
+解析得到的 Gradle release 运行时图、Android arm64、arm、386
+和 amd64 Go 依赖遍历结果的并集、固定的源代码来源信息，以及本地文件哈希；
+上述内容已于前述日期审阅。发布时验证会重新检查依赖和
+资产漂移、嵌入 APK/AAR 的法律元数据，以及最终原生库字节。

@@ -1,0 +1,101 @@
+# Building OC Deck
+
+[简体中文](building.zh-CN.md)
+
+This English document is canonical. The Chinese document is a convenience translation.
+
+## Repository and Scope
+
+The canonical repository is <https://github.com/ycfeng/ocdeck-android>. OC Deck currently keeps application business code in `:app`, uses manual dependency injection, and isolates the GoMobile integration behind `:frpc-stcp-visitor`. Do not introduce Room, Hilt, KSP, kapt, or additional business Gradle modules merely to build the project.
+
+OC Deck original code and documentation are provided under the repository's [MIT License](../../LICENSE). Third-party components remain under their respective licenses.
+
+## Required Toolchain
+
+| Component | Required version |
+| --- | --- |
+| JDK and Java/Kotlin toolchain | 21 |
+| Android SDK | 36 |
+| Android Build Tools | 36.0.0 |
+| Android NDK for the STCP bridge | 27.1.12297006 |
+| Go for the STCP bridge | 1.26.4 |
+| PowerShell for `build-aar.ps1` | 7.3 or newer |
+
+The fixed x/mobile revision, Android bridge API level, bridge version, Go version, and NDK version are defined only in `frpc-stcp-visitor-go/bridge-versions.properties`. Do not replace them with floating versions such as `latest`.
+
+Set `JAVA_HOME` to JDK 21 and configure the Android SDK through `ANDROID_SDK_ROOT`, `ANDROID_HOME`, or the usual untracked `local.properties`. Keep Android Studio's Gradle JDK aligned with the command line.
+
+## Debug Build Without STCP
+
+A Debug build can compile without a generated GoMobile AAR. Direct and SSH code can be built and tested, but STCP will report that the native bridge is unavailable at runtime.
+
+Windows:
+
+```powershell
+.\gradlew.bat :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
+```
+
+macOS/Linux:
+
+```bash
+./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
+```
+
+## Build the Fixed GoMobile Bridge
+
+The bridge scripts prepare the pinned and patched frp source, install the pinned x/mobile tools, build and normalize the AAR, verify its API and native metadata, and write a local Maven artifact. Generated AARs and local build repositories are build outputs and must not be committed.
+
+Windows:
+
+```powershell
+.\frpc-stcp-visitor-go\build-aar.ps1
+```
+
+macOS/Linux:
+
+```bash
+bash frpc-stcp-visitor-go/build-aar.sh
+```
+
+Then require the bridge during Android verification:
+
+Windows:
+
+```powershell
+.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+```
+
+macOS/Linux:
+
+```bash
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+```
+
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.2-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+
+## Release Builds
+
+Application versions come only from root `gradle.properties`:
+
+```properties
+VERSION_CODE=1
+VERSION_NAME=0.1.0
+```
+
+Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts.
+
+The public workflow produces only these signed APKs and `SHA256SUMS`:
+
+- `OCDeck_<version>_arm64-v8a.apk`
+- `OCDeck_<version>_armeabi-v7a.apk`
+- `OCDeck_<version>_x86_64.apk`
+
+It does not produce a universal APK, AAB, or Play upload artifact. See the [release process](../release/github-actions.md) and [release checklist](../release/checklist.md).
+
+## Common Problems
+
+- A JDK mismatch can cause Gradle or Kotlin toolchain failures. Confirm `java -version` and Gradle use JDK 21.
+- A bridge build fails immediately if Go or NDK differs from `bridge-versions.properties`.
+- An absent bridge is permitted only for builds that do not set `-PrequireGoMobileBridge=true`; STCP remains unavailable in those builds.
+- A changed generated AAR under an unchanged bridge coordinate is rejected as an immutability violation.
+- Release signing failures must be fixed in local or GitHub Environment configuration. Never weaken certificate checks or print secrets to diagnose them.

@@ -1,0 +1,1101 @@
+diff --git a/client/visitor/visitor_manager.go b/client/visitor/visitor_manager.go
+index 72ed0e8..c62a6bf 100644
+--- a/client/visitor/visitor_manager.go
++++ b/client/visitor/visitor_manager.go
+@@ -15,6 +15,7 @@
+ package visitor
+ 
+ import (
++	"errors"
+ 	"context"
+ 	"fmt"
+ 	"net"
+@@ -31,6 +32,24 @@ import (
+ 	"github.com/fatedier/frp/pkg/vnet"
+ )
+ 
++const (
++	PhasePending  = "pending"
++	PhaseStarting = "starting"
++	PhaseReady    = "ready"
++	PhaseFailed   = "failed"
++	PhaseStopped  = "stopped"
++)
++
++var ErrManagerClosed = errors.New("visitor manager is closed")
++
++type RuntimeStatus struct {
++	Phase         string
++	ListenerBound bool
++	LastError     string
++}
++
++type RuntimeStatusReporter func(name string, status RuntimeStatus)
++
+ type Manager struct {
+ 	clientCfg *v1.ClientCommonConfig
+ 	cfgs      map[string]v1.VisitorConfigurer
+@@ -39,11 +58,13 @@ type Manager struct {
+ 
+ 	checkInterval           time.Duration
+ 	keepVisitorsRunningOnce sync.Once
++	statusReporter          RuntimeStatusReporter
+ 
+-	mu  sync.RWMutex
+-	ctx context.Context
++	mu     sync.RWMutex
++	ctx    context.Context
++	closed bool
+ 
+ 	stopCh chan struct{}
+ }
+@@ -53,6 +74,7 @@ func NewManager(
+ 	connectServer func() (*msg.Conn, error),
+ 	msgTransporter transport.MessageTransporter,
+ 	vnetController *vnet.Controller,
++	statusReporter RuntimeStatusReporter,
+ ) *Manager {
+ 	m := &Manager{
+ 		clientCfg:     clientCfg,
+@@ -61,6 +83,7 @@ func NewManager(
+ 		checkInterval: 10 * time.Second,
+ 		ctx:           ctx,
+ 		stopCh:        make(chan struct{}),
++		statusReporter: statusReporter,
+ 	}
+ 	m.helper = &visitorHelperImpl{
+ 		connectServerFn: connectServer,
+@@ -87,11 +110,15 @@ func (vm *Manager) keepVisitorsRunning() {
+ 		case <-ticker.C:
+ 			vm.mu.Lock()
++			if vm.closed {
++				vm.mu.Unlock()
++				return
++			}
+ 			for _, cfg := range vm.cfgs {
+ 				name := cfg.GetBaseConfig().Name
+ 				if _, exist := vm.visitors[name]; !exist {
+ 					xl.Infof("try to start visitor [%s]", name)
+-					_ = vm.startVisitor(cfg)
++					_ = vm.startVisitor(cfg)
+ 				}
+ 			}
+ 			vm.mu.Unlock()
+@@ -102,14 +129,23 @@ func (vm *Manager) keepVisitorsRunning() {
+ func (vm *Manager) Close() {
+ 	vm.mu.Lock()
+ 	defer vm.mu.Unlock()
++	if vm.closed {
++		return
++	}
++	vm.closed = true
+ 	for _, v := range vm.visitors {
+ 		v.Close()
+ 	}
++	for name := range vm.cfgs {
++		vm.reportStatus(name, RuntimeStatus{Phase: PhaseStopped})
++	}
++	vm.visitors = make(map[string]Visitor)
++	vm.cfgs = make(map[string]v1.VisitorConfigurer)
+ 	select {
+ 	case <-vm.stopCh:
+ 	default:
+ 		close(vm.stopCh)
+ 	}
+ }
+ 
+ // Hold lock before calling this function.
+ func (vm *Manager) startVisitor(cfg v1.VisitorConfigurer) (err error) {
+@@ -117,20 +153,36 @@ func (vm *Manager) startVisitor(cfg v1.VisitorConfigurer) (err error) {
+ 	xl := xlog.FromContextSafe(vm.ctx)
+ 	name := cfg.GetBaseConfig().Name
++	vm.reportStatus(name, RuntimeStatus{Phase: PhaseStarting})
+ 	visitor, err := NewVisitor(vm.ctx, cfg, vm.clientCfg, vm.helper)
+ 	if err != nil {
+ 		xl.Warnf("new visitor error: %v", err)
++		vm.reportStatus(name, RuntimeStatus{Phase: PhaseFailed, LastError: err.Error()})
+ 		return
+ 	}
+ 	err = visitor.Run()
+ 	if err != nil {
++		visitor.Close()
+ 		xl.Warnf("start error: %v", err)
++		vm.reportStatus(name, RuntimeStatus{Phase: PhaseFailed, LastError: err.Error()})
+ 	} else {
+ 		vm.visitors[name] = visitor
++		vm.reportStatus(name, RuntimeStatus{Phase: PhaseReady, ListenerBound: true})
+ 		xl.Infof("start visitor success")
+ 	}
+ 	return
+ }
+ 
+-func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) {
+-	if len(cfgs) > 0 {
+-		// Only start keepVisitorsRunning goroutine once and only when there is at least one visitor.
+-		vm.keepVisitorsRunningOnce.Do(func() {
+-			go vm.keepVisitorsRunning()
+-		})
+-	}
+-
++func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) error {
+ 	xl := xlog.FromContextSafe(vm.ctx)
+ 	cfgsMap := lo.KeyBy(cfgs, func(c v1.VisitorConfigurer) string {
+ 		return c.GetBaseConfig().Name
+@@ -138,6 +190,16 @@ func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) {
+ 	})
+ 	vm.mu.Lock()
+ 	defer vm.mu.Unlock()
++	if vm.closed {
++		return ErrManagerClosed
++	}
++	if len(cfgs) > 0 {
++		// Only start keepVisitorsRunning goroutine once and only when there is at least one visitor.
++		vm.keepVisitorsRunningOnce.Do(func() {
++			go vm.keepVisitorsRunning()
++		})
++	}
+ 
+ 	delNames := make([]string, 0)
+ 	for name, oldCfg := range vm.cfgs {
+@@ -155,6 +217,7 @@ func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) {
+ 		if del {
+ 			delNames = append(delNames, name)
+ 			delete(vm.cfgs, name)
++			vm.reportStatus(name, RuntimeStatus{Phase: PhaseStopped})
+ 			if visitor, ok := vm.visitors[name]; ok {
+ 				visitor.Close()
+ 			}
+@@ -167,6 +230,7 @@ func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) {
+ 		xl.Infof("visitor removed: %v", delNames)
+ 	}
+ 
++	var startErrors []error
+ 	addNames := make([]string, 0)
+ 	for _, cfg := range cfgs {
+ 		name := cfg.GetBaseConfig().Name
+@@ -174,13 +238,27 @@ func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) {
+ 			vm.cfgs[name] = cfg
+ 			addNames = append(addNames, name)
+-			_ = vm.startVisitor(cfg)
++			if err := vm.startVisitor(cfg); err != nil {
++				startErrors = append(startErrors, fmt.Errorf("visitor [%s]: %w", name, err))
++			}
+ 		}
+ 	}
+ 	if len(addNames) > 0 {
+ 		xl.Infof("visitor added: %v", addNames)
+ 	}
++	return errors.Join(startErrors...)
++}
++
++func (vm *Manager) reportStatus(name string, status RuntimeStatus) {
++	if vm.statusReporter != nil {
++		vm.statusReporter(name, status)
++	}
+ }
+ 
+ // TransferConn transfers a connection to a visitor.
+diff --git a/client/control.go b/client/control.go
+index e4d6116..c0a7b55 100644
+--- a/client/control.go
++++ b/client/control.go
+@@ -16,8 +16,11 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"net"
++	"sync"
+ 	"sync/atomic"
+ 	"time"
+@@ -33,6 +36,8 @@ import (
+ 	"github.com/fatedier/frp/pkg/vnet"
+ )
+ 
++var ErrControlClosed = errors.New("control is closed")
++
+ type SessionContext struct {
+@@ -64,6 +69,9 @@ type Control struct {
+ 	vm *visitor.Manager
+ 
+ 	doneCh chan struct{}
++	closed atomic.Bool
++
++	closeSessionOnce sync.Once
+@@ -78,7 +86,11 @@ type Control struct {
+ 	msgDispatcher *msg.Dispatcher
+ }
+ 
+-func NewControl(ctx context.Context, sessionCtx *SessionContext) (*Control, error) {
++func NewControl(
++	ctx context.Context,
++	sessionCtx *SessionContext,
++	visitorStatusReporter visitor.RuntimeStatusReporter,
++) (*Control, error) {
+@@ -94,18 +106,22 @@ func NewControl(ctx context.Context, sessionCtx *SessionContext) (*Control, error
+ 
+ 	ctl.pm = proxy.NewManager(ctl.ctx, sessionCtx.Common, sessionCtx.Auth.EncryptionKey(), ctl.msgTransporter, sessionCtx.VnetController)
+ 	ctl.vm = visitor.NewManager(ctl.ctx, sessionCtx.RunID, sessionCtx.Common,
+-		ctl.connectServer, ctl.msgTransporter, sessionCtx.VnetController)
++		ctl.connectServer, ctl.msgTransporter, sessionCtx.VnetController, visitorStatusReporter)
+ 	return ctl, nil
+ }
+ 
+-func (ctl *Control) Run(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) {
++func (ctl *Control) Run(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
++	if ctl.closed.Load() {
++		return ErrControlClosed
++	}
+ 	go ctl.worker()
+ 
+ 	// start all proxies
+ 	ctl.pm.UpdateAll(proxyCfgs)
+ 
+ 	// start all visitors
+-	ctl.vm.UpdateAll(visitorCfgs)
++	return ctl.vm.UpdateAll(visitorCfgs)
+ }
+@@ -191,9 +207,11 @@ func (ctl *Control) handlePong(m msg.Message) {
+ 
+ // closeSession closes the control connection.
+ func (ctl *Control) closeSession() {
+-	ctl.sessionCtx.Conn.Close()
+-	ctl.sessionCtx.Connector.Close()
++	ctl.closeSessionOnce.Do(func() {
++		ctl.sessionCtx.Conn.Close()
++		ctl.sessionCtx.Connector.Close()
++	})
+ }
+@@ -201,12 +219,15 @@ func (ctl *Control) Close() error {
+ }
+ 
+ func (ctl *Control) GracefulClose(d time.Duration) error {
++	ctl.closed.Store(true)
+ 	ctl.pm.Close()
+ 	ctl.vm.Close()
+ 
+ 	time.Sleep(d)
+ 
+ 	ctl.closeSession()
++	<-ctl.doneCh
+ 	return nil
+ }
+@@ -273,6 +294,7 @@ func (ctl *Control) worker() {
+ 	go ctl.msgDispatcher.Run()
+ 
+ 	<-ctl.msgDispatcher.Done()
++	ctl.closed.Store(true)
+ 	xl.Debugf("control message dispatcher exited")
+ 	ctl.closeSession()
+@@ -283,7 +305,13 @@ func (ctl *Control) worker() {
+ }
+ 
+ func (ctl *Control) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
+-	ctl.vm.UpdateAll(visitorCfgs)
++	if ctl.closed.Load() {
++		return ErrControlClosed
++	}
++	visitorErr := ctl.vm.UpdateAll(visitorCfgs)
+ 	ctl.pm.UpdateAll(proxyCfgs)
+-	return nil
++	return visitorErr
+ }
+diff --git a/client/service.go b/client/service.go
+index f5ccabd..83a5224 100644
+--- a/client/service.go
++++ b/client/service.go
+@@ -27,6 +27,7 @@ import (
+ 	"github.com/samber/lo"
+ 
+ 	"github.com/fatedier/frp/client/proxy"
++	"github.com/fatedier/frp/client/visitor"
+ 	"github.com/fatedier/frp/pkg/auth"
+ 	"github.com/fatedier/frp/pkg/config"
+ 	"github.com/fatedier/frp/pkg/config/source"
+@@ -124,6 +124,10 @@ type Service struct {
+ 	vnetController *vnet.Controller
+ 
+ 	cfgMu sync.RWMutex
++
++	runtimeInitMu sync.Mutex
++	runtime       *runtimeTracker
++
+ 	// reloadMu serializes reload transactions to keep reloadCommon and applied
+@@ -204,6 +208,7 @@ func NewService(options ServiceOptions) (*Service, error) {
+ 		visitorCfgs:      visitorCfgs,
+ 		clientSpec:       options.ClientSpec,
++		runtime:          newRuntimeTracker(visitorCfgs),
+ 		aggregator:       options.ConfigSourceAggregator,
+@@ -254,20 +259,25 @@ func (svr *Service) Run(ctx context.Context) error {
+ 		}()
+ 	}
+ 
++	svr.runtimeTracker().setPhase(SessionPhaseConnecting, "")
+ 	// first login to frps
+ 	svr.loopLoginUntilSuccess(10*time.Second, lo.FromPtr(svr.common.LoginFailExit))
+-	if svr.ctl == nil {
++	if svr.currentControl() == nil {
+ 		cancelCause := cancelErr{}
+ 		_ = errors.As(context.Cause(svr.ctx), &cancelCause)
++		runErr := fmt.Errorf("login to the server failed: %v. With loginFailExit enabled, no additional retries will be attempted", cancelCause.Err)
+ 		svr.stop()
+-		return fmt.Errorf("login to the server failed: %v. With loginFailExit enabled, no additional retries will be attempted", cancelCause.Err)
++		svr.runtimeTracker().setPhase(SessionPhaseFailed, runErr.Error())
++		return runErr
+ 	}
+ 
+ 	go svr.keepControllerWorking()
+ 
+ 	<-svr.ctx.Done()
++	svr.runtimeTracker().setPhase(SessionPhaseStopping, "")
+ 	svr.stop()
++	svr.runtimeTracker().setPhase(SessionPhaseClosed, "")
+ 	return nil
+ }
+ 
+ func (svr *Service) keepControllerWorking() {
+-	<-svr.ctl.Done()
++	ctl := svr.currentControl()
++	if ctl == nil {
++		return
++	}
++	<-ctl.Done()
++	if svr.ctx.Err() == nil && svr.detachClosedControl(ctl) {
++		svr.runtimeTracker().markControlDisconnected()
++	}
+@@ -281,10 +291,15 @@ func (svr *Service) keepControllerWorking() {
+ 		// loopLoginUntilSuccess is another layer of loop that will continuously attempt to
+ 		// login to the server until successful.
+ 		svr.loopLoginUntilSuccess(20*time.Second, false)
+-		if svr.ctl != nil {
+-			<-svr.ctl.Done()
++		ctl = svr.currentControl()
++		if ctl != nil {
++			<-ctl.Done()
++			if svr.ctx.Err() == nil && svr.detachClosedControl(ctl) {
++				svr.runtimeTracker().markControlDisconnected()
++			}
+ 			return false, errors.New("control is closed and try another loop")
+ 		}
+@@ -327,29 +342,48 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
+ 		xl.AddPrefix(xlog.LogPrefix{Name: "runID", Value: svr.runID})
+ 		xl.Infof("login to server success, get run id [%s]", svr.runID)
+ 
++		svr.reloadMu.Lock()
++		defer svr.reloadMu.Unlock()
++		if svr.ctx.Err() != nil {
++			sessionCtx.Conn.Close()
++			sessionCtx.Connector.Close()
++			return false, svr.ctx.Err()
++		}
++
+ 		svr.cfgMu.RLock()
+ 		proxyCfgs := svr.proxyCfgs
+ 		visitorCfgs := svr.visitorCfgs
+ 		svr.cfgMu.RUnlock()
+ 
+-		ctl, err := NewControl(svr.ctx, sessionCtx)
++		epoch := svr.runtimeTracker().nextControlEpoch()
++		ctl, err := NewControl(svr.ctx, sessionCtx, func(name string, status visitor.RuntimeStatus) {
++			svr.runtimeTracker().reportVisitor(epoch, name, status)
++		})
+ 		if err != nil {
+ 			sessionCtx.Conn.Close()
+ 			sessionCtx.Connector.Close()
+ 			xl.Errorf("new control error: %v", err)
+ 			return false, err
+ 		}
+ 		ctl.SetInWorkConnCallback(svr.handleWorkConnCb)
+ 
+-		ctl.Run(proxyCfgs, visitorCfgs)
+-		// close and replace previous control
+-		svr.ctlMu.Lock()
+-		if svr.ctl != nil {
+-			svr.ctl.Close()
++		oldControl := svr.takeControlLocked()
++		if oldControl != nil {
++			_ = oldControl.Close()
+ 		}
+-		svr.ctl = ctl
+-		svr.ctlMu.Unlock()
++		svr.setControlLocked(ctl)
++		svr.runtimeTracker().beginControl(epoch)
++		if err := ctl.Run(proxyCfgs, visitorCfgs); err != nil {
++			xl.Warnf("apply visitor configuration on control epoch %d: %v", epoch, err)
++		}
++		svr.runtimeTracker().markControlOpen(epoch)
+ 		return true, nil
+ 	}
+@@ -362,21 +396,34 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
+ }
+ 
+ func (svr *Service) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
++	svr.reloadMu.Lock()
++	defer svr.reloadMu.Unlock()
++	_, err := svr.updateAllConfigurerLocked(proxyCfgs, visitorCfgs)
++	return err
++}
++
++func (svr *Service) updateAllConfigurerLocked(
++	proxyCfgs []v1.ProxyConfigurer,
++	visitorCfgs []v1.VisitorConfigurer,
++) (uint64, error) {
+ 	svr.cfgMu.Lock()
++	oldVisitorCfgs := svr.visitorCfgs
+ 	svr.proxyCfgs = proxyCfgs
+ 	svr.visitorCfgs = visitorCfgs
+ 	svr.cfgMu.Unlock()
+ 
+-	svr.ctlMu.RLock()
+-	ctl := svr.ctl
+-	svr.ctlMu.RUnlock()
++	revision := svr.runtimeTracker().applyDesired(oldVisitorCfgs, visitorCfgs)
++	ctl := svr.currentControl()
+ 
+ 	if ctl != nil {
+-		return svr.ctl.UpdateAllConfigurer(proxyCfgs, visitorCfgs)
++		return revision, ctl.UpdateAllConfigurer(proxyCfgs, visitorCfgs)
+ 	}
+-	return nil
++	return revision, nil
+ }
+ 
+ func (svr *Service) UpdateConfigSource(
+@@ -384,6 +431,15 @@ func (svr *Service) UpdateConfigSource(
+ 	proxyCfgs []v1.ProxyConfigurer,
+ 	visitorCfgs []v1.VisitorConfigurer,
+ ) error {
++	_, err := svr.UpdateConfigSourceWithRevision(common, proxyCfgs, visitorCfgs)
++	return err
++}
++
++func (svr *Service) UpdateConfigSourceWithRevision(
++	common *v1.ClientCommonConfig,
++	proxyCfgs []v1.ProxyConfigurer,
++	visitorCfgs []v1.VisitorConfigurer,
++) (uint64, error) {
+ 	svr.reloadMu.Lock()
+ 	defer svr.reloadMu.Unlock()
+@@ -391,7 +447,7 @@ func (svr *Service) UpdateConfigSource(
+ 	cfgSource := svr.configSource
+ 	if cfgSource == nil {
+-		return fmt.Errorf("config source is not available")
++		return 0, fmt.Errorf("config source is not available")
+ 	}
+ 
+ 	if err := cfgSource.ReplaceAll(proxyCfgs, visitorCfgs); err != nil {
+-		return err
++		return 0, err
+ 	}
+@@ -401,11 +457,7 @@ func (svr *Service) UpdateConfigSource(
+ 	svr.reloadCommon = common
+ 	svr.cfgMu.Unlock()
+ 
+-	if err := svr.reloadConfigFromSourcesLocked(); err != nil {
+-		return err
+-	}
+-	return nil
++	return svr.reloadConfigFromSourcesWithRevisionLocked()
+ }
+@@ -413,7 +465,9 @@ func (svr *Service) Close() {
+ 
+ func (svr *Service) GracefulClose(d time.Duration) {
+ 	svr.gracefulShutdownDuration = d
+-	svr.cancel(nil)
++	if svr.cancel != nil {
++		svr.cancel(nil)
++	}
+ }
+ 
+ func (svr *Service) stop() {
+@@ -425,13 +479,15 @@ func (svr *Service) stop() {
+ 	svr.storeSource = nil
+ 	svr.reloadMu.Unlock()
+ 
+-	svr.ctlMu.Lock()
+-	defer svr.ctlMu.Unlock()
+-	if svr.ctl != nil {
+-		svr.ctl.GracefulClose(svr.gracefulShutdownDuration)
+-		svr.ctl = nil
++	ctl := svr.takeControlLocked()
++	if ctl != nil {
++		_ = ctl.GracefulClose(svr.gracefulShutdownDuration)
+ 	}
+@@ -485,7 +541,9 @@ func (svr *Service) reloadConfigFromSources() error {
+ 	svr.reloadMu.Lock()
+ 	defer svr.reloadMu.Unlock()
+-	return svr.reloadConfigFromSourcesLocked()
++	_, err := svr.reloadConfigFromSourcesWithRevisionLocked()
++	return err
+ }
+ 
+ func (svr *Service) reloadConfigFromSourcesLocked() error {
++	_, err := svr.reloadConfigFromSourcesWithRevisionLocked()
++	return err
++}
++
++func (svr *Service) reloadConfigFromSourcesWithRevisionLocked() (uint64, error) {
+ 	aggregator := svr.aggregator
+ 	if aggregator == nil {
+-		return errors.New("config aggregator is not initialized")
++		return 0, errors.New("config aggregator is not initialized")
+ 	}
+@@ -501,7 +561,7 @@ func (svr *Service) reloadConfigFromSourcesLocked() error {
+ 	proxies, visitors, err := aggregator.Load()
+ 	if err != nil {
+-		return fmt.Errorf("reload config from sources failed: %w", err)
++		return 0, fmt.Errorf("reload config from sources failed: %w", err)
+ 	}
+@@ -509,7 +569,6 @@ func (svr *Service) reloadConfigFromSourcesLocked() error {
+ 	visitors = config.CompleteVisitorConfigurers(visitors)
+ 
+ 	// Atomically replace the entire configuration
+-	if err := svr.UpdateAllConfigurer(proxies, visitors); err != nil {
+-		return err
+-	}
+-	return nil
++	return svr.updateAllConfigurerLocked(proxies, visitors)
+ }
+diff --git a/client/runtime_state.go b/client/runtime_state.go
+new file mode 100644
+index 0000000..29afc5d
+--- /dev/null
++++ b/client/runtime_state.go
+@@ -0,0 +1,267 @@
++// Copyright 2026 The frp Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package client
++
++import (
++	"context"
++	"fmt"
++	"reflect"
++	"sync"
++
++	"github.com/fatedier/frp/client/visitor"
++	v1 "github.com/fatedier/frp/pkg/config/v1"
++)
++
++const (
++	SessionPhaseConnecting   = "connecting"
++	SessionPhaseOpen         = "open"
++	SessionPhaseReconnecting = "reconnecting"
++	SessionPhaseStopping     = "stopping"
++	SessionPhaseClosed       = "closed"
++	SessionPhaseFailed       = "failed"
++)
++
++type VisitorRuntimeState struct {
++	DesiredRevision   uint64
++	Phase             string
++	ListenerBound     bool
++	BoundControlEpoch uint64
++	LastError         string
++}
++
++type RuntimeState struct {
++	ConfigRevision uint64
++	ControlEpoch   uint64
++	Phase          string
++	LastError      string
++	Visitors       map[string]VisitorRuntimeState
++}
++
++type runtimeTracker struct {
++	mu      sync.Mutex
++	changed chan struct{}
++	state   RuntimeState
++}
++
++func newRuntimeTracker(initialVisitors []v1.VisitorConfigurer) *runtimeTracker {
++	tracker := &runtimeTracker{
++		changed: make(chan struct{}),
++		state: RuntimeState{
++			Phase:    SessionPhaseConnecting,
++			Visitors: make(map[string]VisitorRuntimeState),
++		},
++	}
++	if len(initialVisitors) > 0 {
++		tracker.state.ConfigRevision = 1
++		for _, cfg := range initialVisitors {
++			tracker.state.Visitors[cfg.GetBaseConfig().Name] = VisitorRuntimeState{
++				DesiredRevision: 1,
++				Phase:           visitor.PhasePending,
++			}
++		}
++	}
++	return tracker
++}
++
++func (svr *Service) runtimeTracker() *runtimeTracker {
++	svr.runtimeInitMu.Lock()
++	defer svr.runtimeInitMu.Unlock()
++	if svr.runtime == nil {
++		svr.runtime = newRuntimeTracker(nil)
++	}
++	return svr.runtime
++}
++
++func (r *runtimeTracker) notifyLocked() {
++	close(r.changed)
++	r.changed = make(chan struct{})
++}
++
++func (r *runtimeTracker) setPhase(phase string, lastError string) {
++	r.mu.Lock()
++	r.state.Phase = phase
++	r.state.LastError = lastError
++	r.notifyLocked()
++	r.mu.Unlock()
++}
++
++func (r *runtimeTracker) applyDesired(
++	oldVisitors []v1.VisitorConfigurer,
++	newVisitors []v1.VisitorConfigurer,
++) uint64 {
++	oldByName := make(map[string]v1.VisitorConfigurer, len(oldVisitors))
++	for _, cfg := range oldVisitors {
++		oldByName[cfg.GetBaseConfig().Name] = cfg
++	}
++
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.state.ConfigRevision++
++	revision := r.state.ConfigRevision
++	next := make(map[string]VisitorRuntimeState, len(newVisitors))
++	for _, cfg := range newVisitors {
++		name := cfg.GetBaseConfig().Name
++		previousState, hasState := r.state.Visitors[name]
++		previousConfig, hasConfig := oldByName[name]
++		if hasState && hasConfig && reflect.DeepEqual(previousConfig, cfg) {
++			next[name] = previousState
++			continue
++		}
++		next[name] = VisitorRuntimeState{
++			DesiredRevision: revision,
++			Phase:           visitor.PhasePending,
++		}
++	}
++	r.state.Visitors = next
++	r.notifyLocked()
++	return revision
++}
++
++func (r *runtimeTracker) nextControlEpoch() uint64 {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	return r.state.ControlEpoch + 1
++}
++
++func (r *runtimeTracker) beginControl(epoch uint64) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if epoch <= r.state.ControlEpoch {
++		return
++	}
++	r.state.ControlEpoch = epoch
++	for name, state := range r.state.Visitors {
++		state.Phase = visitor.PhaseStarting
++		state.ListenerBound = false
++		state.BoundControlEpoch = 0
++		state.LastError = ""
++		r.state.Visitors[name] = state
++	}
++	r.notifyLocked()
++}
++
++func (r *runtimeTracker) markControlOpen(epoch uint64) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.state.ControlEpoch != epoch {
++		return
++	}
++	r.state.Phase = SessionPhaseOpen
++	r.state.LastError = ""
++	r.notifyLocked()
++}
++
++func (r *runtimeTracker) markControlDisconnected() {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.state.Phase = SessionPhaseReconnecting
++	for name, state := range r.state.Visitors {
++		state.Phase = visitor.PhasePending
++		state.ListenerBound = false
++		state.BoundControlEpoch = 0
++		r.state.Visitors[name] = state
++	}
++	r.notifyLocked()
++}
++
++func (r *runtimeTracker) reportVisitor(epoch uint64, name string, status visitor.RuntimeStatus) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.state.ControlEpoch != epoch {
++		return
++	}
++	state, ok := r.state.Visitors[name]
++	if !ok {
++		return
++	}
++	state.Phase = status.Phase
++	state.ListenerBound = status.ListenerBound
++	state.LastError = status.LastError
++	if status.ListenerBound {
++		state.BoundControlEpoch = epoch
++	} else {
++		state.BoundControlEpoch = 0
++	}
++	r.state.Visitors[name] = state
++	r.notifyLocked()
++}
++
++func (r *runtimeTracker) snapshot() RuntimeState {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	return cloneRuntimeState(r.state)
++}
++
++func (r *runtimeTracker) visitorState(name string) (VisitorRuntimeState, bool) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	state, ok := r.state.Visitors[name]
++	return state, ok
++}
++
++func (r *runtimeTracker) waitVisitorReady(
++	ctx context.Context,
++	name string,
++	desiredRevision uint64,
++) (VisitorRuntimeState, error) {
++	for {
++		r.mu.Lock()
++		state := cloneRuntimeState(r.state)
++		changed := r.changed
++		r.mu.Unlock()
++
++		visitorState, ok := state.Visitors[name]
++		if !ok {
++			return VisitorRuntimeState{}, fmt.Errorf("visitor %q is not desired", name)
++		}
++		if visitorState.DesiredRevision > desiredRevision {
++			return visitorState, fmt.Errorf(
++				"visitor %q revision %d was superseded by revision %d",
++				name,
++				desiredRevision,
++				visitorState.DesiredRevision,
++			)
++		}
++		if visitorState.DesiredRevision == desiredRevision &&
++			visitorState.Phase == visitor.PhaseReady &&
++			visitorState.ListenerBound &&
++			visitorState.BoundControlEpoch == state.ControlEpoch &&
++			state.Phase == SessionPhaseOpen &&
++			state.ControlEpoch > 0 {
++			return visitorState, nil
++		}
++		if visitorState.DesiredRevision == desiredRevision &&
++			visitorState.Phase == visitor.PhaseFailed {
++			return visitorState, fmt.Errorf(
++				"visitor %q revision %d failed: %s",
++				name,
++				desiredRevision,
++				visitorState.LastError,
++			)
++		}
++		if state.Phase == SessionPhaseFailed || state.Phase == SessionPhaseClosed {
++			return visitorState, fmt.Errorf("frpc session is %s: %s", state.Phase, state.LastError)
++		}
++
++		select {
++		case <-ctx.Done():
++			if visitorState.LastError != "" {
++				return visitorState, fmt.Errorf(
++					"wait visitor %q revision %d: %w; last error: %s",
++					name,
++					desiredRevision,
++					ctx.Err(),
++					visitorState.LastError,
++				)
++			}
++			return visitorState, fmt.Errorf(
++				"wait visitor %q revision %d: %w",
++				name,
++				desiredRevision,
++				ctx.Err(),
++			)
++		case <-changed:
++		}
++	}
++}
++
++func cloneRuntimeState(state RuntimeState) RuntimeState {
++	clone := state
++	clone.Visitors = make(map[string]VisitorRuntimeState, len(state.Visitors))
++	for name, visitorState := range state.Visitors {
++		clone.Visitors[name] = visitorState
++	}
++	return clone
++}
++
++func (svr *Service) RuntimeState() RuntimeState {
++	return svr.runtimeTracker().snapshot()
++}
++
++func (svr *Service) GetVisitorRuntimeState(name string) (VisitorRuntimeState, bool) {
++	return svr.runtimeTracker().visitorState(name)
++}
++
++func (svr *Service) WaitVisitorReady(
++	ctx context.Context,
++	name string,
++	desiredRevision uint64,
++) (VisitorRuntimeState, error) {
++	return svr.runtimeTracker().waitVisitorReady(ctx, name, desiredRevision)
++}
++
++func (svr *Service) currentControl() *Control {
++	svr.ctlMu.RLock()
++	defer svr.ctlMu.RUnlock()
++	return svr.ctl
++}
++
++func (svr *Service) takeControlLocked() *Control {
++	svr.ctlMu.Lock()
++	defer svr.ctlMu.Unlock()
++	ctl := svr.ctl
++	svr.ctl = nil
++	return ctl
++}
++
++func (svr *Service) setControlLocked(ctl *Control) {
++	svr.ctlMu.Lock()
++	svr.ctl = ctl
++	svr.ctlMu.Unlock()
++}
++
++func (svr *Service) detachClosedControl(expected *Control) bool {
++	svr.reloadMu.Lock()
++	defer svr.reloadMu.Unlock()
++	svr.ctlMu.Lock()
++	defer svr.ctlMu.Unlock()
++	if svr.ctl != expected {
++		return false
++	}
++	svr.ctl = nil
++	return true
++}
+diff --git a/client/runtime_state_test.go b/client/runtime_state_test.go
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/client/runtime_state_test.go
+@@ -0,0 +1,1 @@
++package client
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/fatedier/frp/client/visitor"
++	v1 "github.com/fatedier/frp/pkg/config/v1"
++)
++
++func TestWaitVisitorReadyRequiresOpenCurrentControl(t *testing.T) {
++	cfg := testRuntimeVisitorConfig("visitor", 4096)
++	tracker := newRuntimeTracker([]v1.VisitorConfigurer{cfg})
++	tracker.beginControl(1)
++	tracker.reportVisitor(1, "visitor", visitor.RuntimeStatus{
++		Phase:         visitor.PhaseReady,
++		ListenerBound: true,
++	})
++
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	if _, err := tracker.waitVisitorReady(ctx, "visitor", 1); err == nil {
++		t.Fatal("ready listener must not be published before the control is open")
++	}
++
++	tracker.markControlOpen(1)
++	state, err := tracker.waitVisitorReady(context.Background(), "visitor", 1)
++	if err != nil {
++		t.Fatalf("wait visitor ready: %v", err)
++	}
++	if !state.ListenerBound || state.BoundControlEpoch != 1 {
++		t.Fatalf("unexpected visitor state: %+v", state)
++	}
++}
++
++func TestWaitVisitorReadyRejectsStaleEpochAndSupersededRevision(t *testing.T) {
++	cfg := testRuntimeVisitorConfig("visitor", 4096)
++	tracker := newRuntimeTracker([]v1.VisitorConfigurer{cfg})
++	tracker.beginControl(1)
++	tracker.markControlOpen(1)
++	tracker.reportVisitor(1, "visitor", visitor.RuntimeStatus{
++		Phase:         visitor.PhaseReady,
++		ListenerBound: true,
++	})
++	tracker.markControlDisconnected()
++
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++	defer cancel()
++	if _, err := tracker.waitVisitorReady(ctx, "visitor", 1); err == nil {
++		t.Fatal("stale control epoch must not remain ready")
++	}
++
++	updated := testRuntimeVisitorConfig("visitor", 4097)
++	revision := tracker.applyDesired([]v1.VisitorConfigurer{cfg}, []v1.VisitorConfigurer{updated})
++	if revision <= 1 {
++		t.Fatalf("expected a newer revision, got %d", revision)
++	}
++	if _, err := tracker.waitVisitorReady(context.Background(), "visitor", 1); err == nil {
++		t.Fatal("superseded revision must fail")
++	}
++}
++
++func TestWaitVisitorReadyReturnsBindFailure(t *testing.T) {
++	cfg := testRuntimeVisitorConfig("visitor", 4096)
++	tracker := newRuntimeTracker([]v1.VisitorConfigurer{cfg})
++	tracker.beginControl(1)
++	tracker.markControlOpen(1)
++	tracker.reportVisitor(1, "visitor", visitor.RuntimeStatus{
++		Phase:     visitor.PhaseFailed,
++		LastError: "bind failed",
++	})
++
++	if _, err := tracker.waitVisitorReady(context.Background(), "visitor", 1); err == nil {
++		t.Fatal("visitor bind failure must be returned without waiting for timeout")
++	}
++}
++
++func testRuntimeVisitorConfig(name string, bindPort int) *v1.STCPVisitorConfig {
++	return &v1.STCPVisitorConfig{
++		VisitorBaseConfig: v1.VisitorBaseConfig{
++			Name:       name,
++			Type:       string(v1.VisitorTypeSTCP),
++			ServerName: "server",
++			SecretKey:  "test-secret",
++			BindAddr:   "127.0.0.1",
++			BindPort:   bindPort,
++		},
++	}
++}
+diff --git a/client/visitor/visitor_manager_runtime_test.go b/client/visitor/visitor_manager_runtime_test.go
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/client/visitor/visitor_manager_runtime_test.go
+@@ -0,0 +1,1 @@
++package visitor
++
++import (
++	"errors"
++	"net"
++	"strconv"
++	"testing"
++
++	v1 "github.com/fatedier/frp/pkg/config/v1"
++	"github.com/fatedier/frp/pkg/msg"
++)
++
++func TestManagerReportsReadyOnlyAfterListenerBindAndCloseReleasesPort(t *testing.T) {
++	port := reservePort(t)
++	var statuses []RuntimeStatus
++	manager := NewManager(
++		t.Context(),
++		"run-id",
++		&v1.ClientCommonConfig{},
++		func() (*msg.Conn, error) { return nil, errors.New("unused") },
++		nil,
++		nil,
++		func(_ string, status RuntimeStatus) { statuses = append(statuses, status) },
++	)
++
++	if err := manager.UpdateAll([]v1.VisitorConfigurer{testSTCPConfig("visitor", port)}); err != nil {
++		t.Fatalf("start visitor: %v", err)
++	}
++	last := statuses[len(statuses)-1]
++	if last.Phase != PhaseReady || !last.ListenerBound {
++		t.Fatalf("unexpected last status: %+v", last)
++	}
++	if listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err == nil {
++		listener.Close()
++		t.Fatal("visitor ready was reported without retaining the listener")
++	}
++
++	manager.Close()
++	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
++	if err != nil {
++		t.Fatalf("listener was not released by Close: %v", err)
++	}
++	listener.Close()
++	if err := manager.UpdateAll([]v1.VisitorConfigurer{testSTCPConfig("visitor", port)}); !errors.Is(err, ErrManagerClosed) {
++		t.Fatalf("closed manager accepted an update: %v", err)
++	}
++}
++
++func TestManagerReportsBindFailure(t *testing.T) {
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	port := listener.Addr().(*net.TCPAddr).Port
++
++	var statuses []RuntimeStatus
++	manager := NewManager(
++		t.Context(),
++		"run-id",
++		&v1.ClientCommonConfig{},
++		func() (*msg.Conn, error) { return nil, errors.New("unused") },
++		nil,
++		nil,
++		func(_ string, status RuntimeStatus) { statuses = append(statuses, status) },
++	)
++	defer manager.Close()
++
++	if err := manager.UpdateAll([]v1.VisitorConfigurer{testSTCPConfig("visitor", port)}); err == nil {
++		t.Fatal("expected bind failure")
++	}
++	last := statuses[len(statuses)-1]
++	if last.Phase != PhaseFailed || last.ListenerBound || last.LastError == "" {
++		t.Fatalf("unexpected failure status: %+v", last)
++	}
++}
++
++func reservePort(t *testing.T) int {
++	t.Helper()
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	port := listener.Addr().(*net.TCPAddr).Port
++	listener.Close()
++	return port
++}
++
++func testSTCPConfig(name string, bindPort int) *v1.STCPVisitorConfig {
++	return &v1.STCPVisitorConfig{
++		VisitorBaseConfig: v1.VisitorBaseConfig{
++			Name:       name,
++			Type:       string(v1.VisitorTypeSTCP),
++			ServerName: "server",
++			SecretKey:  "test-secret",
++			BindAddr:   "127.0.0.1",
++			BindPort:   bindPort,
++		},
++	}
++}

@@ -1,0 +1,11 @@
+Compiled from "Frpcstcpvisitor.java"
+public abstract class io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor {
+  public static void touch();
+  public static native java.lang.String ensureVisitor(java.lang.String, java.lang.String) throws java.lang.Exception;
+  public static native java.lang.String getState(java.lang.String) throws java.lang.Exception;
+  public static native java.lang.String startSession(java.lang.String) throws java.lang.Exception;
+  public static native java.lang.String stopSession(java.lang.String, long) throws java.lang.Exception;
+  public static native void stopVisitor(java.lang.String, java.lang.String) throws java.lang.Exception;
+  public static native java.lang.String waitVisitorReady(java.lang.String, java.lang.String, long, long) throws java.lang.Exception;
+  static {};
+}
