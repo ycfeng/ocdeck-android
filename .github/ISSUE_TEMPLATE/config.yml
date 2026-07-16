@@ -6,3 +6,6 @@ contact_links:
   - name: Security policy / 安全政策
     url: https://github.com/ycfeng/ocdeck-android/blob/main/SECURITY.md
     about: Read the private vulnerability reporting policy. Do not disclose vulnerabilities publicly. / 查看私密漏洞报告政策，不得公开披露漏洞。
+  - name: Private Code of Conduct report / 私密行为准则投诉
+    url: https://github.com/ycfeng/ocdeck-android/security/advisories/new
+    about: Submit a private conduct complaint with a title starting with [Code of Conduct]. Never disclose complaint details publicly. / 私密提交行为投诉，标题以 [Code of Conduct] 开头；不得公开披露投诉细节。

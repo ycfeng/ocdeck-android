@@ -6,9 +6,9 @@ Thank you for your interest in OC Deck, an independent community-maintained nati
 
 ## External Contribution Status
 
-External code and documentation contributions must not be opened or accepted until the project configures and publishes a dedicated private Code of Conduct enforcement contact. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). The security reporting channel is only for vulnerabilities and is not a conduct complaint channel.
+External code and documentation contributions are welcome. By participating, contributors agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Maintainers review contributions on their merits and may request changes or decline work that does not fit the project's scope, quality, security, or maintenance requirements.
 
-This status does not prevent users from filing non-sensitive support issues or privately reporting security vulnerabilities through the routes below.
+Opening a pull request does not guarantee acceptance. Search existing issues first and consider opening a feature request before investing in a large change.
 
 ## Scope and Design References
 
@@ -26,7 +26,7 @@ Keep changes focused on the native Android client. Do not mechanically copy desk
 - Feature requests: use the [feature request form](https://github.com/ycfeng/ocdeck-android/issues/new?template=02-feature-request.yml).
 - Questions: use the [question form](https://github.com/ycfeng/ocdeck-android/issues/new?template=03-question.yml).
 - Security vulnerabilities: follow [SECURITY.md](SECURITY.md) and use [GitHub Private Vulnerability Reporting](https://github.com/ycfeng/ocdeck-android/security/advisories/new). Never put vulnerability details in a public issue.
-- Conduct complaints: do not post complaint details publicly and do not use Private Vulnerability Reporting. The dedicated private conduct channel has not yet been configured, so external contributions remain blocked.
+- Conduct complaints: follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and use [GitHub Private Vulnerability Reporting](https://github.com/ycfeng/ocdeck-android/security/advisories/new) as the project's shared private intake. Start the report title with `[Code of Conduct]` so it can be routed separately from security reports. Never post complaint details publicly.
 
 Search existing issues before opening a new one. Keep reports minimal and remove private project data and credentials.
 

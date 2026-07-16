@@ -6,18 +6,18 @@
 
 OC Deck is pre-1.0. Security fixes are expected to target the latest source and, when releases exist, the latest published release. Older builds may not receive fixes. This is a project policy, not a response-time or support guarantee.
 
-## Private Reporting Status
+## Shared Private Reporting
 
 Report suspected OC Deck vulnerabilities through [GitHub Private Vulnerability Reporting](https://github.com/ycfeng/ocdeck-android/security/advisories/new).
 
-Publishing this URL in the repository does not enable the feature. Repository administrators must actually enable Private Vulnerability Reporting under the repository security settings and verify that the advisory form is accessible before relying on it for public distribution or external contribution intake.
+This repository also uses the private advisory inbox as the private intake for Code of Conduct complaints. Security reports must follow this policy; conduct complaints must follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and start the report title with `[Code of Conduct]` so they can be routed separately. Repository administrators must keep Private Vulnerability Reporting enabled and verify that the advisory form remains accessible.
 
 - Do not put vulnerability details, exploit steps, credentials, private keys, tokens, cookies, private server addresses, project content, complete responses, or unredacted logs in a public issue.
 - If the private advisory form is unavailable, do not move the report into a public issue. A public issue may only state that private reporting appears unavailable, without vulnerability or reproduction details.
 - If a secret may already be exposed, rotate or revoke it immediately. Do not wait for project triage.
-- This channel is for security vulnerabilities. It is not the Code of Conduct complaint channel described in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- Do not combine an unrelated security vulnerability and conduct complaint in one report. Submit them separately so each can be handled under the correct policy.
 
-## What to Include Privately
+## What to Include in a Security Report
 
 - Affected OC Deck version or commit
 - Android version and device ABI

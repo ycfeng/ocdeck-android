@@ -4,17 +4,16 @@
 
 This English document is canonical. The Chinese document is a convenience translation.
 
-Repository files cannot enable or prove GitHub server-side settings. Before opening external contribution intake or publishing a release, an administrator must verify the following against the canonical repository, <https://github.com/ycfeng/ocdeck-android>.
+Repository files cannot enable or prove GitHub server-side settings. Administrators must verify the following against the canonical repository, <https://github.com/ycfeng/ocdeck-android>, and keep the settings valid while accepting external contributions or publishing releases.
 
-## Current External Blocker
+## External Contribution Intake
 
-External pull requests and documentation contributions remain blocked until a dedicated private Code of Conduct enforcement contact is configured, tested, and published in `CODE_OF_CONDUCT.md`. GitHub Private Vulnerability Reporting is only for security vulnerabilities and is not a conduct channel.
+External pull requests and documentation contributions are accepted. GitHub Private Vulnerability Reporting is the repository's shared private intake for security reports and Code of Conduct complaints. Administrators must keep it enabled, verify access from an account without repository administration privileges, and ensure conduct reports are handled under `CODE_OF_CONDUCT.md` rather than the security disclosure process.
 
 ## Required Repository Features
 
 - Set `main` as the default branch and enable Issues.
-- Enable GitHub Private Vulnerability Reporting and verify <https://github.com/ycfeng/ocdeck-android/security/advisories/new> from an account without repository administration privileges.
-- Configure the dedicated private conduct-reporting channel, then update both Code of Conduct files and remove the external-contribution blocker consistently.
+- Enable GitHub Private Vulnerability Reporting and verify <https://github.com/ycfeng/ocdeck-android/security/advisories/new> from an account without repository administration privileges for both security reports and private Code of Conduct complaints.
 - Create the labels used by issue triage and `.github/release.yml`: `bug`, `enhancement`, `documentation`, `dependencies`, `ci`, `needs-triage`, `release-notes/breaking`, `release-notes/security`, `release-notes/feature`, `release-notes/fix`, `release-notes/compatibility`, `release-notes/migration`, `release-notes/maintenance`, and `release-notes/skip`.
 - Configure a `release` Environment with required reviewers, signing secrets, and the fixed release certificate SHA-256 variable described in the release guide.
 - Enable immutable releases where available.

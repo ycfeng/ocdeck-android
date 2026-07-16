@@ -89,6 +89,8 @@ Screenshots are intentionally not included in the `0.1.0` project facade. Add on
 
 ## Support and Contributing
 
+External code and documentation contributions are welcome. All participants must follow the [Code of Conduct](CODE_OF_CONDUCT.md). Private conduct complaints use the same GitHub private advisory intake as security reports and must be clearly identified as Code of Conduct reports; never post complaint details publicly.
+
 - Support scope and diagnostic guidance: [SUPPORT.md](SUPPORT.md)
 - Security reports: [SECURITY.md](SECURITY.md)
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)

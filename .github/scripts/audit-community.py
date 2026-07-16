@@ -200,6 +200,8 @@ def audit_issue_forms() -> int:
     config_text = read_text(".github/ISSUE_TEMPLATE/config.yml")
     require(f"{CANONICAL_REPOSITORY}/blob/main/SUPPORT.md" in config_text, "issue chooser lacks support policy")
     require(f"{CANONICAL_REPOSITORY}/blob/main/SECURITY.md" in config_text, "issue chooser lacks security policy")
+    require(PVR_URL in config_text, "issue chooser lacks private conduct-report route")
+    require("Private Code of Conduct report" in config_text, "issue chooser does not identify the private conduct route")
     return len(form_paths)
 
 
@@ -347,10 +349,23 @@ def audit_governance() -> None:
     security = read_text("SECURITY.md")
     support = read_text("SUPPORT.md")
     conduct = read_text("CODE_OF_CONDUCT.md")
+    conduct_zh = read_text("CODE_OF_CONDUCT.zh-CN.md")
+    contributing = read_text("CONTRIBUTING.md")
+    contributing_zh = read_text("CONTRIBUTING.zh-CN.md")
+    readme = read_text("README.md")
+    readme_zh = read_text("README.zh-CN.md")
     require(PVR_URL in security, "SECURITY.md lacks canonical PVR URL")
     require(f"{CANONICAL_REPOSITORY}/issues" in support, "SUPPORT.md lacks canonical issue tracker")
-    require("External contributions are blocked" in conduct, "conduct-contact blocker is not explicit")
-    require("must not be presented or used" in conduct, "PVR must not be used as conduct channel")
+    require("External contributions are welcome" in conduct, "Code of Conduct does not open external contributions")
+    require("External code and documentation contributions are welcome" in contributing, "contribution guide does not open external contributions")
+    require("External code and documentation contributions are welcome" in readme, "README does not open external contributions")
+    require("欢迎外部贡献" in conduct_zh, "Chinese Code of Conduct does not open external contributions")
+    require("欢迎外部代码和文档贡献" in contributing_zh, "Chinese contribution guide does not open external contributions")
+    require("欢迎外部代码和文档贡献" in readme_zh, "Chinese README does not open external contributions")
+    require(PVR_URL in conduct, "Code of Conduct lacks the private reporting route")
+    require(PVR_URL in conduct_zh, "Chinese Code of Conduct lacks the private reporting route")
+    require("[Code of Conduct]" in conduct, "Code of Conduct lacks private-report routing guidance")
+    require("[Code of Conduct]" in conduct_zh, "Chinese Code of Conduct lacks private-report routing guidance")
 
 
 def audit_documentation() -> None:
@@ -444,7 +459,7 @@ def main() -> int:
         f"{issue_forms} issue forms, {document_pairs} bilingual document pairs, "
         f"{relative_links} relative Markdown links, release notes v{version_name}."
     )
-    print("External contribution intake remains blocked until a private conduct channel is published.")
+    print("External contribution intake is open; security and conduct reports share the private advisory intake.")
     return 0
 
 

@@ -1,6 +1,6 @@
 # Pull Request / 合并请求
 
-> External pull requests must not be accepted until the dedicated private Code of Conduct enforcement contact described in `CODE_OF_CONDUCT.md` is configured and published. / 在 `CODE_OF_CONDUCT.md` 所述的专用私密行为准则执法联系方式完成配置并公布前，不得接受外部 pull request。
+> External pull requests are welcome and are governed by `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`. / 欢迎外部 pull request；所有贡献均须遵守 `CONTRIBUTING.md` 与 `CODE_OF_CONDUCT.md`。
 
 ## Summary / 摘要
 

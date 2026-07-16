@@ -8,9 +8,9 @@
 
 ## 外部贡献状态
 
-在项目配置并公布专用的私密行为准则执法联系方式之前，不得开放或接受外部代码和文档贡献。详情见 [CODE_OF_CONDUCT.zh-CN.md](CODE_OF_CONDUCT.zh-CN.md)。安全报告渠道仅用于漏洞，不是行为投诉渠道。
+欢迎外部代码和文档贡献。参与贡献即表示贡献者同意遵守 [CODE_OF_CONDUCT.zh-CN.md](CODE_OF_CONDUCT.zh-CN.md)。维护者会根据贡献本身进行审查，并可能要求修改或拒绝不符合项目范围、质量、安全或维护要求的改动。
 
-此状态不妨碍用户提交不含敏感信息的支持 issue，也不妨碍通过下述渠道私密报告安全漏洞。
+提交 pull request 不保证一定会被接受。请先搜索已有 issue；准备投入大型改动前，建议先提交功能建议讨论方向。
 
 ## 范围与设计参考
 
@@ -28,7 +28,7 @@
 - 功能建议：使用[功能建议表单](https://github.com/ycfeng/ocdeck-android/issues/new?template=02-feature-request.yml)。
 - 问题咨询：使用[问题咨询表单](https://github.com/ycfeng/ocdeck-android/issues/new?template=03-question.yml)。
 - 安全漏洞：遵循 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)，并使用 [GitHub 私密漏洞报告](https://github.com/ycfeng/ocdeck-android/security/advisories/new)。不得在公开 issue 中填写漏洞细节。
-- 行为投诉：不得公开发布投诉细节，也不得使用私密漏洞报告。专用私密行为投诉渠道尚未配置，因此外部贡献仍处于阻塞状态。
+- 行为投诉：遵循 [CODE_OF_CONDUCT.zh-CN.md](CODE_OF_CONDUCT.zh-CN.md)，并使用 [GitHub 私密漏洞报告](https://github.com/ycfeng/ocdeck-android/security/advisories/new)作为项目共用的私密入口。报告标题应以 `[Code of Conduct]` 开头，以便与安全报告分开处理。不得公开发布投诉细节。
 
 提交新 issue 前请先搜索已有 issue。报告应保持最小化，并移除非公开项目数据和凭据。
 

@@ -36,15 +36,15 @@ Community leaders have the right and responsibility to remove, edit, or reject c
 
 This Code of Conduct applies within all community spaces, and also applies when an individual is officially representing the community in public spaces. Examples of representing our community include using an official email address, posting via an official social media account, or acting as an appointed representative at an online or offline event.
 
-## Private Enforcement Contact Status
+## Private Enforcement Contact
 
-> **External contributions are blocked.** The project has not configured a dedicated private Code of Conduct enforcement contact. Maintainers must not open or accept external contributions until a private conduct reporting method is configured, tested, and published in this document.
+External contributions are welcome. Private Code of Conduct complaints may be submitted through [GitHub Private Vulnerability Reporting](https://github.com/ycfeng/ocdeck-android/security/advisories/new). This repository intentionally uses the private advisory inbox as a shared private intake for security and conduct reports. Start the report title with `[Code of Conduct]` so maintainers can route it separately from security reports.
 
-Do not publish conduct complaint details in issues, pull requests, discussions, commits, or other public project spaces. GitHub Private Vulnerability Reporting is reserved for security vulnerabilities and must not be presented or used as the project's conduct complaint channel. No email address or other private contact should be inferred from usernames, package names, commit metadata, or security reporting links.
+Do not publish conduct complaint details in issues, pull requests, discussions, commits, or other public project spaces. If the private advisory form is unavailable, a public issue may only state that the private reporting route appears unavailable; it must not include complaint details. Security reports remain governed by [SECURITY.md](SECURITY.md).
 
 ## Enforcement
 
-Once the dedicated private conduct channel is configured and published, instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement through that channel. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported privately to the community leaders responsible for enforcement through the route above. All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 

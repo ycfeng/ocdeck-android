@@ -8,18 +8,18 @@
 
 OC Deck 尚未达到 1.0 版本。安全修复预计以最新源码为目标；存在发布版本时，则以最新发布版本为目标。旧构建版本可能不会获得修复。这是项目政策，并非对响应时间或支持的保证。
 
-## 私密报告渠道状态
+## 共用私密报告入口
 
 请通过 [GitHub 私密漏洞报告](https://github.com/ycfeng/ocdeck-android/security/advisories/new)报告疑似 OC Deck 漏洞。
 
-仅在仓库中发布此 URL 并不会启用该功能。仓库管理员必须在仓库安全设置中实际启用 Private Vulnerability Reporting，并在依赖该渠道进行公开分发或接收外部贡献前验证 advisory 表单确实可访问。
+本仓库也将 private advisory 收件箱作为行为准则投诉的私密入口。安全报告必须遵循本政策；行为投诉必须遵循 [CODE_OF_CONDUCT.zh-CN.md](CODE_OF_CONDUCT.zh-CN.md)，并在报告标题开头添加 `[Code of Conduct]`，以便分开处理。仓库管理员必须持续启用 Private Vulnerability Reporting，并验证 advisory 表单保持可访问。
 
 - 请勿在公开 issue 中填写漏洞细节、利用步骤、凭据、私钥、token、cookie、非公开服务器地址、项目内容、完整响应或未脱敏日志。
 - 如果私密 advisory 表单不可用，不得改为在公开 issue 中提交报告。公开 issue 最多只能说明私密报告入口疑似不可用，不得包含漏洞或复现细节。
 - 如果秘密信息可能已经泄露，请立即轮换或撤销该秘密信息。不要等待项目分诊处理。
-- 此渠道仅用于安全漏洞，不是 [CODE_OF_CONDUCT.zh-CN.md](CODE_OF_CONDUCT.zh-CN.md) 所述的行为投诉渠道。
+- 不要把互不相关的安全漏洞和行为投诉合并到同一份报告中。请分别提交，以便依据对应政策处理。
 
-## 私下报告应包含的内容
+## 安全报告应包含的内容
 
 - 受影响的 OC Deck 版本或 commit
 - Android 版本和设备 ABI

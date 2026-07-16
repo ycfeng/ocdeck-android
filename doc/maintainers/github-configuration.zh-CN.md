@@ -4,17 +4,16 @@
 
 本中文译本仅为阅读便利；如与英文原文存在歧义，以英文原文为准。
 
-仓库文件无法启用或证明 GitHub 服务端设置。开放外部贡献入口或发布 Release 前，管理员必须在 canonical 仓库 <https://github.com/ycfeng/ocdeck-android> 中逐项验证以下配置。
+仓库文件无法启用或证明 GitHub 服务端设置。管理员必须在 canonical 仓库 <https://github.com/ycfeng/ocdeck-android> 中逐项验证以下配置，并在接受外部贡献或发布 Release 期间持续保证配置有效。
 
-## 当前外部阻塞
+## 外部贡献入口
 
-在专用私密行为准则执法联系方式完成配置、测试并公布到 `CODE_OF_CONDUCT.md` 前，外部 pull request 和文档贡献仍处于阻塞状态。GitHub 私密漏洞报告只用于安全漏洞，不是行为投诉渠道。
+接受外部 pull request 和文档贡献。GitHub Private Vulnerability Reporting 是本仓库安全报告与行为准则投诉共用的私密入口。管理员必须持续启用该功能，使用无仓库管理权限的账号验证访问，并确保行为投诉按照 `CODE_OF_CONDUCT.md` 处理，而不是进入安全漏洞披露流程。
 
 ## 必需仓库功能
 
 - 将 `main` 设为默认分支并启用 Issues。
-- 启用 GitHub Private Vulnerability Reporting，并使用无仓库管理权限的账号验证 <https://github.com/ycfeng/ocdeck-android/security/advisories/new>。
-- 配置专用私密行为投诉渠道，然后同步更新两份行为准则并移除外部贡献阻塞说明。
+- 启用 GitHub Private Vulnerability Reporting，并使用无仓库管理权限的账号验证 <https://github.com/ycfeng/ocdeck-android/security/advisories/new> 可同时接收安全报告和私密行为准则投诉。
 - 创建 issue 分流和 `.github/release.yml` 使用的标签：`bug`、`enhancement`、`documentation`、`dependencies`、`ci`、`needs-triage`、`release-notes/breaking`、`release-notes/security`、`release-notes/feature`、`release-notes/fix`、`release-notes/compatibility`、`release-notes/migration`、`release-notes/maintenance`、`release-notes/skip`。
 - 配置 `release` Environment，加入 required reviewers、签名 secrets 和发布文档要求的固定证书 SHA-256 变量。
 - 在平台支持时启用 immutable releases。

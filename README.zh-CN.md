@@ -89,6 +89,8 @@ macOS/Linux：
 
 ## 支持与贡献
 
+欢迎外部代码和文档贡献。所有参与者都必须遵守[行为准则](CODE_OF_CONDUCT.zh-CN.md)。私密行为投诉与安全报告共用 GitHub private advisory 入口，提交时必须明确标识为行为准则报告；不得公开发布投诉细节。
+
 - 支持范围与诊断信息：[SUPPORT.zh-CN.md](SUPPORT.zh-CN.md)
 - 安全问题报告：[SECURITY.zh-CN.md](SECURITY.zh-CN.md)
 - 贡献指南：[CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)
