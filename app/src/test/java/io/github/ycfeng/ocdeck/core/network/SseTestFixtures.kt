@@ -4,6 +4,7 @@ import io.github.ycfeng.ocdeck.core.security.Redactor
 import io.github.ycfeng.ocdeck.core.store.InMemoryOpenCodeStore
 import io.github.ycfeng.ocdeck.core.store.OpenCodeEventReducer
 import io.github.ycfeng.ocdeck.core.store.ProjectEventReduction
+import io.github.ycfeng.ocdeck.core.store.SessionListWindowState
 import io.github.ycfeng.ocdeck.core.store.SseFailureReason
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.data.server.ServerConfig
@@ -93,15 +94,18 @@ internal class ScriptedProjectSnapshotLoader(
 ) : ProjectSnapshotLoader {
     var calls: Int = 0
     val activeSessionRequests = mutableListOf<ActiveSessionMessagesRequest?>()
+    val sessionWindowRequests = mutableListOf<SessionListWindowState>()
 
     override suspend fun loadProjectSnapshot(
         serverId: String,
         directory: String,
         workspace: String?,
+        sessionWindow: SessionListWindowState,
         activeSessionMessages: ActiveSessionMessagesRequest?,
     ): Result<LoadedProjectSnapshot> {
         calls += 1
         activeSessionRequests += activeSessionMessages
+        sessionWindowRequests += sessionWindow
         return handler(serverId, directory, workspace, calls)
     }
 }

@@ -31,7 +31,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -78,6 +77,8 @@ internal fun SessionListDrawerContent(
     onOpenSettings: () -> Unit,
     onNewSession: () -> Unit,
     onOpenSession: (String) -> Unit,
+    onLoadMoreSessions: () -> Unit,
+    onRetrySessionListWindow: () -> Unit,
     onArchiveSession: (OpenCodeSession) -> Unit,
     onEditProject: () -> Unit,
     onClearNotifications: () -> Unit,
@@ -87,9 +88,8 @@ internal fun SessionListDrawerContent(
         .firstOrNull { it.normalizedDirectory == state.normalizedDirectory }
         ?.displayName
         ?: state.normalizedDirectory.displayName()
-    var visibleSessionLimit by remember(state.normalizedDirectory) { mutableIntStateOf(SessionListBatchSize) }
     val rootSessions = remember(state.sessions) { state.sessions.filter { it.parentId.isNullOrBlank() } }
-    val visibleRootSessions = rootSessions.take(visibleSessionLimit)
+    val visibleRootSessions = rootSessions.take(state.sessionListWindow.visibleRootLimit)
     val visibleSessionRows = remember(state.sessions, visibleRootSessions, activeSessionId) {
         drawerSessionRows(
             sessions = state.sessions,
@@ -197,14 +197,14 @@ internal fun SessionListDrawerContent(
                         }
                     }
                 }
-                if (rootSessions.size > visibleSessionLimit) {
-                    item(key = "load-more-sessions") {
-                        SessionListLoadMoreButton(
-                            onClick = {
-                                visibleSessionLimit = (visibleSessionLimit + SessionListBatchSize).coerceAtMost(rootSessions.size)
-                            },
-                        )
-                    }
+                item(key = "session-list-window-footer") {
+                    SessionListWindowFooter(
+                        window = state.sessionListWindow,
+                        hasMoreLoadedRoots = rootSessions.size > state.sessionListWindow.visibleRootLimit,
+                        isProjectLoading = state.isLoading,
+                        onLoadMore = onLoadMoreSessions,
+                        onRetry = onRetrySessionListWindow,
+                    )
                 }
             }
         }

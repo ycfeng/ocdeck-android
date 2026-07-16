@@ -53,6 +53,7 @@ class OpenCodeApiFactory(
         .addInterceptor(RetrofitInboundResponsePolicyInterceptor())
         .addInterceptor(AuthInterceptor(server.username, password))
         .addInterceptor(RedactingInterceptor(redactor))
+        .addNetworkInterceptor(EncodedResponseLimitInterceptor())
         .apply {
             timeouts.callTimeoutMillis?.let { callTimeout(it, TimeUnit.MILLISECONDS) }
         }

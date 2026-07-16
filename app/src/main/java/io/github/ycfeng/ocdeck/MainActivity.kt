@@ -59,7 +59,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        (application as OpenCodeApplication).container.appConnectionCoordinator.onForeground()
+        val container = (application as OpenCodeApplication).container
+        container.sessionVisibilityRegistry.onAppForeground()
+        container.appConnectionCoordinator.onForeground()
+    }
+
+    override fun onStop() {
+        (application as OpenCodeApplication).container.sessionVisibilityRegistry.onAppBackground()
+        super.onStop()
     }
 }
 

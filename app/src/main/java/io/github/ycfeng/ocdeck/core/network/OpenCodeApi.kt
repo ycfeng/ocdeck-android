@@ -72,9 +72,17 @@ interface OpenCodeApi {
     suspend fun getSessions(
         @Query("directory") directory: String,
         @Query("workspace") workspace: String? = null,
-        @Query("roots") roots: Boolean? = true,
-        @Query("limit") limit: Int? = 100,
+        @Query("roots") roots: Boolean,
+        @Query("limit") limit: Int,
     ): List<SessionDto>
+
+    @RetrofitInboundResponse(mode = RetrofitInboundResponseMode.BOUNDED)
+    @GET("session/{sessionID}")
+    suspend fun getSession(
+        @Path("sessionID") sessionId: String,
+        @Query("directory") directory: String,
+        @Query("workspace") workspace: String? = null,
+    ): SessionDto
 
     @RetrofitInboundResponse(mode = RetrofitInboundResponseMode.BOUNDED)
     @GET("session/status")

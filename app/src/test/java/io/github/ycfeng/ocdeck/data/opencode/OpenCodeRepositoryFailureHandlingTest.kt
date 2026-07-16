@@ -1,6 +1,6 @@
 package io.github.ycfeng.ocdeck.data.opencode
 
-import io.github.ycfeng.ocdeck.core.network.MaxFileContentResponseBytes
+import io.github.ycfeng.ocdeck.core.network.MaxFileContentDecodedResponseBytes
 import io.github.ycfeng.ocdeck.core.network.OpenCodeApi
 import io.github.ycfeng.ocdeck.core.network.OpenCodeFailure
 import io.github.ycfeng.ocdeck.core.network.OpenCodeRequestException
@@ -9,6 +9,7 @@ import io.github.ycfeng.ocdeck.core.network.ProjectDto
 import io.github.ycfeng.ocdeck.core.network.RetrofitInboundResponseTooLargeException
 import io.github.ycfeng.ocdeck.core.network.SessionStatusDto
 import io.github.ycfeng.ocdeck.core.security.Redactor
+import io.github.ycfeng.ocdeck.core.store.SessionListWindowState
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFilePathNormalizer
 import io.github.ycfeng.ocdeck.data.server.OpenCodeServerRepository
@@ -46,7 +47,7 @@ class OpenCodeRepositoryFailureHandlingTest {
             fakeApi(currentProject = { throw httpException(404) }),
         )
 
-        val snapshot = repository.loadProject(SERVER_ID, DIRECTORY).getOrThrow()
+        val snapshot = repository.loadProject(SERVER_ID, DIRECTORY, SessionListWindowState()).getOrThrow()
 
         assertNull(snapshot.project)
     }
@@ -58,7 +59,7 @@ class OpenCodeRepositoryFailureHandlingTest {
                 fakeApi(currentProject = { throw httpException(statusCode) }),
             )
 
-            val failure = repository.loadProject(SERVER_ID, DIRECTORY).exceptionOrNull()
+            val failure = repository.loadProject(SERVER_ID, DIRECTORY, SessionListWindowState()).exceptionOrNull()
 
             assertTrue(failure is OpenCodeRequestException)
             assertEquals(OpenCodeFailure.HttpStatus(statusCode), (failure as OpenCodeRequestException).failure)
@@ -77,7 +78,7 @@ class OpenCodeRepositoryFailureHandlingTest {
                 fakeApi(currentProject = { throw currentProjectFailure }),
             )
 
-            val failure = repository.loadProject(SERVER_ID, DIRECTORY).exceptionOrNull()
+            val failure = repository.loadProject(SERVER_ID, DIRECTORY, SessionListWindowState()).exceptionOrNull()
 
             assertTrue(failure is OpenCodeRequestException)
             assertEquals(expectedFailure, (failure as OpenCodeRequestException).failure)
@@ -88,7 +89,11 @@ class OpenCodeRepositoryFailureHandlingTest {
     fun currentProjectCancellationAndJvmErrorPropagateUnchanged() = runTest {
         val cancellation = CancellationException("cancelled")
         try {
-            repository(fakeApi(currentProject = { throw cancellation })).loadProject(SERVER_ID, DIRECTORY)
+            repository(fakeApi(currentProject = { throw cancellation })).loadProject(
+                SERVER_ID,
+                DIRECTORY,
+                SessionListWindowState(),
+            )
             fail("CancellationException was not propagated")
         } catch (actual: CancellationException) {
             assertTrue(actual === cancellation || actual.cause === cancellation)
@@ -96,7 +101,11 @@ class OpenCodeRepositoryFailureHandlingTest {
 
         val fatal = TestJvmError()
         try {
-            repository(fakeApi(currentProject = { throw fatal })).loadProject(SERVER_ID, DIRECTORY)
+            repository(fakeApi(currentProject = { throw fatal })).loadProject(
+                SERVER_ID,
+                DIRECTORY,
+                SessionListWindowState(),
+            )
             fail("JVM Error was not propagated")
         } catch (actual: TestJvmError) {
             assertSame(fatal, actual)
@@ -106,7 +115,7 @@ class OpenCodeRepositoryFailureHandlingTest {
     @Test
     fun projectFileMapsAllInboundLimitFailuresToTooLarge() = runTest {
         listOf(
-            DeclaredLengthResponseBody(MaxFileContentResponseBytes + 1L),
+            DeclaredLengthResponseBody(MaxFileContentDecodedResponseBytes + 1L),
             ThrowingResponseBody(RetrofitInboundResponseTooLargeException()),
         ).forEach { responseBody ->
             val repository = repository(

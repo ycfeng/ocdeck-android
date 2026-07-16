@@ -144,6 +144,7 @@ class SessionMessagesTransportTest {
         assertEquals("workspace/one", request.url.queryParameter("workspace"))
         assertEquals("200", request.url.queryParameter("limit"))
         assertEquals("application/json", request.header("Accept"))
+        assertEquals(4_096L, request.tag(EncodedResponseLimit::class.java)?.maxBytes)
     }
 
     @Test
@@ -220,7 +221,8 @@ class SessionMessagesTransportTest {
                 baseUrl = "http://127.0.0.1:4096/api",
                 callFactory = factory,
                 json = json,
-                maxBytes = maxBytes,
+                maxDecodedBytes = maxBytes,
+                maxEncodedBytes = maxBytes,
             ),
             factory = factory,
         )

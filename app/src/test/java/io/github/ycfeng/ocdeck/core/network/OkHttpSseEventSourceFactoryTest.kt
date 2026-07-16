@@ -68,6 +68,7 @@ class OkHttpSseEventSourceFactoryTest {
 
         assertEquals(1, call.cancelCount.get())
         assertTrue(call.isCanceled())
+        assertEquals("identity", call.request().header("Accept-Encoding"))
         assertTrue(listener.failures.isEmpty())
         assertEquals(0, listener.closedCount)
     }
@@ -121,7 +122,10 @@ class OkHttpSseEventSourceFactoryTest {
                     "data: value",
                     "text/event-stream; charset=utf-8".toMediaType(),
                 )
-                callback.onResponse(call, response(request, 200, "OK", body))
+                callback.onResponse(
+                    call,
+                    response(request, 200, "OK", body, contentEncoding = "identity"),
+                )
             }
         }
 
@@ -129,6 +133,30 @@ class OkHttpSseEventSourceFactoryTest {
 
         assertEquals(listOf("open", "closed"), callbacks)
         assertTrue(body.trackingSource.closed)
+    }
+
+    @Test
+    fun nonIdentityContentEncodingFailsBeforeOpenWithoutReadingBody() {
+        listOf("gzip", "br", "identity, gzip").forEach { contentEncoding ->
+            lateinit var body: TrackingResponseBody
+            val listener = RecordingListener()
+            val factory = factory { request ->
+                FakeCall(request) { call, callback ->
+                    body = TrackingResponseBody("data: hidden\n\n")
+                    callback.onResponse(
+                        call,
+                        response(request, 200, "OK", body, contentEncoding),
+                    )
+                }
+            }
+
+            factory.open(testSseConnection(), SseRequest("http://127.0.0.1/event"), listener)
+
+            assertEquals(SseFailureReason.InvalidResponse, listener.failures.single().reason)
+            assertEquals(0, listener.openCount)
+            assertEquals(0, body.trackingSource.readCount.get())
+            assertTrue(body.trackingSource.closed)
+        }
     }
 
     @Test
@@ -308,12 +336,16 @@ class OkHttpSseEventSourceFactoryTest {
         code: Int,
         message: String,
         body: ResponseBody,
+        contentEncoding: String? = null,
     ): Response = Response.Builder()
         .request(request)
         .protocol(Protocol.HTTP_1_1)
         .code(code)
         .message(message)
         .body(body)
+        .apply {
+            contentEncoding?.let { header("Content-Encoding", it) }
+        }
         .build()
 
     private class RecordingListener : SseEventListener {

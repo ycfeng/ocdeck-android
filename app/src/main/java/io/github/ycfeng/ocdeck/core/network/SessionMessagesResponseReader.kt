@@ -10,7 +10,7 @@ import okhttp3.ResponseBody
 @OptIn(ExperimentalSerializationApi::class)
 internal fun ResponseBody.readSessionMessages(
     json: Json,
-    maxBytes: Long = InboundPayloadLimits.SESSION_MESSAGES_RESPONSE_BYTES,
+    maxBytes: Long = InboundPayloadLimits.SESSION_MESSAGES_DECODED_RESPONSE_BYTES,
 ): List<MessageWithPartsDto> = use { responseBody ->
     require(maxBytes >= 0L) { "Inbound response limit is out of range" }
     val declaredLength = responseBody.contentLength()
@@ -30,7 +30,7 @@ internal fun ResponseBody.readSessionMessages(
         }
 
         // Some decoders stop after the root value. Drain through the same limiter so trailing or
-        // understated content cannot avoid the wire-byte boundary or EOF verification.
+        // understated content cannot avoid the decoded-entity boundary or EOF verification.
         try {
             boundedInput.consumeToEof()
         } catch (exception: Exception) {

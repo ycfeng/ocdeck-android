@@ -18,6 +18,44 @@ import io.github.ycfeng.ocdeck.domain.model.PromptCapabilities
 import io.github.ycfeng.ocdeck.domain.model.ProjectRef
 import io.github.ycfeng.ocdeck.ui.text.UiText
 
+const val SessionListPageSize = 20
+const val SessionListRawHeadroom = 50
+const val InitialSessionListRawLimit = SessionListPageSize + SessionListRawHeadroom
+
+enum class SessionListMoreState {
+    Unknown,
+    MayHaveMore,
+    EndReached,
+    Loading,
+    Failed,
+}
+
+data class SessionListWindowState(
+    val visibleRootLimit: Int = SessionListPageSize,
+    val requestedRawLimit: Int = InitialSessionListRawLimit,
+    val rawResultCount: Int = 0,
+    val moreState: SessionListMoreState = SessionListMoreState.Unknown,
+    val requestGeneration: Long = 0L,
+    val loadedRootSessionIds: Set<String> = emptySet(),
+) {
+    override fun toString(): String =
+        "SessionListWindowState(visibleRootLimit=$visibleRootLimit, requestedRawLimit=$requestedRawLimit, " +
+            "rawResultCount=$rawResultCount, moreState=$moreState, requestGeneration=$requestGeneration, " +
+            "loadedRootSessionCount=${loadedRootSessionIds.size})"
+}
+
+data class SessionListWindowLoadRequest(
+    val requestedRawLimit: Int,
+    val requestGeneration: Long,
+    val expectedProjectRevision: Long,
+)
+
+enum class SessionListWindowRequestAction {
+    ExpandedLocally,
+    LoadRequired,
+    Ignored,
+}
+
 class ProjectKey private constructor(
     val serverId: String,
     val normalizedDirectory: String,
@@ -71,6 +109,7 @@ data class OpenCodeProjectState(
     val project: ProjectRef? = null,
     val pathInfo: OpenCodePathInfo? = null,
     val sessions: List<OpenCodeSession> = emptyList(),
+    val sessionListWindow: SessionListWindowState = SessionListWindowState(),
     val messagesBySession: Map<String, List<OpenCodeMessage>> = emptyMap(),
     val partsByMessage: Map<String, List<OpenCodeMessagePart>> = emptyMap(),
     val permissionsBySession: Map<String, List<OpenCodePermissionRequest>> = emptyMap(),
@@ -100,8 +139,8 @@ data class OpenCodeProjectState(
 ) {
     override fun toString(): String =
         "OpenCodeProjectState(serverId=<redacted>, normalizedDirectory=<redacted>, " +
-            "workspace=${redactedIfPresent(workspace)}, projectPresent=${project != null}, " +
-            "pathInfoPresent=${pathInfo != null}, sessionCount=${sessions.size}, " +
+             "workspace=${redactedIfPresent(workspace)}, projectPresent=${project != null}, " +
+            "pathInfoPresent=${pathInfo != null}, sessionCount=${sessions.size}, sessionListWindow=$sessionListWindow, " +
             "messageSessionCount=${messagesBySession.size}, partMessageCount=${partsByMessage.size}, " +
             "permissionSessionCount=${permissionsBySession.size}, questionSessionCount=${questionsBySession.size}, " +
             "statusCount=${statuses.size}, providerCount=$providerCount, modelCount=${models.size}, " +

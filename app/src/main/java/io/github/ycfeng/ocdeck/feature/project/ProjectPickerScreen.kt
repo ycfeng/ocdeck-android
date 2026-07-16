@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,6 +31,9 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeDirectorySuggestion
 import io.github.ycfeng.ocdeck.domain.model.ProjectRef
@@ -52,6 +56,7 @@ fun ProjectPickerScreen(
     onOpenProject: (String) -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
     var pendingDeleteProject by remember { mutableStateOf<ProjectRef?>(null) }
     var directoryFieldValue by remember {
         mutableStateOf(TextFieldValue(state.directory, selection = TextRange(state.directory.length)))
@@ -64,6 +69,17 @@ fun ProjectPickerScreen(
                 selection = TextRange(state.directory.length),
             )
         }
+    }
+
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.onPickerVisible()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            viewModel.onPickerVisible()
+        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     pendingDeleteProject?.let { project ->
@@ -133,8 +149,8 @@ fun ProjectPickerScreen(
             )
             state.error?.let { Text(it.asString(), color = MaterialTheme.colorScheme.error) }
             OpenCodePrimaryButton(
-                text = if (state.isSaving) stringResource(R.string.project_opening) else stringResource(R.string.project_open_title),
-                enabled = !state.isSaving && state.directory.isNotBlank(),
+                text = if (state.isOpening) stringResource(R.string.project_opening) else stringResource(R.string.project_open_title),
+                enabled = !state.isOpening && state.directory.isNotBlank(),
                 onClick = { viewModel.openProject(state.directory, onOpenProject) },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -144,6 +160,7 @@ fun ProjectPickerScreen(
                     RecentProjectCard(
                         project = project,
                         isDeleting = state.deletingProjectDirectory == project.normalizedDirectory,
+                        isOpening = state.isOpening,
                         onOpen = { viewModel.openProject(project.normalizedDirectory, onOpenProject) },
                         onDelete = { pendingDeleteProject = project },
                     )
@@ -157,6 +174,7 @@ fun ProjectPickerScreen(
 private fun RecentProjectCard(
     project: ProjectRef,
     isDeleting: Boolean,
+    isOpening: Boolean,
     onOpen: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -171,7 +189,7 @@ private fun RecentProjectCard(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = 48.dp)
-                    .clickable(onClick = onOpen)
+                    .clickable(enabled = !isOpening && !isDeleting, onClick = onOpen)
                     .padding(top = 6.dp, end = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {

@@ -207,7 +207,7 @@
     <string name="project_file_context_source_path">Project · %1$s</string>
     <string name="project_file_context_count_limit">You can add up to %1$d project files</string>
     <string name="project_file_context_invalid">The project file path is invalid. Choose the file again.</string>
-    <string name="project_error_save_recent_failed">Failed to save recent project</string>
+    <string name="project_error_open_navigation_failed">Unable to open the project. Try again.</string>
     <string name="project_error_delete_recent_failed">Failed to delete recent project</string>
     <string name="project_error_load_candidates_failed">Unable to load suggested paths</string>
     <string name="project_build_anything">Build anything</string>
@@ -228,6 +228,9 @@
     <string name="session_new">New Session</string>
     <string name="session_section">Sessions</string>
     <string name="session_load_more">Load More</string>
+    <string name="session_loading_more">Loading more sessions</string>
+    <string name="session_load_more_failed">Failed to load more sessions</string>
+    <string name="session_no_more">No more sessions</string>
     <string name="session_archive_title">Archive Session</string>
     <string name="session_archive_message">Archive session "%1$s"?</string>
     <string name="session_archive_confirm">Archive Session</string>
@@ -245,6 +248,7 @@
     <string name="prompt_error_operation_in_progress">A send or stop operation is already running for this session</string>
     <string name="prompt_error_outcome_uncertain">The request result is uncertain, but the server may have accepted the message. Check the session before retrying.</string>
     <string name="session_load_messages_failed">Failed to load messages</string>
+    <string name="session_load_metadata_failed">Failed to load session details</string>
     <string name="session_reset_to_here">Reset to here</string>
     <string name="session_reset_failed">Failed to reset message</string>
     <string name="session_restore_failed">Failed to restore messages</string>
@@ -504,6 +508,12 @@
     <string name="sound_option_yup_number">Yup %1$02d</string>
     <string name="notification_channel_sessions_name">Session Notifications</string>
     <string name="notification_channel_sessions_description">Alerts for session completion, permission requests, questions, and errors.</string>
+    <string name="notification_channel_agent_name">Agent and Question Alerts</string>
+    <string name="notification_channel_agent_description">Alerts for completed sessions and questions awaiting an answer.</string>
+    <string name="notification_channel_permission_name">Permission Alerts</string>
+    <string name="notification_channel_permission_description">Alerts for permission requests awaiting a response.</string>
+    <string name="notification_channel_error_name">Error Alerts</string>
+    <string name="notification_channel_error_description">Alerts for session errors.</string>
     <string name="notification_session_response_ready_title">Response Ready</string>
     <string name="notification_session_error_title">Session Error</string>
     <string name="notification_session_error_body">%1$s: %2$s</string>

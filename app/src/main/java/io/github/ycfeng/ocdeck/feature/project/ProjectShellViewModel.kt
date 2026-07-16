@@ -6,12 +6,13 @@ import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.core.network.GlobalConnectionLease
 import io.github.ycfeng.ocdeck.core.network.OpenCodeEventClient
 import io.github.ycfeng.ocdeck.core.network.ProjectConnectionLease
+import io.github.ycfeng.ocdeck.core.network.SessionListWindowCoordinator
 import io.github.ycfeng.ocdeck.core.store.InMemoryOpenCodeStore
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
 import io.github.ycfeng.ocdeck.core.util.LatestRequestGate
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.data.opencode.OpenCodeRepository
-import io.github.ycfeng.ocdeck.data.project.RecentProjectStore
+import io.github.ycfeng.ocdeck.data.project.RecentProjectRecorder
 import io.github.ycfeng.ocdeck.data.server.ServerComposerModelPreference
 import io.github.ycfeng.ocdeck.data.server.ServerConfig
 import io.github.ycfeng.ocdeck.data.server.ServerRepository
@@ -42,7 +43,8 @@ class ProjectShellViewModel(
     private val serverRepository: ServerRepository,
     private val store: InMemoryOpenCodeStore,
     private val eventClient: OpenCodeEventClient,
-    private val recentProjectStore: RecentProjectStore,
+    private val sessionListWindowCoordinator: SessionListWindowCoordinator,
+    private val recentProjectRecorder: RecentProjectRecorder,
     pathNormalizer: PathNormalizer,
 ) : ViewModel() {
     val normalizedDirectory = pathNormalizer.normalize(directory)
@@ -71,12 +73,11 @@ class ProjectShellViewModel(
                 serverConfig = null,
                 local = ProjectShellLocalState(),
             ),
-        )
+    )
 
     init {
-        store.setActiveSession(serverId, normalizedDirectory, null)
         refresh()
-        viewModelScope.launch { recentProjectStore.add(serverId, normalizedDirectory) }
+        recentProjectRecorder.recordAdd(serverId, normalizedDirectory)
         projectConnectionLease = eventClient.connectProject(serverId, normalizedDirectory)
         globalConnectionLease = eventClient.connectGlobal(serverId)
     }
@@ -156,6 +157,14 @@ class ProjectShellViewModel(
         }
     }
 
+    fun loadMoreSessions() {
+        sessionListWindowCoordinator.loadMore(serverId, normalizedDirectory)
+    }
+
+    fun retrySessionListWindow() {
+        sessionListWindowCoordinator.retry(serverId, normalizedDirectory)
+    }
+
     fun updateProjectName(name: String, onSuccess: () -> Unit) {
         val trimmedName = name.trim()
         if (trimmedName.isBlank()) {
@@ -178,13 +187,7 @@ class ProjectShellViewModel(
                 name = trimmedName,
             ).onSuccess { project ->
                 store.updateProject(serverId, normalizedDirectory, project)
-                try {
-                    recentProjectStore.upsert(serverId, project)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // 最近项目只是辅助入口，不能影响服务端项目名称保存结果。
-                }
+                recentProjectRecorder.recordUpsert(serverId, project)
                 localState.update { it.copy(isUpdatingProjectName = false, projectNameError = null) }
                 onSuccess()
             }.onFailure { throwable ->
@@ -206,7 +209,12 @@ class ProjectShellViewModel(
         if (!refreshGate.isCurrent(requestId)) return
         store.setProjectLoading(serverId, normalizedDirectory, isLoading = true)
         val expectedRevision = store.captureProjectDataRevision(serverId, normalizedDirectory)
-        repository.loadProject(serverId, normalizedDirectory)
+        val sessionWindow = store.captureSessionListWindow(serverId, normalizedDirectory)
+        repository.loadProject(
+            serverId = serverId,
+            directory = normalizedDirectory,
+            sessionWindow = sessionWindow,
+        )
             .onSuccess { snapshot ->
                 if (!refreshGate.isCurrent(requestId)) return@onSuccess
                 if (!store.applyProjectSnapshotIfRevision(snapshot, expectedRevision)) {

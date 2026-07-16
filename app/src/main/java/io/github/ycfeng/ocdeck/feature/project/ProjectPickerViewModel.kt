@@ -4,12 +4,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
-import io.github.ycfeng.ocdeck.data.opencode.OpenCodeRepository
-import io.github.ycfeng.ocdeck.data.project.RecentProjectStore
+import io.github.ycfeng.ocdeck.data.project.RecentProjectRecorder
+import io.github.ycfeng.ocdeck.data.project.RecentProjectRepository
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeDirectorySuggestion
 import io.github.ycfeng.ocdeck.domain.model.ProjectRef
 import io.github.ycfeng.ocdeck.ui.text.UiText
-import io.github.ycfeng.ocdeck.ui.text.toErrorUiText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,8 +20,9 @@ import kotlinx.coroutines.launch
 
 class ProjectPickerViewModel(
     private val serverId: String,
-    private val repository: OpenCodeRepository,
-    private val recentProjectStore: RecentProjectStore,
+    private val suggestionLoader: ProjectDirectorySuggestionLoader,
+    private val recentProjectRepository: RecentProjectRepository,
+    private val recentProjectRecorder: RecentProjectRecorder,
     private val pathNormalizer: PathNormalizer,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ProjectPickerUiState())
@@ -30,7 +31,7 @@ class ProjectPickerViewModel(
 
     init {
         viewModelScope.launch {
-            recentProjectStore.observe(serverId).collect { projects ->
+            recentProjectRepository.observe(serverId).collect { projects ->
                 _uiState.update { it.copy(recentProjects = projects) }
             }
         }
@@ -62,42 +63,61 @@ class ProjectPickerViewModel(
             _uiState.update { it.copy(error = UiText.Resource(R.string.project_error_directory_empty)) }
             return
         }
-        suggestionJob?.cancel()
-        viewModelScope.launch {
-            val normalized = pathNormalizer.normalize(directory)
-            _uiState.update { it.copy(isSaving = true, error = null) }
-            runCatching { recentProjectStore.add(serverId, normalized) }
-                .onSuccess {
-                    _uiState.update { state -> state.copy(isSaving = false, directory = normalized) }
-                    onOpen(normalized)
-                }
-                .onFailure { throwable ->
-                    _uiState.update {
-                        it.copy(
-                            isSaving = false,
-                            error = throwable.toErrorUiText(R.string.project_error_save_recent_failed),
-                        )
-                    }
-                }
+        val normalized = pathNormalizer.normalize(directory)
+        while (true) {
+            val state = _uiState.value
+            if (state.isOpening) return
+            if (_uiState.compareAndSet(state, state.copy(directory = normalized, isOpening = true, error = null))) break
         }
+        suggestionJob?.cancel()
+        try {
+            onOpen(normalized)
+            recentProjectRecorder.recordAdd(serverId, normalized)
+        } catch (cancelled: CancellationException) {
+            releaseOpeningLock()
+            throw cancelled
+        } catch (error: Error) {
+            releaseOpeningLock()
+            throw error
+        } catch (_: Exception) {
+            _uiState.update {
+                it.copy(
+                    isOpening = false,
+                    error = UiText.Resource(R.string.project_error_open_navigation_failed),
+                )
+            }
+        }
+    }
+
+    fun onPickerVisible() {
+        releaseOpeningLock()
     }
 
     fun deleteRecentProject(project: ProjectRef) {
         val normalized = pathNormalizer.normalize(project.normalizedDirectory)
         viewModelScope.launch {
             _uiState.update { it.copy(deletingProjectDirectory = normalized, error = null) }
-            runCatching { recentProjectStore.remove(serverId, normalized) }
-                .onSuccess {
-                    _uiState.update { it.copy(deletingProjectDirectory = null) }
+            try {
+                recentProjectRepository.remove(serverId, normalized)
+                _uiState.update { it.copy(deletingProjectDirectory = null) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Error) {
+                throw error
+            } catch (_: Exception) {
+                _uiState.update {
+                    it.copy(
+                        deletingProjectDirectory = null,
+                        error = UiText.Resource(R.string.project_error_delete_recent_failed),
+                    )
                 }
-                .onFailure { throwable ->
-                    _uiState.update {
-                        it.copy(
-                            deletingProjectDirectory = null,
-                            error = throwable.toErrorUiText(R.string.project_error_delete_recent_failed),
-                        )
-                    }
-                }
+            }
+        }
+    }
+
+    private fun releaseOpeningLock() {
+        _uiState.update { state ->
+            if (state.isOpening) state.copy(isOpening = false) else state
         }
     }
 
@@ -112,7 +132,7 @@ class ProjectPickerViewModel(
             delay(SUGGESTION_DEBOUNCE_MS)
             _uiState.update { it.copy(isSuggesting = true, suggestionError = null) }
             val searchRoot = _uiState.value.recentProjects.firstOrNull()?.normalizedDirectory?.let(::parentDirectory)
-            repository.suggestProjectDirectories(
+            suggestionLoader.load(
                 serverId = serverId,
                 input = query,
                 searchRoot = searchRoot,
@@ -154,6 +174,15 @@ class ProjectPickerViewModel(
     }
 }
 
+fun interface ProjectDirectorySuggestionLoader {
+    suspend fun load(
+        serverId: String,
+        input: String,
+        searchRoot: String?,
+        limit: Int,
+    ): Result<List<OpenCodeDirectorySuggestion>>
+}
+
 internal fun completeDirectorySuggestion(directory: String, pathNormalizer: PathNormalizer): String {
     val normalized = pathNormalizer.normalize(directory)
     return if (normalized.isEmpty() || normalized.endsWith('/')) normalized else "$normalized/"
@@ -165,14 +194,14 @@ data class ProjectPickerUiState(
     val suggestions: List<OpenCodeDirectorySuggestion> = emptyList(),
     val isSuggesting: Boolean = false,
     val suggestionError: UiText? = null,
-    val isSaving: Boolean = false,
+    val isOpening: Boolean = false,
     val deletingProjectDirectory: String? = null,
     val error: UiText? = null,
 ) {
     override fun toString(): String =
         "ProjectPickerUiState(directory=<redacted>, recentProjectCount=${recentProjects.size}, " +
             "suggestionCount=${suggestions.size}, isSuggesting=$isSuggesting, " +
-            "suggestionErrorPresent=${suggestionError != null}, isSaving=$isSaving, " +
+            "suggestionErrorPresent=${suggestionError != null}, isOpening=$isOpening, " +
             "deletingProjectDirectory=${if (deletingProjectDirectory == null) "null" else "<redacted>"}, " +
             "errorPresent=${error != null})"
 }

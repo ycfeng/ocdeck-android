@@ -65,7 +65,6 @@ import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
 import io.github.ycfeng.ocdeck.ui.text.UiText
 import io.github.ycfeng.ocdeck.ui.text.asString
 import io.github.ycfeng.ocdeck.ui.text.toErrorUiText
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 internal data class ActiveProjectDrawerRoute(
@@ -201,7 +200,7 @@ internal fun ProjectDrawerHost(
                         )
                     val projectDisplayName = projectState.project?.displayName ?: normalizedDirectory.displayName()
                     val recentProjectsFlow = remember(route.serverId) {
-                        appContainer.recentProjectStore.observe(route.serverId)
+                        appContainer.recentProjectRepository.observe(route.serverId)
                     }
                     val recentProjects by recentProjectsFlow.collectAsStateWithLifecycle(emptyList())
                     val currentProject = projectState.project?.copy(
@@ -263,6 +262,12 @@ internal fun ProjectDrawerHost(
                                     }
                                 }
                             },
+                            onLoadMoreSessions = {
+                                appContainer.sessionListWindowCoordinator.loadMore(route.serverId, normalizedDirectory)
+                            },
+                            onRetrySessionListWindow = {
+                                appContainer.sessionListWindowCoordinator.retry(route.serverId, normalizedDirectory)
+                            },
                             onArchiveSession = { session ->
                                 archiveError = null
                                 archiveSession = session
@@ -309,13 +314,7 @@ internal fun ProjectDrawerHost(
                                             name = trimmedName,
                                         ).onSuccess { project ->
                                             appContainer.openCodeStore.updateProject(route.serverId, normalizedDirectory, project)
-                                            try {
-                                                appContainer.recentProjectStore.upsert(route.serverId, project)
-                                            } catch (cancelled: CancellationException) {
-                                                throw cancelled
-                                            } catch (_: Exception) {
-                                                // Recent projects are auxiliary and must not fail the server update.
-                                            }
+                                            appContainer.recentProjectRecorder.recordUpsert(route.serverId, project)
                                             isUpdatingProjectName = false
                                             showEditProjectName = false
                                         }.onFailure { throwable ->

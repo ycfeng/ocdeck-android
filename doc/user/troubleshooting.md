@@ -155,7 +155,7 @@ Automatic bounded retries apply to connection-class I/O failures, HTTP 408/409/4
 - Other non-200 responses outside the retry list.
 - TLS or hostname verification failures.
 - A response whose content type is not `text/event-stream`.
-- An SSE line or event exceeding the 32 MiB wire-byte limit.
+- A server that returns non-identity SSE content encoding, or an SSE line/event exceeding the 32 MiB identity response-body limit.
 
 The UI may show only a general **Failed** state rather than the detailed internal reason, and there is no explicit reconnect button. Recovery sequence:
 
@@ -173,12 +173,12 @@ Check in this order:
 1. Confirm the app process is still alive and the project SSE connection is running.
 2. On Android 13/API 33 or newer, open **Settings > Background Run Settings** and grant notification permission.
 3. In **Settings > General**, confirm the relevant Agent, Permission, or Error notification toggle. Agent and Permission are enabled by default; Error is disabled by default.
-4. Confirm Android app notifications and the **Session Notifications** channel are enabled in system settings.
+4. Confirm Android app notifications and the relevant **Agent alerts**, **Permission alerts**, or **Error alerts** channel are enabled in system settings.
 5. Leave the affected session screen while testing; OC Deck suppresses a session's notification when that same session is currently being viewed.
 6. Review battery optimization and vendor background restrictions in **Background Run Settings**.
 7. If the vendor supports locking or retaining an app in recent tasks, enable it to reduce one-tap cleanup termination.
 
-On Android versions below API 33, no runtime notification permission is required, but system-level app or channel settings can still suppress notifications. Battery exemptions reduce interruptions but cannot guarantee delivery after process death.
+On Android versions below API 33, no runtime notification permission is required, but system-level app or channel settings can still suppress notifications. The v2 channels are silent by default so OC Deck can play the sound selected in the app exactly once. If you explicitly choose a channel sound in Android settings, that system sound takes precedence; choosing None in OC Deck disables OC Deck's own playback but does not override an explicit Android channel sound. Battery exemptions reduce interruptions but cannot guarantee delivery after process death.
 
 ## 9. Features That Are Not Recovery Options
 

@@ -4,6 +4,8 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.ycfeng.ocdeck.R
+import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityLease
+import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityRegistry
 import io.github.ycfeng.ocdeck.core.network.GlobalConnectionLease
 import io.github.ycfeng.ocdeck.core.network.OpenCodeEventClient
 import io.github.ycfeng.ocdeck.core.network.ProjectConnectionLease
@@ -14,7 +16,7 @@ import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFilePathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFileUrlBuilder
 import io.github.ycfeng.ocdeck.data.opencode.OpenCodeRepository
-import io.github.ycfeng.ocdeck.data.project.RecentProjectStore
+import io.github.ycfeng.ocdeck.data.project.RecentProjectRecorder
 import io.github.ycfeng.ocdeck.data.server.ServerConfig
 import io.github.ycfeng.ocdeck.data.server.ServerRepository
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeAgent
@@ -80,9 +82,10 @@ class SessionDetailViewModel(
     private val serverRepository: ServerRepository,
     private val store: InMemoryOpenCodeStore,
     private val eventClient: OpenCodeEventClient,
-    private val recentProjectStore: RecentProjectStore,
+    private val recentProjectRecorder: RecentProjectRecorder,
     private val promptSender: OpenCodePromptSender,
     private val sessionOperationCoordinator: SessionOperationCoordinator,
+    sessionVisibilityRegistry: SessionVisibilityRegistry,
     pathNormalizer: PathNormalizer,
     private val projectFilePathNormalizer: ProjectFilePathNormalizer,
     initialAgentId: String? = null,
@@ -108,6 +111,11 @@ class SessionDetailViewModel(
     private val refreshGate = LatestRequestGate()
     private lateinit var projectConnectionLease: ProjectConnectionLease
     private lateinit var globalConnectionLease: GlobalConnectionLease
+    private val sessionVisibilityLease: SessionVisibilityLease = sessionVisibilityRegistry.createLease(
+        serverId = serverId,
+        directory = normalizedDirectory,
+        sessionId = initialSessionId.takeUnless { it == OpenCodePromptSender.NEW_SESSION_ID },
+    )
 
     val uiState: StateFlow<SessionDetailUiState> = combine(
         store.observeProject(serverId, normalizedDirectory),
@@ -129,7 +137,7 @@ class SessionDetailViewModel(
         )
 
     init {
-        markCurrentSessionActiveAndViewed(initialSessionId)
+        recentProjectRecorder.recordAdd(serverId, normalizedDirectory)
         projectConnectionLease = eventClient.connectProject(serverId, normalizedDirectory)
         globalConnectionLease = eventClient.connectGlobal(serverId)
         refresh()
@@ -137,6 +145,10 @@ class SessionDetailViewModel(
 
     fun onComposerChanged(value: String) {
         localState.update { it.copy(composer = value, error = null) }
+    }
+
+    fun onDestinationVisibilityChanged(visible: Boolean) {
+        sessionVisibilityLease.setDestinationVisible(visible)
     }
 
     internal fun beginReadingAttachments(): AttachmentReadStartResult {
@@ -471,7 +483,7 @@ class SessionDetailViewModel(
             ).onSuccess {
                 store.removeSession(serverId, normalizedDirectory, sessionId)
                 if (localState.value.currentSessionId == sessionId) {
-                    store.setActiveSession(serverId, normalizedDirectory, null)
+                    sessionVisibilityLease.updateSession(null)
                 }
                 localState.update { local ->
                     if (local.currentSessionId == sessionId) {
@@ -511,7 +523,7 @@ class SessionDetailViewModel(
                 sessionId = sessionId,
             ).onSuccess {
                 store.removeSession(serverId, normalizedDirectory, sessionId)
-                store.setActiveSession(serverId, normalizedDirectory, null)
+                sessionVisibilityLease.updateSession(null)
                 localState.update {
                     it.copy(
                         currentSessionId = OpenCodePromptSender.NEW_SESSION_ID,
@@ -556,13 +568,7 @@ class SessionDetailViewModel(
                 name = trimmedName,
             ).onSuccess { project ->
                 store.updateProject(serverId, normalizedDirectory, project)
-                try {
-                    recentProjectStore.upsert(serverId, project)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // 最近项目只是辅助入口，不能影响服务端项目名称保存结果。
-                }
+                recentProjectRecorder.recordUpsert(serverId, project)
                 localState.update { it.copy(isUpdatingProjectName = false, projectNameError = null) }
                 onSuccess()
             }.onFailure { throwable ->
@@ -674,13 +680,13 @@ class SessionDetailViewModel(
                         }
                     },
                     onSessionMaterialized = { newSessionId ->
-                        markCurrentSessionActiveAndViewed(newSessionId)
+                        updateVisibleSession(newSessionId)
                         localState.update { it.copy(currentSessionId = newSessionId) }
                         materializedSessionId = newSessionId
                     },
                 )
                 result.onSuccess { sendResult ->
-                    markCurrentSessionActiveAndViewed(sendResult.sessionId)
+                    updateVisibleSession(sendResult.sessionId)
                     localState.update { local ->
                         val draftUnchanged = local.composer == sentDraft.text &&
                             local.attachments == sentDraft.attachments &&
@@ -786,10 +792,10 @@ class SessionDetailViewModel(
         }
     }
 
-    private fun markCurrentSessionActiveAndViewed(sessionId: String) {
-        val activeSessionId = sessionId.takeUnless { it == OpenCodePromptSender.NEW_SESSION_ID }
-        store.setActiveSession(serverId, normalizedDirectory, activeSessionId)
-        activeSessionId?.let { store.markSessionNotificationsViewed(serverId, normalizedDirectory, it) }
+    private fun updateVisibleSession(sessionId: String) {
+        sessionVisibilityLease.updateSession(
+            sessionId.takeUnless { it == OpenCodePromptSender.NEW_SESSION_ID },
+        )
     }
 
     private fun stop() {
@@ -811,17 +817,18 @@ class SessionDetailViewModel(
         var capabilitiesForModelResolution: PromptCapabilities? = null
         var messagesForModelResolution: List<OpenCodeMessage> = emptyList()
         val expectedProjectRevision = store.captureProjectDataRevision(serverId, normalizedDirectory)
-        val projectResult = repository.loadProject(serverId, normalizedDirectory)
+        val sessionWindow = store.captureSessionListWindow(serverId, normalizedDirectory)
+        val projectResult = repository.loadProject(
+            serverId = serverId,
+            directory = normalizedDirectory,
+            sessionWindow = sessionWindow,
+        )
         if (!refreshGate.isCurrent(requestId)) return
         projectResult.onSuccess { snapshot ->
             val applied = store.applyProjectSnapshotIfRevision(snapshot, expectedProjectRevision)
             val currentProject = store.currentProject(serverId, normalizedDirectory)
-            sessionsForModelResolution = if (applied) snapshot.sessions else currentProject.sessions
-            capabilitiesForModelResolution = if (applied) snapshot.promptCapabilities else currentProject.promptCapabilities
-            val sessionId = localState.value.currentSessionId
-            parentSessionIdToLoad = sessionsForModelResolution.firstOrNull { it.id == sessionId }
-                ?.parentId
-                ?.takeIf { it.isNotBlank() }
+            sessionsForModelResolution = currentProject.sessions
+            capabilitiesForModelResolution = currentProject.promptCapabilities
             if (!applied) store.setProjectLoading(serverId, normalizedDirectory, isLoading = false)
         }.onFailure { throwable ->
             if (throwable is CancellationException) throw throwable
@@ -835,6 +842,31 @@ class SessionDetailViewModel(
 
         val sessionId = localState.value.currentSessionId
         if (sessionId != OpenCodePromptSender.NEW_SESSION_ID) {
+            val knownProject = store.currentProject(serverId, normalizedDirectory)
+            val knownSession = knownProject.sessions.firstOrNull { it.id == sessionId }
+            val needsMetadata = knownSession == null || knownSession.parentId
+                ?.takeIf { it.isNotBlank() }
+                ?.let { parentId -> knownProject.sessions.none { it.id == parentId } } == true
+            if (needsMetadata) {
+                val metadataResult = repository.loadSessionMetadataChain(
+                    serverId = serverId,
+                    directory = normalizedDirectory,
+                    sessionId = sessionId,
+                )
+                if (!refreshGate.isCurrent(requestId)) return
+                metadataResult.onSuccess { sessions ->
+                    sessions.forEach { session -> store.upsertSession(serverId, normalizedDirectory, session) }
+                }.onFailure { throwable ->
+                    if (throwable is CancellationException) throw throwable
+                    localState.update { it.copy(error = throwable.toErrorUiText(R.string.session_load_metadata_failed)) }
+                }
+            }
+            val projectWithMetadata = store.currentProject(serverId, normalizedDirectory)
+            sessionsForModelResolution = projectWithMetadata.sessions
+            capabilitiesForModelResolution = capabilitiesForModelResolution ?: projectWithMetadata.promptCapabilities
+            parentSessionIdToLoad = projectWithMetadata.sessions.firstOrNull { it.id == sessionId }
+                ?.parentId
+                ?.takeIf { it.isNotBlank() }
             val expectedMessageRevision = store.captureMessageDataRevision(serverId, normalizedDirectory)
             val messageResult = repository.loadMessages(serverId, normalizedDirectory, sessionId)
             if (!refreshGate.isCurrent(requestId)) return
@@ -1118,6 +1150,7 @@ class SessionDetailViewModel(
     }
 
     override fun onCleared() {
+        sessionVisibilityLease.release()
         projectConnectionLease.release()
         globalConnectionLease.release()
     }

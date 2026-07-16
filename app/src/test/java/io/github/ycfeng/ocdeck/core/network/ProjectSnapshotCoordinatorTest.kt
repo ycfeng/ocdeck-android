@@ -24,6 +24,33 @@ class ProjectSnapshotCoordinatorTest {
     private val directory = "E:/work/app"
 
     @Test
+    fun calibrationUsesCurrentRequestedSessionWindow() = runTest {
+        val loader = ScriptedProjectSnapshotLoader { requestedServerId, requestedDirectory, workspace, _ ->
+            Result.success(loadedSnapshot(requestedServerId, requestedDirectory, workspace))
+        }
+        val factory = RecordingSseEventSourceFactory()
+        val environment = eventClientEnvironment(backgroundScope, factory = factory, loader = loader)
+        environment.store.applyProjectSnapshot(
+            projectSnapshot(
+                serverId = serverId,
+                directory = directory,
+                sessions = (1..25).map { testSession("session-$it", updatedAt = it.toLong()) },
+            ).copy(sessionWindowRawResultCount = 70),
+        )
+        environment.store.requestMoreSessions(serverId, directory)
+        environment.client.connectProject(serverId, directory)
+        runCurrent()
+
+        factory.sources.single().open()
+        runCurrent()
+
+        val window = loader.sessionWindowRequests.single()
+        assertEquals(40, window.visibleRootLimit)
+        assertEquals(90, window.requestedRawLimit)
+        assertEquals(1L, window.requestGeneration)
+    }
+
+    @Test
     fun failedSnapshotKeepsSseOpenAndReplaysBufferedEvents() = runTest {
         val gate = CompletableDeferred<Result<LoadedProjectSnapshot>>()
         val loader = ScriptedProjectSnapshotLoader { _, _, _, _ -> gate.await() }

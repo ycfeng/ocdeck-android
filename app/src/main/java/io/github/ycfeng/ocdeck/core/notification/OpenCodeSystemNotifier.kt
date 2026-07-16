@@ -2,7 +2,6 @@ package io.github.ycfeng.ocdeck.core.notification
 
 import android.Manifest
 import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -16,10 +15,7 @@ import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
 import io.github.ycfeng.ocdeck.core.store.OpenCodeNotification
 import io.github.ycfeng.ocdeck.core.store.ProjectEventReduction
 import io.github.ycfeng.ocdeck.core.store.TurnCompleteNotification
-import io.github.ycfeng.ocdeck.data.settings.AppNotificationSettings
 import io.github.ycfeng.ocdeck.data.settings.AppSettingsStore
-import io.github.ycfeng.ocdeck.data.settings.AppSoundSettings
-import io.github.ycfeng.ocdeck.data.settings.AppLanguagePreference
 import io.github.ycfeng.ocdeck.data.settings.localized
 import io.github.ycfeng.ocdeck.domain.model.OpenCodePermissionRequest
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeQuestionRequest
@@ -39,6 +35,7 @@ class OpenCodeSystemNotifier(
     context: Context,
     private val settingsStore: AppSettingsStore,
     private val soundPlayer: OpenCodeSoundPlayer,
+    private val channelRegistry: OpenCodeNotificationChannelRegistry,
     scope: CoroutineScope,
 ) {
     private val applicationContext = context.applicationContext
@@ -48,59 +45,61 @@ class OpenCodeSystemNotifier(
     init {
         settingsStore.languagePreference
             .distinctUntilChanged()
-            .onEach(::createNotificationChannel)
+            .onEach(channelRegistry::ensureChannels)
             .launchIn(scope)
-    }
-
-    private fun createNotificationChannel(languagePreference: AppLanguagePreference) {
-        val localizedContext = applicationContext.localized(languagePreference)
-        notificationManager?.createNotificationChannel(
-            NotificationChannel(
-                ChannelId,
-                localizedContext.getString(R.string.notification_channel_sessions_name),
-                NotificationManager.IMPORTANCE_DEFAULT,
-            ).apply {
-                description = localizedContext.getString(R.string.notification_channel_sessions_description)
-            },
-        )
     }
 
     suspend fun notifyProjectEvent(reduction: ProjectEventReduction) {
         val notification = reduction.toSystemNotification() ?: return
+        val notificationSettings = settingsStore.notificationSettings.first()
         val soundSettings = settingsStore.soundSettings.first()
-        val soundId = notification.soundId(soundSettings)
-        val soundConsumedCooldown = if (soundId != null && notification.needsCooldown) {
-            notification.consumeCooldown()
-        } else {
-            null
-        }
-        if (soundId != null && soundConsumedCooldown != false) {
-            soundPlayer.play(soundId)
-        }
-
-        val settings = settingsStore.notificationSettings.first()
-        if (!notification.isEnabled(settings)) return
-        if (notification.sessionId != null && reduction.after.activeSessionId == notification.sessionId) return
-        if (notification.needsCooldown && !(soundConsumedCooldown ?: notification.consumeCooldown())) return
-        if (!canPostNotifications()) return
-
         val languagePreference = settingsStore.languagePreference.first()
         val localizedContext = applicationContext.localized(languagePreference)
-        createNotificationChannel(languagePreference)
-
-        notificationManager?.notify(
-            notification.notificationId,
-            Notification.Builder(applicationContext, ChannelId)
-                .setSmallIcon(R.drawable.ic_ocdeck_notification)
-                .setContentTitle(notification.title(localizedContext))
-                .setContentText(notification.body(localizedContext))
-                .setStyle(Notification.BigTextStyle().bigText(notification.body(localizedContext)))
-                .setContentIntent(notification.target.pendingIntent(applicationContext))
-                .setAutoCancel(true)
-                .setShowWhen(true)
-                .setCategory(Notification.CATEGORY_STATUS)
-                .build(),
+        channelRegistry.ensureChannels(languagePreference)
+        val channelState = channelRegistry.state(notification.alertType.channelKind)
+            ?: NotificationChannelRuntimeState(
+                importance = NotificationManager.IMPORTANCE_NONE,
+                hasSystemSound = false,
+                appSoundAllowed = false,
+            )
+        val input = NotificationAlertInput(
+            eventAlreadyViewed = notification.alreadyViewed,
+            sessionVisible = notification.sessionId != null &&
+                reduction.after.activeSessionId == notification.sessionId,
+            platformNotificationsAllowed = canPostNotifications(),
+            channelImportance = channelState.importance,
+            channelHasSystemSound = channelState.hasSystemSound,
+            appSoundAllowed = channelState.appSoundAllowed,
+            systemNotificationEnabled = notification.alertType.systemNotificationEnabled(notificationSettings),
+            appSoundId = notification.alertType.appSoundId(soundSettings),
+            cooldownAllowed = true,
         )
+        val candidate = NotificationAlertPolicy.decide(input)
+        val decision = if (candidate.hasAlert && notification.needsCooldown) {
+            NotificationAlertPolicy.decide(
+                input.copy(cooldownAllowed = notification.consumeCooldown()),
+            )
+        } else {
+            candidate
+        }
+        if (!decision.hasAlert) return
+
+        if (decision.publishSystemNotification) {
+            notificationManager?.notify(
+                notification.notificationId,
+                Notification.Builder(applicationContext, notification.alertType.channelKind.id)
+                    .setSmallIcon(R.drawable.ic_ocdeck_notification)
+                    .setContentTitle(notification.title(localizedContext))
+                    .setContentText(notification.body(localizedContext))
+                    .setStyle(Notification.BigTextStyle().bigText(notification.body(localizedContext)))
+                    .setContentIntent(notification.target.pendingIntent(applicationContext))
+                    .setAutoCancel(true)
+                    .setShowWhen(true)
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .build(),
+            )
+        }
+        decision.appSoundId?.let(soundPlayer::play)
     }
 
     private fun canPostNotifications(): Boolean {
@@ -115,15 +114,24 @@ class OpenCodeSystemNotifier(
     private fun SystemNotification.consumeCooldown(): Boolean {
         val key = "${target.serverId}:${target.directory}:${sessionId.orEmpty()}"
         val now = System.currentTimeMillis()
-        val last = alertedAtBySession[key]
-        if (last != null && now - last < AttentionCooldownMillis) return false
-        alertedAtBySession[key] = now
-        return true
+        var allowed = false
+        alertedAtBySession.compute(key) { _, last ->
+            if (last == null || now - last >= AttentionCooldownMillis) {
+                allowed = true
+                now
+            } else {
+                last
+            }
+        }
+        return allowed
     }
 }
 
 private sealed interface SystemNotification {
     val target: OpenCodeNotificationTarget
+    val alertType: OpenCodeAlertType
+    val alreadyViewed: Boolean
+        get() = false
     val sessionId: String?
         get() = target.sessionId
     val needsCooldown: Boolean
@@ -132,8 +140,6 @@ private sealed interface SystemNotification {
     val notificationId: Int
         get() = ("${javaClass.name}:${target.serverId}:${target.directory}:${target.sessionId.orEmpty()}".hashCode() and Int.MAX_VALUE)
 
-    fun isEnabled(settings: AppNotificationSettings): Boolean
-    fun soundId(settings: AppSoundSettings): String? = null
     fun title(context: Context): String
     fun body(context: Context): String
 }
@@ -141,10 +147,9 @@ private sealed interface SystemNotification {
 private data class TurnCompleteSystemNotification(
     override val target: OpenCodeNotificationTarget,
     val sessionTitle: String?,
+    override val alreadyViewed: Boolean,
 ) : SystemNotification {
-    override fun isEnabled(settings: AppNotificationSettings): Boolean = settings.agentEnabled
-
-    override fun soundId(settings: AppSoundSettings): String? = settings.agent.takeIf { settings.agentEnabled }
+    override val alertType: OpenCodeAlertType = OpenCodeAlertType.Agent
 
     override fun title(context: Context): String = context.getString(R.string.notification_session_response_ready_title)
 
@@ -159,10 +164,9 @@ private data class ErrorSystemNotification(
     override val target: OpenCodeNotificationTarget,
     val sessionTitle: String?,
     val summary: String,
+    override val alreadyViewed: Boolean,
 ) : SystemNotification {
-    override fun isEnabled(settings: AppNotificationSettings): Boolean = settings.errorsEnabled
-
-    override fun soundId(settings: AppSoundSettings): String? = settings.errors.takeIf { settings.errorsEnabled }
+    override val alertType: OpenCodeAlertType = OpenCodeAlertType.Error
 
     override fun title(context: Context): String = context.getString(R.string.notification_session_error_title)
 
@@ -184,11 +188,8 @@ private data class PermissionSystemNotification(
     val sessionTitle: String,
     val projectName: String,
 ) : SystemNotification {
+    override val alertType: OpenCodeAlertType = OpenCodeAlertType.Permission
     override val needsCooldown: Boolean = true
-
-    override fun isEnabled(settings: AppNotificationSettings): Boolean = settings.permissionsEnabled
-
-    override fun soundId(settings: AppSoundSettings): String? = settings.permissions.takeIf { settings.permissionsEnabled }
 
     override fun title(context: Context): String = context.getString(R.string.notification_permission_title)
 
@@ -207,9 +208,8 @@ private data class QuestionSystemNotification(
     val sessionTitle: String,
     val projectName: String,
 ) : SystemNotification {
+    override val alertType: OpenCodeAlertType = OpenCodeAlertType.Question
     override val needsCooldown: Boolean = true
-
-    override fun isEnabled(settings: AppNotificationSettings): Boolean = settings.agentEnabled
 
     override fun title(context: Context): String = context.getString(R.string.notification_question_title)
 
@@ -227,20 +227,20 @@ private fun ProjectEventReduction.toSystemNotification(): SystemNotification? {
     val type = event.eventType() ?: return null
     return when {
         type.contains("session") && type.contains("idle") -> newNotification<TurnCompleteNotification>()
-            ?.takeUnless { it.viewed }
             ?.let { notification ->
                 TurnCompleteSystemNotification(
                     target = OpenCodeNotificationTarget(after.serverId, notification.directory, notification.sessionId),
                     sessionTitle = after.sessionTitle(notification.sessionId),
+                    alreadyViewed = notification.viewed,
                 )
             }
         type.contains("session") && type.contains("error") -> newNotification<ErrorNotification>()
-            ?.takeUnless { it.viewed }
             ?.let { notification ->
                 ErrorSystemNotification(
                     target = OpenCodeNotificationTarget(after.serverId, notification.directory, notification.sessionId),
                     sessionTitle = notification.sessionId?.let(after::sessionTitle),
                     summary = notification.summary,
+                    alreadyViewed = notification.viewed,
                 )
             }
         type.contains("permission") && type.contains("asked") -> newPermissionRequest()
@@ -317,5 +317,4 @@ private fun JsonObject.objectOrNull(name: String): JsonObject? = this[name] as? 
 
 private fun JsonObject.string(name: String): String? = runCatching { this[name]?.jsonPrimitive?.contentOrNull }.getOrNull()
 
-private const val ChannelId = "ocdeck_sessions"
 private const val AttentionCooldownMillis = 5_000L

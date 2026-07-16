@@ -93,6 +93,7 @@ object OpenCodeFailureClassifier {
                 it is SerializationException ||
                     it is EOFException ||
                     it is SseContentTypeException ||
+                    it is SseContentEncodingException ||
                     it is RetrofitInboundResponsePolicyMissingException
             }
         ) {

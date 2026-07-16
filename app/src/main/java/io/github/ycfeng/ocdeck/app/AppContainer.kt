@@ -1,6 +1,8 @@
 package io.github.ycfeng.ocdeck.app
 
 import android.content.Context
+import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityRegistry
+import io.github.ycfeng.ocdeck.core.notification.OpenCodeNotificationChannelRegistry
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeSystemNotifier
 import io.github.ycfeng.ocdeck.core.network.AppConnectionCoordinator
 import io.github.ycfeng.ocdeck.core.network.DefaultForegroundHealthChecker
@@ -9,6 +11,7 @@ import io.github.ycfeng.ocdeck.core.network.DefaultOpenCodeHealthProbeFactory
 import io.github.ycfeng.ocdeck.core.network.OpenCodeApiFactory
 import io.github.ycfeng.ocdeck.core.network.OpenCodeEventClient
 import io.github.ycfeng.ocdeck.core.network.ProjectSnapshotCoordinator
+import io.github.ycfeng.ocdeck.core.network.SessionListWindowCoordinator
 import io.github.ycfeng.ocdeck.core.network.SshTunnelManager
 import io.github.ycfeng.ocdeck.core.security.Redactor
 import io.github.ycfeng.ocdeck.core.security.SecureCredentialStore
@@ -19,6 +22,9 @@ import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFilePathNormalizer
 import io.github.ycfeng.ocdeck.data.opencode.OpenCodeRepository
 import io.github.ycfeng.ocdeck.data.opencode.OpenCodeProviderRepository
+import io.github.ycfeng.ocdeck.data.project.AndroidRecentProjectFailureReporter
+import io.github.ycfeng.ocdeck.data.project.RecentProjectRecorder
+import io.github.ycfeng.ocdeck.data.project.RecentProjectRepository
 import io.github.ycfeng.ocdeck.data.project.RecentProjectStore
 import io.github.ycfeng.ocdeck.data.settings.AppSettingsStore
 import io.github.ycfeng.ocdeck.data.server.ServerPreferencesStore
@@ -49,7 +55,14 @@ class AppContainer(context: Context) {
     val sshTunnelManager = SshTunnelManager()
     val appSettingsStore = AppSettingsStore(applicationContext)
     val soundPlayer = OpenCodeSoundPlayer(applicationContext)
-    val systemNotifier = OpenCodeSystemNotifier(applicationContext, appSettingsStore, soundPlayer, applicationScope)
+    val notificationChannelRegistry = OpenCodeNotificationChannelRegistry(applicationContext)
+    val systemNotifier = OpenCodeSystemNotifier(
+        applicationContext,
+        appSettingsStore,
+        soundPlayer,
+        notificationChannelRegistry,
+        applicationScope,
+    )
     val serverPreferencesStore = ServerPreferencesStore(applicationContext, json)
     val openCodeApiFactory = OpenCodeApiFactory(json, redactor)
     val frpcStcpVisitorManager = FrpcStcpVisitorManager(
@@ -63,8 +76,21 @@ class AppContainer(context: Context) {
         sshTunnelManager = sshTunnelManager,
         frpcStcpVisitorManager = frpcStcpVisitorManager,
     )
-    val recentProjectStore = RecentProjectStore(applicationContext, json, pathNormalizer)
+    private val recentProjectFailureReporter = AndroidRecentProjectFailureReporter()
+    val recentProjectRepository: RecentProjectRepository = RecentProjectStore(
+        context = applicationContext,
+        json = json,
+        pathNormalizer = pathNormalizer,
+        failureReporter = recentProjectFailureReporter,
+    )
+    val recentProjectRecorder = RecentProjectRecorder(
+        repository = recentProjectRepository,
+        pathNormalizer = pathNormalizer,
+        scope = applicationScope,
+        failureReporter = recentProjectFailureReporter,
+    )
     val openCodeStore = InMemoryOpenCodeStore(pathNormalizer, OpenCodeEventReducer(redactor))
+    val sessionVisibilityRegistry = SessionVisibilityRegistry(openCodeStore)
     val openCodeRepository = OpenCodeRepository(
         serverRepository = serverRepository,
         pathNormalizer = pathNormalizer,
@@ -80,6 +106,12 @@ class AppContainer(context: Context) {
     val projectSnapshotCoordinator = ProjectSnapshotCoordinator(
         loader = openCodeRepository,
         store = openCodeStore,
+        scope = applicationScope,
+    )
+    val sessionListWindowCoordinator = SessionListWindowCoordinator(
+        loader = openCodeRepository,
+        store = openCodeStore,
+        pathNormalizer = pathNormalizer,
         scope = applicationScope,
     )
     val openCodeEventClient = OpenCodeEventClient(

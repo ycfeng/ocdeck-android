@@ -60,6 +60,179 @@ class InMemoryOpenCodeStore(
         return state.value.projects[key]?.messageDataRevision ?: 0L
     }
 
+    fun captureSessionListWindow(
+        serverId: String,
+        directory: String,
+        workspace: String? = null,
+    ): SessionListWindowState {
+        val key = key(serverId, directory, workspace)
+        return state.value.projects[key]?.sessionListWindow ?: SessionListWindowState()
+    }
+
+    fun requestMoreSessions(
+        serverId: String,
+        directory: String,
+        workspace: String? = null,
+    ): SessionListWindowRequestAction {
+        val key = key(serverId, directory, workspace)
+        var action = SessionListWindowRequestAction.Ignored
+        state.update { runtime ->
+            val project = runtime.project(key)
+            val window = project.sessionListWindow
+            val target = window.visibleRootLimit.saturatedPlus(SessionListPageSize)
+            val loadedRootCount = project.sessions.count { it.parentId.isNullOrBlank() }
+            val nextWindow = when {
+                loadedRootCount >= target -> {
+                    action = SessionListWindowRequestAction.ExpandedLocally
+                    window.copy(
+                        visibleRootLimit = target,
+                        moreState = if (window.moreState == SessionListMoreState.Failed) {
+                            SessionListMoreState.MayHaveMore
+                        } else {
+                            window.moreState
+                        },
+                    )
+                }
+                window.moreState == SessionListMoreState.EndReached -> {
+                    action = SessionListWindowRequestAction.Ignored
+                    window
+                }
+                else -> {
+                    action = SessionListWindowRequestAction.LoadRequired
+                    window.copy(
+                        visibleRootLimit = target,
+                        requestedRawLimit = maxOf(
+                            window.requestedRawLimit,
+                            target.saturatedPlus(SessionListRawHeadroom),
+                        ),
+                        moreState = SessionListMoreState.Loading,
+                        requestGeneration = window.requestGeneration + 1L,
+                    )
+                }
+            }
+            if (nextWindow == window) {
+                runtime
+            } else {
+                runtime.copy(projects = runtime.projects + (key to project.copy(sessionListWindow = nextWindow)))
+            }
+        }
+        return action
+    }
+
+    fun retrySessionListWindow(
+        serverId: String,
+        directory: String,
+        workspace: String? = null,
+    ): Boolean {
+        val key = key(serverId, directory, workspace)
+        var requested = false
+        state.update { runtime ->
+            val project = runtime.project(key)
+            val window = project.sessionListWindow
+            if (window.moreState != SessionListMoreState.Failed) {
+                runtime
+            } else {
+                requested = true
+                runtime.copy(
+                    projects = runtime.projects + (
+                        key to project.copy(
+                            sessionListWindow = window.copy(
+                                moreState = SessionListMoreState.Loading,
+                                requestGeneration = window.requestGeneration + 1L,
+                            ),
+                        )
+                        ),
+                )
+            }
+        }
+        return requested
+    }
+
+    internal fun sessionListWindowLoadRequest(
+        serverId: String,
+        directory: String,
+        workspace: String? = null,
+    ): SessionListWindowLoadRequest? {
+        val project = currentProject(serverId, directory, workspace)
+        val window = project.sessionListWindow
+        return if (window.moreState == SessionListMoreState.Loading) {
+            SessionListWindowLoadRequest(
+                requestedRawLimit = window.requestedRawLimit,
+                requestGeneration = window.requestGeneration,
+                expectedProjectRevision = project.projectDataRevision,
+            )
+        } else {
+            null
+        }
+    }
+
+    internal fun hasPendingSessionListWindowLoad(
+        serverId: String,
+        directory: String,
+        workspace: String? = null,
+    ): Boolean = currentProject(serverId, directory, workspace).sessionListWindow.moreState == SessionListMoreState.Loading
+
+    internal fun applySessionListWindow(
+        serverId: String,
+        directory: String,
+        sessions: List<OpenCodeSession>,
+        requestedRawLimit: Int,
+        rawResultCount: Int,
+        requestGeneration: Long,
+        expectedProjectRevision: Long,
+        workspace: String? = null,
+    ): Boolean {
+        val key = key(serverId, directory, workspace)
+        var applied = false
+        state.update { runtime ->
+            val project = runtime.project(key)
+            val window = project.sessionListWindow
+            if (
+                window.moreState != SessionListMoreState.Loading ||
+                window.requestGeneration != requestGeneration ||
+                window.requestedRawLimit != requestedRawLimit
+            ) {
+                runtime
+            } else {
+                applied = true
+                val next = project.applySessionWindow(
+                    rawSessions = sessions,
+                    requestedRawLimit = requestedRawLimit,
+                    rawResultCount = rawResultCount,
+                    requestGeneration = requestGeneration,
+                    preserveCurrentById = project.projectDataRevision != expectedProjectRevision,
+                ).copy(projectDataRevision = project.projectDataRevision + 1L)
+                runtime.copy(projects = runtime.projects + (key to next))
+            }
+        }
+        return applied
+    }
+
+    internal fun failSessionListWindow(
+        serverId: String,
+        directory: String,
+        requestGeneration: Long,
+        workspace: String? = null,
+    ): Boolean {
+        val key = key(serverId, directory, workspace)
+        var applied = false
+        state.update { runtime ->
+            val project = runtime.project(key)
+            val window = project.sessionListWindow
+            if (window.moreState != SessionListMoreState.Loading || window.requestGeneration != requestGeneration) {
+                runtime
+            } else {
+                applied = true
+                runtime.copy(
+                    projects = runtime.projects + (
+                        key to project.copy(sessionListWindow = window.copy(moreState = SessionListMoreState.Failed))
+                        ),
+                )
+            }
+        }
+        return applied
+    }
+
     fun setProjectLoading(
         serverId: String,
         directory: String,
@@ -511,10 +684,23 @@ private fun OpenCodeProjectState.applySnapshot(snapshot: OpenCodeProjectSnapshot
         commands = snapshot.promptCapabilities.commands.toList(),
         serverDefaultModels = snapshot.promptCapabilities.serverDefaultModels.toList(),
     )
-    return copy(
+    val windowed = if (
+        snapshot.sessionWindowRequestGeneration == sessionListWindow.requestGeneration &&
+        snapshot.sessionWindowRequestedRawLimit >= sessionListWindow.requestedRawLimit
+    ) {
+        applySessionWindow(
+            rawSessions = snapshot.sessions,
+            requestedRawLimit = snapshot.sessionWindowRequestedRawLimit,
+            rawResultCount = snapshot.sessionWindowRawResultCount,
+            requestGeneration = snapshot.sessionWindowRequestGeneration,
+            preserveCurrentById = false,
+        )
+    } else {
+        this
+    }
+    return windowed.copy(
         project = snapshot.project ?: project,
         pathInfo = snapshot.pathInfo,
-        sessions = snapshot.sessions.visibleForDisplay().sortedForDisplay(),
         permissionsBySession = permissionsBySession,
         questionsBySession = questionsBySession,
         statuses = snapshot.statuses,
@@ -532,6 +718,49 @@ private fun OpenCodeProjectState.applySnapshot(snapshot: OpenCodeProjectSnapshot
         isLoading = false,
         error = null,
         projectDataRevision = projectDataRevision + 1,
+    )
+}
+
+private fun OpenCodeProjectState.applySessionWindow(
+    rawSessions: List<OpenCodeSession>,
+    requestedRawLimit: Int,
+    rawResultCount: Int,
+    requestGeneration: Long,
+    preserveCurrentById: Boolean,
+): OpenCodeProjectState {
+    val incomingRootIds = rawSessions
+        .asSequence()
+        .filter { it.parentId.isNullOrBlank() }
+        .map(OpenCodeSession::id)
+        .toSet()
+    val currentById = if (preserveCurrentById) sessions.associateBy(OpenCodeSession::id) else emptyMap()
+    val incoming = rawSessions
+        .visibleForDisplay()
+        .filterNot { it.id in removedSessionRevisions }
+        .map { session -> currentById[session.id] ?: session }
+        .distinctBy(OpenCodeSession::id)
+    val incomingIds = incoming.mapTo(mutableSetOf(), OpenCodeSession::id)
+    val retainedSupplemental = sessions.filterNot { session ->
+        session.id in sessionListWindow.loadedRootSessionIds ||
+            session.id in incomingRootIds ||
+            session.id in incomingIds
+    }
+    val nextSessions = (retainedSupplemental + incoming)
+        .distinctBy(OpenCodeSession::id)
+        .sortedForDisplay()
+    return copy(
+        sessions = nextSessions,
+        sessionListWindow = sessionListWindow.copy(
+            requestedRawLimit = requestedRawLimit,
+            rawResultCount = rawResultCount,
+            moreState = if (rawResultCount < requestedRawLimit) {
+                SessionListMoreState.EndReached
+            } else {
+                SessionListMoreState.MayHaveMore
+            },
+            requestGeneration = requestGeneration,
+            loadedRootSessionIds = incomingRootIds,
+        ),
     )
 }
 
@@ -796,6 +1025,8 @@ private fun List<OpenCodeSession>.sortedForDisplay(): List<OpenCodeSession> = so
 )
 
 private fun List<OpenCodeSession>.visibleForDisplay(): List<OpenCodeSession> = filter { it.archivedAt == null }
+
+private fun Int.saturatedPlus(value: Int): Int = if (this > Int.MAX_VALUE - value) Int.MAX_VALUE else this + value
 
 private fun List<OpenCodePermissionRequest>.groupPermissionsBySession(): Map<String, List<OpenCodePermissionRequest>> = groupBy { it.sessionId }
     .mapValues { (_, requests) -> requests.sortedBy { it.id } }

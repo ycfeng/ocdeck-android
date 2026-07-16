@@ -337,6 +337,9 @@ data class OpenCodeProjectSnapshot(
     val project: ProjectRef? = null,
     val pathInfo: OpenCodePathInfo?,
     val sessions: List<OpenCodeSession>,
+    val sessionWindowRequestedRawLimit: Int = 70,
+    val sessionWindowRawResultCount: Int = sessions.size,
+    val sessionWindowRequestGeneration: Long = 0L,
     val statuses: Map<String, OpenCodeSessionStatus>,
     val providerCount: Int,
     val models: List<OpenCodeModel>,
@@ -354,8 +357,11 @@ data class OpenCodeProjectSnapshot(
 ) {
     override fun toString(): String =
         "OpenCodeProjectSnapshot(serverId=$REDACTED, normalizedDirectory=$REDACTED, " +
-            "workspace=${redactedIfPresent(workspace)}, projectPresent=${project != null}, " +
-            "pathInfoPresent=${pathInfo != null}, sessionCount=${sessions.size}, statusCount=${statuses.size}, " +
+             "workspace=${redactedIfPresent(workspace)}, projectPresent=${project != null}, " +
+            "pathInfoPresent=${pathInfo != null}, sessionCount=${sessions.size}, " +
+            "sessionWindowRequestedRawLimit=$sessionWindowRequestedRawLimit, " +
+            "sessionWindowRawResultCount=$sessionWindowRawResultCount, " +
+            "sessionWindowRequestGeneration=$sessionWindowRequestGeneration, statusCount=${statuses.size}, " +
             "providerCount=$providerCount, modelCount=${models.size}, agentCount=${agents.size}, " +
             "commandListCount=${commands.size}, promptCapabilitiesRevision=${promptCapabilities.revision}, " +
             "mcpCount=${mcps.size}, lspCount=${lsps.size}, pluginCount=${plugins.size}, " +

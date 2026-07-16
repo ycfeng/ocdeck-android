@@ -2,6 +2,7 @@ package io.github.ycfeng.ocdeck.core.network
 
 import io.github.ycfeng.ocdeck.core.store.InMemoryOpenCodeStore
 import io.github.ycfeng.ocdeck.core.store.ProjectKey
+import io.github.ycfeng.ocdeck.core.store.SessionListWindowState
 import io.github.ycfeng.ocdeck.data.server.ServerTransportIdentity
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessageBundle
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeProjectSnapshot
@@ -40,11 +41,12 @@ data class LoadedActiveSessionMessages(
             "messageCount=${bundle.messages.size}, partCount=${bundle.parts.size})"
 }
 
-fun interface ProjectSnapshotLoader {
+interface ProjectSnapshotLoader {
     suspend fun loadProjectSnapshot(
         serverId: String,
         directory: String,
         workspace: String?,
+        sessionWindow: SessionListWindowState,
         activeSessionMessages: ActiveSessionMessagesRequest?,
     ): Result<LoadedProjectSnapshot>
 }
@@ -149,6 +151,7 @@ class ProjectSnapshotCoordinator(
                 serverId = flight.token.key.serverId,
                 directory = flight.token.key.normalizedDirectory,
                 workspace = flight.token.key.normalizedWorkspace,
+                sessionWindow = project.sessionListWindow,
                 activeSessionMessages = activeSessionMessages,
             )
             result.fold(

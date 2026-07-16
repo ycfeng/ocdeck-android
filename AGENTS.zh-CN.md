@@ -72,15 +72,15 @@
 - 项目内相对文件路径单独使用 `ProjectFilePathNormalizer`。拒绝 NUL、绝对路径和任意 `..`；保持文档定义的 Windows/POSIX 分隔符语义，并验证服务端目录节点是请求目录的直接子项。
 - 不得为了速度或方便绕过路径规范化。
 - 普通 REST 使用 Retrofit + OkHttp + kotlinx.serialization，并保持 JSON 对未知字段容错。
-- 每个 `OpenCodeApi` Retrofit 方法都必须声明显式入站响应策略。普通成功 JSON/object/list/Boolean/`JsonElement` 响应以及透明解压后的 `/file/content` 响应实体统一限制为 16 MiB；成功的 `Response<Unit>` body 直接丢弃。
-- Retrofit 入站拦截器在策略缺失时 fail-closed。`Content-Length` 只用于提前拒绝，未知或低报长度在 `max + 1` 强制失败；所有非 2xx body 在 Retrofit 缓存前关闭并替换为空 body，同时保留状态码。没有 Retrofit `Invocation` 的请求不经过该拦截器，包括 session messages 的 direct transport。
+- 每个 `OpenCodeApi` Retrofit 方法都必须声明显式入站响应策略。普通成功 JSON/object/list/Boolean/`JsonElement` 响应和 `/file/content` 同时具有 `Content-Encoding` 解码前 16 MiB encoded response-body 上限与解码后 16 MiB entity 上限；成功的 `Response<Unit>` body 直接丢弃。
+- Retrofit 入站拦截器在策略缺失时 fail-closed，并为有界请求附加 encoded-body network interceptor 所需的 tag。两层限制都只把 `Content-Length` 用于提前拒绝，未知或低报长度在 `max + 1` 强制失败；所有非 2xx body 在 Retrofit 缓存前关闭并替换为空 body，同时保留状态码。没有 Retrofit `Invocation` 的请求不经过 Retrofit 拦截器，包括 session messages 的 direct transport，因此必须自行附加 encoded-body policy。
 - 项目进入流程保持为：规范化 `directory`，并行获取项目 REST 快照，写入内存 Store，打开项目 SSE，将增量事件归约到 Store，并在 App 恢复前台后执行健康检查与快照校准。
 - 完整端点矩阵和完成度位于 `doc/architecture/mobile-interaction.md`。调整端点时，应同步更新 DTO 容错、directory/workspace 参数测试和配对的交互文档。
 
 ## SSE 与连接一致性
 
 - 同时支持全局与项目 SSE。生产 SSE 必须使用 OkHttp `Call` 和基于 `ResponseBody.source()` 的自定义流式 reader，不得使用先把 event `data` 完整分配为 `String` 的无界 parser。
-- 单个 SSE 物理/逻辑行和累计 event data 的 UTF-8 线缆字节上限均为 32 MiB。整行转 `String` 前检查行限制，完整拼接 event 前检查累计限制。超限时关闭 body、取消 Call，并报告不含 payload 的类型化失败。
+- SSE 必须请求 `Accept-Encoding: identity`，并在打开或读取 body 前拒绝任意非 identity content encoding。单个 SSE 物理/逻辑行和累计 event data 的 UTF-8 identity response-body 字节上限均为 32 MiB。整行转 `String` 前检查行限制，完整拼接 event 前检查累计限制。超限时关闭 body、取消 Call，并报告不含 payload 的类型化失败。
 - 只接受 HTTP 200 且 media type 为 `text/event-stream`，允许 charset 参数。非 200 或 Content-Type 无效时不得读取响应体。204 和不可重试 4xx 进入 `Failed`；408/409/425/429 与 5xx 保持可重试。
 - 只有完整空行才能 dispatch event。EOF 时丢弃没有被该分隔符终止的 pending line/event。单个事件 JSON 或字段类型无效时只丢弃该事件，不关闭连接；JVM `Error` 仍必须传播。
 - 显式取消导致的 I/O 失败不得转为重连回调。连接状态明确暴露 `Connecting`、`Open`、`Retrying`、`Failed` 与 `Closed`，并使用有界指数退避。
@@ -121,8 +121,8 @@
 - 服务端项目文件使用 OpenCode `/file`、`/file/content` 与 `/find/file` 浏览，不得用 Android SAF 代替服务端文件系统。Android 本机附件可以使用系统选择器；UI 和数据模型必须明确区分本机文件与服务端项目文件。
 - URI、`ResponseBody`、Base64、native bridge、图片或私钥数据必须在完整分配前执行流式硬上限检查。不得使用无界 `readBytes()`、`readText()`、完整 body 缓冲或先解码后检查的方式。
 - `GET /session/{sessionID}/message` 必须绕过 Retrofit converter 和错误体缓存，使用 `ServerConnection` 提供且与 REST 共享认证、超时、重定向和脱敏配置的 OkHttp `Call.Factory`。非 2xx 不读取 body，直接关闭并抛出不含 body 的类型化 HTTP 错误。
-- Session messages 的 2xx body 在 OkHttp callback 线程使用计数/限流 `InputStream` 与共享宽容 `Json.decodeFromStream` 解码。`Content-Length` 只用于提前拒绝；实际线缆流在 `max + 1` 字节失败，并通过同一 limiter 验证 EOF。完整 UTF-8 线缆上限为 64 MiB。协程取消必须取消 Call 并关闭正在读取的 body，且不得用 I/O 错误替换 `CancellationException`。
-- Retrofit 的 16 MiB、session messages 的 64 MiB 与 SSE 的 32 MiB 都是线缆字节上限，不是 heap 使用保证。Retrofit converter 在限额内仍可能完整构建 `String`、DTO 图或 JSON tree，并发项目快照仍可能产生较高内存峰值；`/file/content` 继续保留 reader 层第二道防御。
+- Session messages 的 2xx body 在 OkHttp callback 线程使用计数/限流 `InputStream` 与共享宽容 `Json.decodeFromStream` 解码。执行 Call 前附加 64 MiB encoded response-body policy，再在解码和 EOF 验证期间执行独立的 64 MiB decoded-entity 上限。`Content-Length` 只用于提前拒绝，未知或低报长度在 `max + 1` 失败。协程取消必须取消 Call 并关闭正在读取的 body，且不得用 I/O 错误替换 `CancellationException`。
+- Retrofit/file 的 16 MiB 与 session messages 的 64 MiB 分别限制 HTTP transfer framing 之后、`Content-Encoding` 解码之前的 encoded response-body octets 和解码后的 entity bytes；SSE 的 32 MiB 限制 identity response-body representation。这些都不是 heap 使用保证：Retrofit converter 在限额内仍可能完整构建 `String`、DTO 图或 JSON tree，并发项目快照仍可能产生较高内存峰值；`/file/content` 继续保留 reader 层 decoded 防御。
 - 附件必须同时限制单文件大小、文件数量和总 raw bytes。Sender 最终边界必须重新校验必填 metadata、data URL header、Base64 字符/空白/padding、encoded length 与声明 raw size。
 - SSH 私钥文件最多 256 KiB，必须在 IO dispatcher 使用有界 buffer 读取，并在保存和 JSch 边界按 UTF-8 字节数复验。
 

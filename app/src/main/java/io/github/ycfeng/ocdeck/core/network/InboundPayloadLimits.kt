@@ -5,19 +5,24 @@ import java.io.IOException
 internal object InboundPayloadLimits {
     private const val MEBIBYTE_BYTES = 1024L * 1024L
 
-    const val RETROFIT_RESPONSE_BYTES = 16L * MEBIBYTE_BYTES
+    const val REST_ENCODED_RESPONSE_BYTES = 16L * MEBIBYTE_BYTES
+    const val RETROFIT_DECODED_RESPONSE_BYTES = 16L * MEBIBYTE_BYTES
+    const val FILE_CONTENT_DECODED_RESPONSE_BYTES = 16L * MEBIBYTE_BYTES
 
     // A 32 MiB SSE budget accommodates the Base64 echo of one 20 MiB raw attachment plus framing.
-    const val SSE_EVENT_DATA_BYTES = 32L * MEBIBYTE_BYTES
-    const val SSE_LINE_BYTES = 32L * MEBIBYTE_BYTES
+    const val SSE_EVENT_DATA_WIRE_BYTES = 32L * MEBIBYTE_BYTES
+    const val SSE_LINE_WIRE_BYTES = 32L * MEBIBYTE_BYTES
 
     // Session history can contain several attachment echoes; cap the complete response peak at 64 MiB.
-    const val SESSION_MESSAGES_RESPONSE_BYTES = 64L * MEBIBYTE_BYTES
+    const val SESSION_MESSAGES_ENCODED_RESPONSE_BYTES = 64L * MEBIBYTE_BYTES
+    const val SESSION_MESSAGES_DECODED_RESPONSE_BYTES = 64L * MEBIBYTE_BYTES
 
     const val READ_BUFFER_BYTES = 8 * 1024
 }
 
 internal open class InboundPayloadTooLargeException : IOException()
+
+internal class EncodedResponseTooLargeException : InboundPayloadTooLargeException()
 
 internal class RetrofitInboundResponseTooLargeException : InboundPayloadTooLargeException()
 
@@ -38,3 +43,5 @@ internal sealed class SseProtocolException : IOException()
 internal class SseUnexpectedHttpStatusException(val statusCode: Int) : SseProtocolException()
 
 internal class SseContentTypeException : SseProtocolException()
+
+internal class SseContentEncodingException : SseProtocolException()

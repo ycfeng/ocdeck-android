@@ -207,7 +207,7 @@
     <string name="project_file_context_source_path">项目 · %1$s</string>
     <string name="project_file_context_count_limit">最多可添加 %1$d 个项目文件</string>
     <string name="project_file_context_invalid">项目文件路径无效，请重新选择</string>
-    <string name="project_error_save_recent_failed">保存最近项目失败</string>
+    <string name="project_error_open_navigation_failed">无法打开项目，请重试</string>
     <string name="project_error_delete_recent_failed">删除最近项目失败</string>
     <string name="project_error_load_candidates_failed">无法加载候选路径</string>
     <string name="project_build_anything">构建任何东西</string>
@@ -228,6 +228,9 @@
     <string name="session_new">新建会话</string>
     <string name="session_section">会话</string>
     <string name="session_load_more">加载更多</string>
+    <string name="session_loading_more">正在加载更多会话</string>
+    <string name="session_load_more_failed">加载更多会话失败</string>
+    <string name="session_no_more">没有更多会话</string>
     <string name="session_archive_title">归档会话</string>
     <string name="session_archive_message">归档会话 "%1$s"？</string>
     <string name="session_archive_confirm">归档会话</string>
@@ -245,6 +248,7 @@
     <string name="prompt_error_operation_in_progress">当前会话已有发送或停止操作正在进行</string>
     <string name="prompt_error_outcome_uncertain">请求结果不确定，但消息可能已由服务端接收，请先检查会话后再重试</string>
     <string name="session_load_messages_failed">加载消息失败</string>
+    <string name="session_load_metadata_failed">加载会话信息失败</string>
     <string name="session_reset_to_here">重置到此点</string>
     <string name="session_reset_failed">重置消息失败</string>
     <string name="session_restore_failed">恢复消息失败</string>
@@ -503,6 +507,12 @@
     <string name="sound_option_yup_number">是 %1$02d</string>
     <string name="notification_channel_sessions_name">会话通知</string>
     <string name="notification_channel_sessions_description">提示会话完成、权限请求、问题和错误。</string>
+    <string name="notification_channel_agent_name">智能体与问题提醒</string>
+    <string name="notification_channel_agent_description">提示会话完成和待回答问题。</string>
+    <string name="notification_channel_permission_name">权限提醒</string>
+    <string name="notification_channel_permission_description">提示待处理的权限请求。</string>
+    <string name="notification_channel_error_name">错误提醒</string>
+    <string name="notification_channel_error_description">提示会话错误。</string>
     <string name="notification_session_response_ready_title">回复已就绪</string>
     <string name="notification_session_error_title">会话错误</string>
     <string name="notification_session_error_body">%1$s：%2$s</string>

@@ -769,7 +769,7 @@ class EventReducerTest {
     }
 
     @Test
-    fun sessionIdleForActiveSessionIsAlreadyViewed() {
+    fun sessionIdleForActuallyVisibleSessionIsAlreadyViewed() {
         val reducer = OpenCodeEventReducer(nowMillis = { 42L })
         val state = OpenCodeProjectState(
             serverId = "local",

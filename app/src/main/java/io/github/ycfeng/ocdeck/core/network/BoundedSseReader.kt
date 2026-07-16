@@ -15,8 +15,8 @@ internal data class BoundedSseEvent(
 }
 
 internal class BoundedSseReader(
-    private val maxLineBytes: Long = InboundPayloadLimits.SSE_LINE_BYTES,
-    private val maxEventDataBytes: Long = InboundPayloadLimits.SSE_EVENT_DATA_BYTES,
+    private val maxLineBytes: Long = InboundPayloadLimits.SSE_LINE_WIRE_BYTES,
+    private val maxEventDataBytes: Long = InboundPayloadLimits.SSE_EVENT_DATA_WIRE_BYTES,
     private val readBufferBytes: Int = InboundPayloadLimits.READ_BUFFER_BYTES,
 ) {
     init {

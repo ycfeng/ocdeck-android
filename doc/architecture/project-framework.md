@@ -292,7 +292,7 @@ OC Deck is server driven: projects, sessions, messages, permissions, questions, 
 
 Current storage:
 
-- DataStore Preferences: server list, current server, recent projects, and UI preferences such as color scheme and app language. There is no separate last-opened-project or per-project last-session field.
+- DataStore Preferences: server list, current server, recent projects, and UI preferences such as color scheme and app language. Recent-project writes are auxiliary: an application-scope ordered `RecentProjectRecorder` performs them best-effort after navigation, so local persistence failure cannot block project entry. There is no separate last-opened-project or per-project last-session field.
 - Android Keystore: OpenCode Basic passwords, SSH passwords/private keys/passphrases/host fingerprints, and frp/STCP secrets. Provider API keys and OAuth credentials are written to OpenCode Server's auth store and are not persisted by Android.
 - In-memory Store: projects, sessions, messages, permissions, questions, and SSE state for the current process.
 
@@ -336,9 +336,10 @@ The network layer centralizes OpenCode REST APIs, authentication, error parsing,
 Core classes:
 
 - `OpenCodeApi`: Retrofit interface for REST APIs.
-- `RetrofitInboundResponsePolicyInterceptor`: requires an explicit response mode on every `OpenCodeApi` method, bounds ordinary successful entities, and discards bodies that must not reach Retrofit converters.
+- `RetrofitInboundResponsePolicyInterceptor`: requires an explicit response mode on every `OpenCodeApi` method, tags bounded requests for the encoded-body network interceptor, bounds decoded successful entities, and discards bodies that must not reach Retrofit converters.
+- `EncodedResponseLimitInterceptor`: a network interceptor that limits tagged response-body octets before OkHttp performs `Content-Encoding` decoding.
 - `OpenCodeApiFactory`: creates API instances from `ServerConfig` and provides `ServerConnection` with a narrow `SessionMessagesTransport` using the shared OkHttp client plus a separately bounded ten-minute Provider OAuth callback client.
-- `SessionMessagesTransport`: requests session messages directly; does not read non-2xx bodies and performs bounded 64 MiB streaming JSON decode on the OkHttp callback thread for 2xx.
+- `SessionMessagesTransport`: requests session messages directly; does not read non-2xx bodies and combines a 64 MiB encoded response-body policy with bounded 64 MiB streaming decoded JSON on the OkHttp callback thread for 2xx.
 - `OpenCodeEventClient`: manages global and project event streams with OkHttp `Call` and a custom streaming SSE reader.
 - `OpenCodeErrorParser`: central HTTP, network, and server-error parsing.
 - `OpenCodeFailureClassifier`: converts transport, protocol, size, and operation failures into typed semantic reasons without deriving behavior from exception messages; UI maps those reasons through localized `UiText.Resource` values.
@@ -371,7 +372,7 @@ Json {
 }
 ```
 
-Every `OpenCodeApi` method declares `@RetrofitInboundResponse` with either `BOUNDED` or `EMPTY_SUCCESS`. `BOUNDED` lazily enforces a 16 MiB wire limit on the transparently decompressed successful entity. `Content-Length` is only an early rejection; unknown or understated lengths fail at `max + 1`. `EMPTY_SUCCESS` closes successful `Response<Unit>` bodies without reading them. Every non-2xx body is also closed and replaced with an empty entity while preserving the status code, so Retrofit cannot cache or convert a sensitive error body. A missing policy fails closed before the request proceeds. Calls without a Retrofit `Invocation`, including the direct session-message transport, pass outside this interceptor and keep their dedicated boundary.
+Every `OpenCodeApi` method declares `@RetrofitInboundResponse` with either `BOUNDED` or `EMPTY_SUCCESS`. `BOUNDED` attaches a 16 MiB encoded response-body policy that is enforced by a network interceptor before OkHttp content decoding, then lazily enforces a separate 16 MiB decoded-entity limit. `Content-Length` is only an early rejection; unknown or understated lengths fail at `max + 1`. `EMPTY_SUCCESS` closes successful `Response<Unit>` bodies without reading them. Every non-2xx body is also closed and replaced with an empty entity while preserving the status code, so Retrofit cannot cache or convert a sensitive error body. A missing policy fails closed before the request proceeds. Calls without a Retrofit `Invocation`, including the direct session-message transport, pass outside the Retrofit interceptor and attach their own encoded-body policy.
 
 ### 7.2 Key API Groups
 
@@ -381,9 +382,10 @@ Primary path APIs:
 - Global events: `GET /global/event`
 - Project path: `GET /path`
 - Current project information and name edit: `GET /project/current`, `PATCH /project/{projectID}`; current implementation sends only `name`
-- Session list: `GET /session?directory=...`
+- Session list: `GET /session?directory=...&workspace=...&roots=true&limit=...`, refetching an ordered prefix for the Store-backed session window.
+- Session metadata: `GET /session/{sessionID}`, used to supplement a route outside the current window and its bounded parent chain.
 - Session creation: `POST /session`
-- Session messages: `GET /session/{sessionID}/message`, using a specialized transport on the shared REST OkHttp client. It bypasses Retrofit converter/error-body caching, reads no non-2xx body, and performs a 64 MiB wire boundary plus EOF verification through a counting `InputStream` and lenient `Json.decodeFromStream` for 2xx.
+- Session messages: `GET /session/{sessionID}/message`, using a specialized transport on the shared REST OkHttp client. It bypasses Retrofit converter/error-body caching, reads no non-2xx body, limits encoded response-body octets to 64 MiB, and performs a separate 64 MiB decoded-entity boundary plus EOF verification through a counting `InputStream` and lenient `Json.decodeFromStream` for 2xx.
 - Prompt send: `POST /session/{sessionID}/prompt_async`
 - Abort: `POST /session/{sessionID}/abort`
 - Project events: `GET /event?directory=...&workspace=...`
@@ -396,7 +398,7 @@ Integrated and extension APIs:
 
 - Diff: `GET /vcs/diff?mode=git&directory=...`, `GET /session/{sessionID}/diff?directory=...`
 - Session management: rename, share, archive, delete, fork, summarize, children, todo. Revert/unrevert are integrated through legacy `POST /session/{sessionID}/revert|unrevert` using an encoded directory header.
-- Files: `/file`, `/file/content`, `/find/file`. Project tree, search, and read-only preview are integrated. `/file/content` first passes the common lazy 16 MiB Retrofit wire boundary, then retains a reader-level bounded `ResponseBody` check before deserialization so UI limits cannot be bypassed by an arbitrarily large response.
+- Files: `/file`, `/file/content`, `/find/file`. Project tree, search, and read-only preview are integrated. `/file/content` passes the common 16 MiB encoded response-body and decoded Retrofit boundaries, then retains a reader-level decoded `ResponseBody` check before deserialization so UI limits cannot be bypassed by an arbitrarily large response.
 - Provider management: instance-scoped `GET /provider` and `GET /provider/auth`, plus stateful OAuth authorize/callback, accept optional `directory/workspace`. Server-global root-control operations are `PUT/DELETE /auth/{providerID}`, `GET/PATCH /global/config`, and `POST /global/dispose`. OAuth authorize/callback preserve the same scope and original method index, are not automatically retried, and long auto callbacks use the dedicated bounded client.
 - Config, session status, MCP, LSP, and plugin status are integrated; PTY/terminal and worktree remain unimplemented.
 
@@ -478,7 +480,7 @@ Suggested Store responsibilities:
 
 - `ServerStore`: current server, health, and connection state.
 - `ProjectStore`: project list, current project, and path mapping.
-- `SessionStore`: session list, current session, messages, and session state.
+- `SessionStore`: session list, current session, messages, session state, and a per-ProjectKey root-session window with visible/requested limits, raw result count, loading/retry/end state, generation, and loaded-root identity.
 - `ProviderStore`: providers, models, and connected state.
 - `PermissionStore`: permission and question requests.
 - `NotificationStore`: session-complete/error notifications and project/session unread state, with at most 500 items and 30-day TTL.
@@ -489,7 +491,7 @@ Project file browsing does not write into the session/SSE Store. A dedicated `Pr
 Initial project synchronization:
 
 1. Normalize `directory`.
-2. Request `/project/current`, `/path`, `/provider`, `/mcp`, `/session`, `/agent`, `/config`, `/session/status`, `/vcs`, `/command`, `/permission`, and `/question` in parallel.
+2. Request `/project/current`, `/path`, `/provider`, `/mcp`, `/session?roots=true&limit=<current-window>`, `/agent`, `/config`, `/session/status`, `/vcs`, `/command`, `/permission`, and `/question` in parallel.
 3. Write snapshots to the in-memory Store.
 4. Establish project SSE.
 5. Incrementally update the Store from SSE.
@@ -523,6 +525,8 @@ Page adaptation requirements:
 
 - The project shell uses Compose `ModalNavigationDrawer` to avoid off-screen DOM pointer interception.
 - Its left rail merges the active project with the current server's normalized MRU recent projects. Project buttons use a bounded list capped at 75% of the safe drawer content height, while Open Project and Settings remain fixed. Selecting a project enters its project home and reuses an existing matching back-stack destination when possible; recent-project records do not restore a last session.
+- Project/session navigation submits successful opens to the application-scope `RecentProjectRecorder`; DataStore failure is reported safely but never rolls back navigation or a successful project rename.
+- Session destinations hold a visibility lease only while the app is foreground and the destination lifecycle is at least `STARTED`; notification viewed state must not be inferred from ViewModel lifetime.
 - The shell provides project files through a right-side overlay with Browse and Pick modes: full phone width, maximum 420 dp on large screens. The scrim covers only outside the panel, underlying semantics are hidden while open, and system Back returns from preview before closing. Pick mode confirms at most 10 whole files through a route/session-bound request; cancellation changes no draft state. Do not use a desktop two-column layout that compresses session content.
 - Every full-screen `NavHost` route uses slide transitions: forward is right-in/left-out and Back is left-in/right-out.
 - Settings, server management, providers, and models use single-column full-screen pages.
@@ -545,7 +549,7 @@ Core capabilities and components:
 - Variant picker: dynamically show Default plus current-model `variants`; hide when the model has none. Capitalize dynamic labels and call the concept Reasoning Strength/Reasoning.
 - `ProjectFilePanel`: lazy project tree, search, single-page tree/content navigation, text/image/binary states, and an explicit multi-select Pick mode with checkbox semantics, independent preview, and fixed confirmation.
 - `OpenCodeCodeViewer`: shared Prism4j configuration with Markdown rendering, line numbers, text selection, and vertical virtualization. File preview limits are 500,000 characters, 20,000 lines, and 20,000 characters per line.
-- `SessionListDrawerContent`: bounded same-server project rail with full TalkBack tab labels, project title/path, overflow menu, new session, session list, archive actions, and Load More.
+- `SessionListDrawerContent`: bounded same-server project rail with full TalkBack tab labels, project title/path, overflow menu, new session, and the shared Store-backed session window. Load More raises the root target by 20, refetches with 50 entries of headroom when needed, and exposes loading, retry, and end states.
 - `SessionMessageCard`: message content, quoted-comment cards, standalone project-file context rows, agent/assistant Markdown, Compose highlighted code blocks, copy, reset/revert, and error states. Extract quoted comments from top-level `metadata.opencodeComment` on synthetic user-message text parts. REST and SSE use the same typed model, with fixed synthetic-text parsing as compatibility fallback. Paired `file://` comment parts are excluded from standalone context rows and never render as local-device attachments.
 - `SessionRevertDock`: above the ordinary Composer, collapsed by default, showing reverted count and first preview with incremental restore, Restore All, and new-branch submission hints. It must not cover `PermissionDock`, question interaction, or a child-session read-only Dock.
 - Context usage: token, usage, and cost summary, currently suited to an anchored popup.
@@ -654,7 +658,7 @@ Policy:
 - A fixed SSH host fingerprint is verified before user authentication through `HostKeyRepository` or equivalent. Never disable strict checking and validate afterward.
 - Server base URL must be HTTP(S) with a valid host and no userinfo/query/fragment. Use the same validation for save, connection, and UI display, and do not echo invalid old values.
 - Before saving a Direct server with active OpenCode Basic authentication, classify the normalized URL without DNS. A non-loopback `http://` URL requires an explicit advisory confirmation when the username is nonblank and a new or retained password is available. `localhost` and reserved subdomains, IPv4 `127.0.0.0/8`, IPv6 `::1`, and mapped loopback literals are exempt. SSH/STCP saves and later connections are not gated. Confirmation consumes a frozen validated request exactly once and continues through the existing credential transaction; cancellation performs no repository write. Keystore protects local storage, not HTTP traffic.
-- URI, network response, Base64, native bridge return, and private-key inputs require streaming hard limits before complete allocation. Ordinary Retrofit success entities are bounded to 16 MiB, direct session messages to 64 MiB, and SSE lines/events to 32 MiB of wire data. These limits are not peak-heap guarantees: Retrofit converters may still materialize a complete String, DTO graph, or JSON tree, and concurrent project snapshots may create a high memory peak. `/file/content` retains its reader-level second defense. This does not mean every REST endpoint is audited; continue endpoint-by-endpoint work. SSH private-key files are capped at 256 KiB, read on an IO dispatcher, and revalidated by UTF-8 bytes before persistence and JSch.
+- URI, network response, Base64, native bridge return, and private-key inputs require streaming hard limits before complete allocation. Ordinary Retrofit/file responses have separate 16 MiB encoded response-body and decoded-entity limits; direct session messages have separate 64 MiB limits; SSE requests identity encoding and limits lines/events to 32 MiB of that response-body representation. These limits are not peak-heap guarantees: Retrofit converters may still materialize a complete String, DTO graph, or JSON tree, and concurrent project snapshots may create a high memory peak. `/file/content` retains its reader-level decoded defense. This does not mean every REST endpoint is audited; continue endpoint-by-endpoint work. SSH private-key files are capped at 256 KiB, read on an IO dispatcher, and revalidated by UTF-8 bytes before persistence and JSch.
 - `ServerRepository` persists server credentials through a narrow `CredentialStore` boundary. After candidate aliases are built, check cancellation. Put configuration write, result confirmation, epoch update, and SSH/STCP runtime invalidation in a `NonCancellable` commit section. After a write exception, reread the target configuration: continue as success when persisted, roll back only when non-commit is explicit, and retain candidates with a safe typed unknown-outcome error when confirmation is impossible.
 - Clean old aliases outside the configuration lock after rereading every server reference, deleting best-effort without rolling back committed configuration and remaining compatible with historical shared aliases. `SecureCredentialStore` uses SharedPreferences `commit()` on an IO dispatcher so failures are reportable, wraps only expected `Exception`, and lets cancellation and JVM `Error` propagate. SSH pins may be inherited only when host/port endpoint is unchanged. GoMobile Kotlin configuration DTO `toString()` must redact tokens and secret keys.
 - Sensitive or potentially large DTOs, domain models, Store states, transport identities, prompt values, and UI state objects override `toString()` with structural summaries. They omit credentials, URLs/endpoints, aliases, paths, prompts, Base64, SSE payloads, and tool output, use exactly `<redacted>` for sensitive fields, and leave serialization, `copy`, equality, and hashing unchanged.
@@ -664,11 +668,11 @@ Policy:
 Current test priorities:
 
 - `PathNormalizerTest`: Windows paths, roots, trailing slash, case, and duplicate-project deduplication.
-- `ProjectDrawerModelTest` and `ProjectInitialTest`: active/recent project merging, Windows path-alias deduplication, project-home navigation decisions, and Unicode project initials.
+- `ProjectDrawerModelTest`, `ProjectInitialTest`, `ProjectPickerViewModelTest`, `RecentProjectRecorderTest`, and `RecentProjectStoreReducerTest`: active/recent project merging, Windows path-alias deduplication, non-blocking navigation, ordered/retried best-effort persistence, project-home navigation decisions, and Unicode project initials.
 - `SessionComposerAgentResolverTest`, `SessionModelPreferenceResolverTest`, and `SessionComposerRouteSelectionTest`: Build/Plan filtering and fallback, initial model/Variant validation and switching, and new-session-only decoding of lightweight project-home Composer selections.
 - `ProjectFilePathNormalizerTest` and `ProjectFileUrlBuilderTest`: platform differences, NUL, absolute paths, `..`, direct-child validation, POSIX/drive/UNC URL construction, percent encoding, round trips, and project-root containment.
 - `RedactorTest`: key/token/password/header/env/config redaction.
-- `RetrofitInboundResponsePolicyTest`: every `OpenCodeApi` method has an explicit mode; missing policy fails closed; known, unknown, and understated lengths enforce `max + 1`; non-2xx and successful Unit bodies are closed without reading; direct calls without `Invocation` remain outside the policy.
+- `RetrofitInboundResponsePolicyTest` and `EncodedResponseLimitInterceptorTest`: every `OpenCodeApi` method has an explicit mode; missing policy fails closed; encoded and decoded known/unknown/understated lengths enforce `max + 1`; a real OkHttp gzip chain applies the encoded cap before Bridge decoding; non-2xx and successful Unit bodies are closed without reading; direct calls without `Invocation` remain outside the Retrofit policy.
 - `SessionMessagesTransportTest`, `SessionMessagesResponseReaderTest`, and `FileContentResponseReaderTest`: body-free HTTP failures, streaming decode, EOF verification, cancellation/close races, 64 MiB direct-message limits, and the `/file/content` second defense.
 - `OpenCodeFailureTest`, `ErrorUiTextTest`, and `OpenCodeRepositoryFailureHandlingTest`: semantic classification without exception-message parsing, localized resource mapping with operation fallbacks, Repository propagation, and cancellation/JVM `Error` behavior.
 - `ProviderSettingsParsingTest` and `ProviderCapabilityRefreshTest`: safe projection of secret-capable Provider/auth payloads, authoritative `connected` handling, preservation of auth wire indexes and conditions, safe OAuth URL parsing, and capability refresh through the current project/global SSE authority lease.
@@ -682,14 +686,15 @@ Current test priorities:
 - Go wrapper/downstream tests: startup config updates are not lost, ready only after real bind, bind failure, closed manager, control epoch, superseded revision, Stop waits for port release, and sensitive errors are redacted. Run concurrency-related packages under `go test -race`.
 - `PromptSendStateMachineTest`: empty input, attachments, project-context-only input, and working stop/send state.
 - `OpenCodePromptSenderTest`: lazy session creation, authoritative Store capability revision, final attachment/project-context validation, optimistic `file://` parts, conditional rollback, SSE confirmation first, ordinary/loaded-command context propagation, real session alias, abort, and single-flight.
-- `EventReducerTest`: merging SSE events into the Store.
-- `BoundedSseReaderTest`, `OkHttpSseEventSourceFactoryTest`, `OpenCodeEventClientLifecycleTest`, and `ProjectSnapshotCoordinatorTest`: wire parsing, MIME/status/body-free protocol handling, overflow/cancellation, permanent versus retryable reasons, owner/generation/transport races, authoritative-source handoff, bounded replay, and snapshot failure/recovery.
+- `EventReducerTest`, `SessionListWindowCoordinatorTest`, and Store/Repository session-window tests: merging SSE events, ordered prefix replacement, shared visible targets, loading/retry/end state, stale generation/transport rejection, tombstones, workspace isolation, and bounded session/parent metadata backfill.
+- `NotificationAlertPolicyTest`, `NotificationChannelMigrationPolicyTest`, `OpenCodeNotificationAudioAttributesTest`, and `SessionVisibilityRegistryTest`: one sound owner per event, v2 channel migration, explicit system mute/sound precedence, notification audio usage, and foreground destination visibility.
+- `BoundedSseReaderTest`, `OkHttpSseEventSourceFactoryTest`, `OpenCodeEventClientLifecycleTest`, and `ProjectSnapshotCoordinatorTest`: identity response-body parsing, explicit `Accept-Encoding`, non-identity zero-read rejection, MIME/status/body-free protocol handling, overflow/cancellation, permanent versus retryable reasons, owner/generation/transport races, authoritative-source handoff, bounded replay, and snapshot failure/recovery.
 - Repository unit tests: error parsing, directory parameters, tolerant provider/model DTOs, and server-configuration serialization without plaintext SSH/STCP credentials.
 - `ServerRepositoryCredentialPersistenceTest`: second candidate write failure, configuration commit failure, late exception after persistence, cancellation before/during commit, unknown outcome, late delete exception, partial rotation, explicit removal, SSH endpoint pin, TOFU, post-commit old-alias delete failure, and shared-alias deletion protection.
 - `ServerBaseUrlTest`: structural URL validation plus DNS-free classification of HTTPS, remote/LAN HTTP, localhost subdomains, IPv4 `127/8`, IPv6 loopback, mapped loopback, and lookalike domains.
 - `AddServerViewModelTest`: save is atomic single-flight; Direct non-loopback HTTP with active Basic credentials waits for one advisory confirmation, cancel performs no write, confirm saves one frozen request, retained edit passwords are covered, and SSH/STCP bypass the warning.
 - File unit tests: platform differences and traversal rejection for project-relative paths, project URL construction/containment, required/unknown-field handling for `/file/content`, bounded reads for declared/unknown lengths, tree depth/cycles/duplicate paths, text-preview complexity limits, standalone/comment-backing history classification, and reset projection.
-- Inbound-payload tests: direct OkHttp session-message transport reads zero bytes from 4xx/5xx bodies; handles known/unknown/underreported lengths, `max + 1`, streaming decode, blocked-read cancellation, callback races, and close paths. SSE tests cover LF/CRLF/CR, CRLF across chunks, BOM, fields, all EOF states, line/event limits, huge no-newline sources, 200 MIME, 204/HTTP classification, cancellation, and exceptional callback close.
+- Inbound-payload tests: encoded/decoded identity and gzip bodies cover known/unknown/underreported lengths and `max + 1`; direct OkHttp session-message transport reads zero bytes from 4xx/5xx bodies and covers streaming decode, blocked-read cancellation, callback races, and close paths. SSE tests cover identity negotiation, non-identity rejection, LF/CRLF/CR, CRLF across chunks, BOM, fields, all EOF states, line/event limits, huge no-newline sources, 200 MIME, 204/HTTP classification, cancellation, and exceptional callback close.
 - SSE lifecycle tests: close races, generation/lease, snapshot failure not blocking reconnect, one calibration per recovery, and foreground resume.
 - SSH/external-input tests: pre-authentication host-key validation, server-URL structural constraints, data URL header/payload, and streaming limits for URI/network response/Base64/native returns/private keys.
 
@@ -702,6 +707,7 @@ There is currently no `app/src/androidTest` suite and no emulator/instrumentatio
 - Model/agent/variant pickers.
 - Provider search and loaded/available states, dynamic API/OAuth prompts, browser/code/cancel paths, loopback and cleartext warnings, disconnect, and multi-model/header Custom Provider create/edit/disable flows.
 - Permission Dock and question sheet.
+- Fresh install and legacy notification-channel migration on representative API 26, 29, 30+, and 33+ devices; verify default single playback, app None, explicit system sound, explicit channel mute/block/low importance, notification permission denial, and foreground/background current-session behavior.
 - Selected/checked/expanded semantics, non-color status cues, and server-card Move Up/Move Down custom actions.
 
 Build gates:
@@ -724,19 +730,19 @@ Build gates:
 ### 15.1 Available or Substantially Available
 
 - Android project, manual DI, DataStore/Keystore/in-memory Store, server list with client-explanation empty state, add/health-check, and mutually exclusive Direct/SSH/STCP modes; no localhost server is auto-created.
-- Path normalization, recent-project deduplication, project picker/shell, session drawer/details, lazy session creation, ordinary prompt, global/project SSE, and provider/model/agent base data. Session messages use a specialized transport on the shared REST OkHttp client with a 64 MiB streaming inbound limit.
-- Every ordinary `OpenCodeApi` Retrofit method has an explicit 16 MiB bounded or empty-success policy; non-2xx and Unit bodies are discarded without reading, and `/file/content` retains a second reader boundary.
+- Path normalization, best-effort ordered recent-project persistence, project picker/shell, shared Store-backed session window with network Load More, session drawer/details, lazy session creation, ordinary prompt, global/project SSE, and provider/model/agent base data. Session messages use a specialized transport with separate 64 MiB encoded and decoded limits.
+- Every ordinary `OpenCodeApi` Retrofit method has explicit separate 16 MiB encoded and decoded boundaries or an empty-success policy; non-2xx and Unit bodies are discarded without reading, and `/file/content` retains a reader-level decoded boundary.
 - Slash commands, `@` mentions, agent/model/variant pickers, phone-local attachments, project file tree/search/read-only preview and whole-file Composer contexts, permission/question, session Changes/diff, and context usage.
 - Typed Repository/SSE/snapshot failures map to localized UI resources without parsing exception messages, while sensitive and large value objects use tested structural summaries.
 - Mobile controls include 48 dp targets, selection roles, expanded/collapsed descriptions, non-color state cues, TalkBack server reordering, contrast-tested light/dark palettes, and screen-constrained scrolling for small screens, 200% text, and IME overlap.
-- Session rename/archive/delete/revert/unrevert, project-name edit, language/color/notification/sound/background settings, local model-hidden preference, and MCP/LSP/plugin status.
+- Session rename/archive/delete/revert/unrevert, project-name edit, language/color/notification/sound/background settings, three default-silent v2 notification channels with single-owner sound arbitration, foreground route visibility, local model-hidden preference, and MCP/LSP/plugin status.
 - Provider management with safe catalog/config projection, search, dynamic API/OAuth authentication, disconnect, bounded/cancellable OAuth callback, active-project capability refresh, and staged multi-model/header Custom Provider persistence.
 - Authoritative Store prompt-capability validation, sender final attachment/project-context checks, conditional optimistic rollback, shared send/abort/revert operation gate, attachment-only/context-only reset, and historical recoverable-content integrity errors.
 - Server URL no-userinfo/query/fragment constraints, safe hiding of old invalid values, Direct cleartext HTTP credential confirmation, free-text URL/auth-scheme redaction, and bounded 256 KiB SSH private-key reading with double validation.
 
 ### 15.2 Partially Complete or Requiring Hardening
 
-- Custom streaming SSE reader, 32 MiB line/event limit, owner leases, terminal close, project/global deduplication and fallback, generation/source/monotonic transport identity, revision-protected snapshots, concurrent message merge, dirty follow-up calibration, and application-level foreground recovery are implemented. Long real-server outages, OS foreground/background behavior, and STCP control-epoch switching still require validation.
+- Identity-only custom streaming SSE reader, 32 MiB line/event limit, owner leases, terminal close, project/global deduplication and fallback, generation/source/monotonic transport identity, revision-protected snapshots, concurrent message merge, dirty follow-up calibration, and application-level foreground recovery are implemented. Long real-server outages, OS foreground/background behavior, notification-channel upgrades, and STCP control-epoch switching still require device validation.
 - Standalone Review route remains a placeholder; usable diff is in the session Changes tab.
 - Provider management still requires compatibility testing against supported real Server/provider versions, especially remote loopback OAuth topology, long-callback cancellation on devices, and partial/unknown custom-config outcomes. Global-config deep-merge semantics do not provide physical field/config deletion.
 - Model enabled/hidden is a local per-server filter and does not modify OpenCode Server config.
@@ -759,7 +765,7 @@ Build gates:
 | Inconsistent path formats | Duplicate projects or failed requests | Enforce `PathNormalizer` and normalize every Repository input |
 | Secret leakage | Security incident | Redactor, logging interceptor, and no plaintext provider UI |
 | Provider management API/version or OAuth-topology mismatch | Authentication fails or an uncertain server-global configuration remains | Tolerant safe projection, original method indexes and scope, bounded cancellable callbacks, loopback warnings, staged disabled writes, typed partial/unknown outcomes, and real-version/device validation |
-| Wire-byte limits mistaken for heap guarantees | High memory peaks during converter allocation or concurrent snapshots | Keep 16/64/32 MiB wire boundaries, retain `/file/content` defense in depth, audit endpoints individually, and validate large inputs on devices |
+| Encoded/decoded response limits mistaken for heap guarantees | High memory peaks during converter allocation or concurrent snapshots | Keep separate 16/64 MiB encoded and decoded boundaries plus 32 MiB identity-SSE boundaries, retain `/file/content` defense in depth, audit endpoints individually, and validate large inputs on devices |
 | Premature Room/Hilt | More build complexity and migration cost | Manual DI + DataStore + memory Store; add only on trigger conditions and approval |
 | Desktop interaction or inaccessible state styling copied to phone | Unusable small-screen or assistive-technology UI | Full-screen pages, constrained scrolling, 48 dp targets, semantic roles/state descriptions, non-color cues, contrast gates, TalkBack actions, and IME inset handling |
 | Local JDK/SDK mismatch | Build failure | Require JDK 21, compileSdk 36, Build Tools 36.0.0, and aligned Studio/CLI JDKs |

@@ -5,9 +5,12 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
@@ -71,6 +74,7 @@ fun OpenCodeNavGraph(
 
     fun openProjectHomeFromDrawer(serverId: String, directory: String) {
         val normalizedDirectory = appContainer.pathNormalizer.normalize(directory)
+        appContainer.recentProjectRecorder.recordAdd(serverId, normalizedDirectory)
         val activeProject = navController.currentBackStackEntry?.activeProjectDrawerRoute()
         if (
             resolveProjectDrawerNavigation(
@@ -99,9 +103,11 @@ fun OpenCodeNavGraph(
 
     LaunchedEffect(notificationTarget) {
         val target = notificationTarget?.takeIf { it.isValid() } ?: return@LaunchedEffect
+        val normalizedDirectory = appContainer.pathNormalizer.normalize(target.directory)
+        appContainer.recentProjectRecorder.recordAdd(target.serverId, normalizedDirectory)
         val route = target.sessionId
-            ?.let { sessionId -> OpenCodeRoutes.sessionDetail(target.serverId, target.directory, sessionId) }
-            ?: OpenCodeRoutes.projectShell(target.serverId, target.directory)
+            ?.let { sessionId -> OpenCodeRoutes.sessionDetail(target.serverId, normalizedDirectory, sessionId) }
+            ?: OpenCodeRoutes.projectShell(target.serverId, normalizedDirectory)
         navController.navigate(route) {
             launchSingleTop = true
         }
@@ -115,7 +121,9 @@ fun OpenCodeNavGraph(
         onOpenProjectPicker = { serverId -> navController.navigate(OpenCodeRoutes.projectPicker(serverId)) },
         onOpenSettings = { serverId -> navController.navigate(OpenCodeRoutes.settings(serverId)) },
         onOpenSession = { serverId, directory, sessionId ->
-            navController.navigate(OpenCodeRoutes.sessionDetail(serverId, directory, sessionId)) {
+            val normalizedDirectory = appContainer.pathNormalizer.normalize(directory)
+            appContainer.recentProjectRecorder.recordAdd(serverId, normalizedDirectory)
+            navController.navigate(OpenCodeRoutes.sessionDetail(serverId, normalizedDirectory, sessionId)) {
                 launchSingleTop = true
             }
         },
@@ -249,7 +257,11 @@ fun OpenCodeNavGraph(
                 viewModel = viewModel,
                 onOpenServers = ::openExistingServerList,
                 onOpenSettings = { navController.navigate(OpenCodeRoutes.settings(serverId)) },
-                onOpenProject = { directory -> navController.navigate(OpenCodeRoutes.projectShell(serverId, directory)) },
+                onOpenProject = { directory ->
+                    navController.navigate(OpenCodeRoutes.projectShell(serverId, directory)) {
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 
@@ -268,9 +280,13 @@ fun OpenCodeNavGraph(
                 onOpenProviders = { navController.navigate(OpenCodeRoutes.providerSettings(serverId, directory)) },
                 onOpenModels = { navController.navigate(OpenCodeRoutes.modelSettings(serverId)) },
                 onOpenSession = { sessionId ->
-                    navController.navigate(OpenCodeRoutes.sessionDetail(serverId, directory, sessionId))
+                    appContainer.recentProjectRecorder.recordAdd(serverId, directory)
+                    navController.navigate(OpenCodeRoutes.sessionDetail(serverId, directory, sessionId)) {
+                        launchSingleTop = true
+                    }
                 },
                 onOpenNewSession = { agentId, modelSelection ->
+                    appContainer.recentProjectRecorder.recordAdd(serverId, directory)
                     navController.navigate(
                         OpenCodeRoutes.sessionDetail(
                             serverId = serverId,
@@ -279,7 +295,9 @@ fun OpenCodeNavGraph(
                             initialAgentId = agentId,
                             initialModelSelection = modelSelection,
                         ),
-                    )
+                    ) {
+                        launchSingleTop = true
+                    }
                 },
             )
         }
@@ -329,6 +347,7 @@ fun OpenCodeNavGraph(
                     initialModelSelection = initialSelection.modelSelection,
                 ),
             )
+            SessionDestinationVisibilityEffect(entry, viewModel)
             SessionDetailScreen(
                 viewModel = viewModel,
                 onOpenDrawer = onOpenProjectDrawer,
@@ -339,14 +358,17 @@ fun OpenCodeNavGraph(
                 onOpenModels = { navController.navigate(OpenCodeRoutes.modelSettings(serverId)) },
                 onOpenSession = { nextSessionId ->
                     if (nextSessionId != sessionId) {
+                        appContainer.recentProjectRecorder.recordAdd(serverId, directory)
                         navController.navigate(OpenCodeRoutes.sessionDetail(serverId, directory, nextSessionId)) {
                             launchSingleTop = true
                         }
                     }
                 },
                 onSessionMaterialized = { materializedSessionId ->
+                    appContainer.recentProjectRecorder.recordAdd(serverId, directory)
                     navController.navigate(OpenCodeRoutes.sessionDetail(serverId, directory, materializedSessionId)) {
                         popUpTo(OpenCodeRoutes.projectShell(serverId, directory))
+                        launchSingleTop = true
                     }
                 },
             )
@@ -600,5 +622,28 @@ private fun NavBackStackEntry.activeProjectDrawerRoute(): ActiveProjectDrawerRou
 private fun AnimatedContentTransitionScope<NavBackStackEntry>.isSessionDetailInternalNavigation(): Boolean =
     initialState.destination.route == OpenCodeRoutes.sessionDetailPattern &&
         targetState.destination.route == OpenCodeRoutes.sessionDetailPattern
+
+@Composable
+private fun SessionDestinationVisibilityEffect(
+    entry: NavBackStackEntry,
+    viewModel: SessionDetailViewModel,
+) {
+    DisposableEffect(entry, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> viewModel.onDestinationVisibilityChanged(true)
+                Lifecycle.Event.ON_STOP,
+                Lifecycle.Event.ON_DESTROY -> viewModel.onDestinationVisibilityChanged(false)
+                else -> Unit
+            }
+        }
+        entry.lifecycle.addObserver(observer)
+        viewModel.onDestinationVisibilityChanged(entry.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        onDispose {
+            entry.lifecycle.removeObserver(observer)
+            viewModel.onDestinationVisibilityChanged(false)
+        }
+    }
+}
 
 private const val NavigationAnimationDurationMillis = 300

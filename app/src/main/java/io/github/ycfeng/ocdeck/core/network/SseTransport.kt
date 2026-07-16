@@ -79,6 +79,7 @@ internal class OkHttpSseEventSourceFactory(
         val okHttpRequest = Request.Builder()
             .url(request.url)
             .header("Accept", "text/event-stream")
+            .header("Accept-Encoding", "identity")
             .build()
         val source = OkHttpCallSseEventSource(
             call = callFactory(client, okHttpRequest),
@@ -123,6 +124,11 @@ private class OkHttpCallSseEventSource(
             deliverFailure(
                 SseFailure(SseFailureReason.HttpStatus(responseCode)),
             )
+            return
+        }
+        if (response.hasNonIdentityContentEncoding()) {
+            response.close()
+            deliverFailure(SseFailure.from(SseContentEncodingException()))
             return
         }
         val contentType = response.body.contentType()
@@ -187,6 +193,13 @@ private class OkHttpCallSseEventSource(
 }
 
 private class ExplicitSseCancellationException : IOException()
+
+private fun Response.hasNonIdentityContentEncoding(): Boolean =
+    headers.values("Content-Encoding")
+        .flatMap { value -> value.split(',') }
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .any { encoding -> !encoding.equals("identity", ignoreCase = true) }
 
 internal fun Throwable.toSseFailureReason(): SseFailureReason {
     val causes = generateSequence(this) { it.cause }.toList()

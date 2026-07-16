@@ -292,7 +292,7 @@ OC Deck 是服务端驱动应用：项目、会话、消息、权限、问题、
 
 当前使用：
 
-- DataStore Preferences：保存服务器列表、当前服务器、最近项目和 UI 偏好（配色方案、应用语言等）；当前没有独立的上次打开项目字段，也没有按项目保存最近 session。
+- DataStore Preferences：保存服务器列表、当前服务器、最近项目和 UI 偏好（配色方案、应用语言等）；最近项目写入属于辅助状态，由应用级有序 `RecentProjectRecorder` 在导航后 best-effort 执行，本地持久化失败不能阻止进入项目。当前没有独立的上次打开项目字段，也没有按项目保存最近 session。
 - Android Keystore：保存 OpenCode Basic 密码、SSH 密码/私钥/passphrase/host fingerprint，以及 frp/STCP secret。Provider API key 与 OAuth 凭据写入 OpenCode Server auth store，Android 不持久化。
 - 内存 Store：保存当前运行期间的项目、会话、消息、权限、问题、SSE 状态。
 
@@ -336,9 +336,10 @@ Hilt 引入条件：
 建议核心类：
 
 - `OpenCodeApi`：Retrofit interface，承载 REST 接口。
-- `RetrofitInboundResponsePolicyInterceptor`：要求每个 `OpenCodeApi` 方法显式声明响应模式，对普通成功实体施加边界，并丢弃不应进入 Retrofit converter 的 body。
+- `RetrofitInboundResponsePolicyInterceptor`：要求每个 `OpenCodeApi` 方法显式声明响应模式，为有界请求附加 encoded-body network interceptor tag，对 decoded 成功实体施加边界，并丢弃不应进入 Retrofit converter 的 body。
+- `EncodedResponseLimitInterceptor`：network interceptor，在 OkHttp 执行 `Content-Encoding` 解码前限制 tagged response-body octets。
 - `OpenCodeApiFactory`：根据 `ServerConfig` 创建 API 实例，并为 `ServerConnection` 同时提供共享 OkHttp client 的窄 `SessionMessagesTransport`，以及单独有界为十分钟的 Provider OAuth callback client。
-- `SessionMessagesTransport`：直接请求会话消息；非 2xx 不读取 body，2xx 在 OkHttp callback 线程执行 64 MiB 有界流式 JSON decode。
+- `SessionMessagesTransport`：直接请求会话消息；非 2xx 不读取 body，2xx 同时使用 64 MiB encoded response-body policy，并在 OkHttp callback 线程执行 64 MiB 有界 decoded 流式 JSON decode。
 - `OpenCodeEventClient`：基于 OkHttp `Call` 和自定义流式 SSE reader 管理全局和项目事件流。
 - `OpenCodeErrorParser`：统一解析 HTTP 错误、网络错误、服务端错误体。
 - `OpenCodeFailureClassifier`：不依赖异常 message，将 transport、协议、大小和操作失败转换为类型化语义原因；UI 再通过本地化 `UiText.Resource` 映射这些原因。
@@ -371,7 +372,7 @@ Json {
 }
 ```
 
-每个 `OpenCodeApi` 方法都通过 `@RetrofitInboundResponse` 声明 `BOUNDED` 或 `EMPTY_SUCCESS`。`BOUNDED` 对透明解压后的成功实体延迟执行 16 MiB 线缆上限；`Content-Length` 只用于提前拒绝，未知或低报长度在 `max + 1` 失败。`EMPTY_SUCCESS` 不读取成功 `Response<Unit>` body，直接关闭。所有非 2xx body 也会关闭并替换为空实体，同时保留状态码，避免 Retrofit 缓存或转换敏感错误体。缺少策略时在请求发出前 fail-closed。没有 Retrofit `Invocation` 的调用不经过该拦截器，包括使用独立边界的 session-message direct transport。
+每个 `OpenCodeApi` 方法都通过 `@RetrofitInboundResponse` 声明 `BOUNDED` 或 `EMPTY_SUCCESS`。`BOUNDED` 附加 16 MiB encoded response-body policy，由 network interceptor 在 OkHttp content decoding 前执行，再延迟实施独立的 16 MiB decoded-entity 上限。`Content-Length` 只用于提前拒绝，未知或低报长度在 `max + 1` 失败。`EMPTY_SUCCESS` 不读取成功 `Response<Unit>` body，直接关闭。所有非 2xx body 也会关闭并替换为空实体，同时保留状态码，避免 Retrofit 缓存或转换敏感错误体。缺少策略时在请求发出前 fail-closed。没有 Retrofit `Invocation` 的调用不经过 Retrofit interceptor，包括 session-message direct transport，因此必须自行附加 encoded-body policy。
 
 ### 7.2 关键 API 分组
 
@@ -381,9 +382,10 @@ Json {
 - 全局事件：`GET /global/event`
 - 项目路径：`GET /path`
 - 项目当前信息与名称编辑：`GET /project/current`、`PATCH /project/{projectID}`（当前仅发送 `name`）
-- 会话列表：`GET /session?directory=...`
+- 会话列表：`GET /session?directory=...&workspace=...&roots=true&limit=...`，为 Store 会话窗口重新获取有序前缀。
+- 会话 metadata：`GET /session/{sessionID}`，用于补取当前窗口外路由目标及其有界父链。
 - 会话创建：`POST /session`
-- 会话消息：`GET /session/{sessionID}/message`，使用共享 REST OkHttp client 的专用 transport，绕过 Retrofit converter/错误体缓存；非 2xx 不读取 body，2xx 使用计数 InputStream + 宽容 `Json.decodeFromStream` 执行 64 MiB 线缆边界和 EOF 验证。
+- 会话消息：`GET /session/{sessionID}/message`，使用共享 REST OkHttp client 的专用 transport，绕过 Retrofit converter/错误体缓存；非 2xx 不读取 body，encoded response-body octets 限制为 64 MiB，2xx 再使用计数 InputStream + 宽容 `Json.decodeFromStream` 执行独立 64 MiB decoded-entity 边界和 EOF 验证。
 - 发送 prompt：`POST /session/{sessionID}/prompt_async`
 - 中止：`POST /session/{sessionID}/abort`
 - 项目事件：`GET /event?directory=...&workspace=...`
@@ -396,7 +398,7 @@ Json {
 
 - Diff：`GET /vcs/diff?mode=git&directory=...`、`GET /session/{sessionID}/diff?directory=...`
 - Session 管理：rename、share、archive、delete、fork、summarize、children、todo；revert/unrevert 已接入 legacy `POST /session/{sessionID}/revert|unrevert`，使用编码后的 directory header。
-- 文件：`/file`、`/file/content`、`/find/file`。当前已接入项目文件树、搜索和只读预览；`/file/content` 先经过通用的 16 MiB Retrofit 延迟线缆边界，再在反序列化前保留 reader 层有界 `ResponseBody` 复验，避免在 UI 限制生效前加载任意大响应。
+- 文件：`/file`、`/file/content`、`/find/file`。当前已接入项目文件树、搜索和只读预览；`/file/content` 先经过通用的 16 MiB encoded response-body 和 decoded Retrofit 边界，再在反序列化前保留 reader 层 decoded `ResponseBody` 复验，避免在 UI 限制生效前加载任意大响应。
 - Provider 管理：instance-scoped `GET /provider`、`GET /provider/auth` 以及有状态 OAuth authorize/callback 可带可选 `directory/workspace`；server-global root-control 操作为 `PUT/DELETE /auth/{providerID}`、`GET/PATCH /global/config` 和 `POST /global/dispose`。OAuth authorize/callback 保持相同 scope 与原始 method index，不自动重试；长 auto callback 使用专用有界 client。
 - config、session status、MCP、LSP、plugin 状态已接入；PTY/terminal、worktree 等仍待实现。
 
@@ -478,7 +480,7 @@ Store 建议拆分：
 
 - `ServerStore`：当前服务器、健康状态、连接状态。
 - `ProjectStore`：项目列表、当前项目、路径映射。
-- `SessionStore`：会话列表、当前会话、消息、会话状态。
+- `SessionStore`：会话列表、当前会话、消息、会话状态，以及按 ProjectKey 隔离的根会话窗口；窗口包含可见/请求 limit、原始结果数、加载/重试/末尾状态、generation 和已加载根会话 identity。
 - `ProviderStore`：providers、models、connected 状态。
 - `PermissionStore`：权限请求、问题请求。
 - `NotificationStore`：会话完成和错误通知、项目/会话未读状态、最多 500 条和 30 天 TTL 保留策略。
@@ -489,7 +491,7 @@ Store 建议拆分：
 首进项目同步流程：
 
 1. 规范化 `directory`。
-2. 并行请求 `/project/current`、`/path`、`/provider`、`/mcp`、`/session`、`/agent`、`/config`、`/session/status`、`/vcs`、`/command`、`/permission`、`/question`。
+2. 并行请求 `/project/current`、`/path`、`/provider`、`/mcp`、`/session?roots=true&limit=<current-window>`、`/agent`、`/config`、`/session/status`、`/vcs`、`/command`、`/permission`、`/question`。
 3. 将快照写入内存 Store。
 4. 建立项目 SSE。
 5. 根据 SSE 增量更新 Store。
@@ -523,6 +525,8 @@ Store 建议拆分：
 
 - 项目壳层使用 Compose `ModalNavigationDrawer`，避免 Web offscreen DOM 指针拦截问题。
 - 左侧 rail 将活动项目与当前服务器规范化后的 MRU 最近项目合并。项目按钮使用最多占抽屉安全内容高度 75% 的有界列表，“打开项目”和“设置”保持固定；选择项目进入其项目首页，并尽量复用返回栈中已有的匹配目的地，最近项目记录不恢复最近 session。
+- 项目/会话导航成功后向应用级 `RecentProjectRecorder` 提交打开记录；DataStore 失败只做安全报告，绝不回滚导航或已经成功的项目改名。
+- 只有 App 在前台且会话 destination lifecycle 至少为 `STARTED` 时才持有可见性 lease；通知已查看状态不得根据 ViewModel 存活推断。
 - 项目文件由壳层提供带浏览/选择模式的右侧覆盖面板：手机占满宽度，大屏最大 420dp；遮罩只覆盖面板外区域，面板打开时隐藏底层语义，系统返回先从预览回到文件树再关闭。选择模式通过绑定 route/session 的请求确认最多 10 个完整文件，取消不修改草稿；不采用压缩会话内容的桌面双栏。
 - 所有全屏页面之间的 `NavHost` 路由跳转统一使用滑入滑出动画：前进右进左出，返回左进右出。
 - 设置、服务器管理、Provider、模型管理使用单列全屏页面。
@@ -545,7 +549,7 @@ Store 建议拆分：
 - Variant picker：根据当前模型 `variants` 动态展示 `默认` + 模型支持项，模型无 variants 时不展示入口；动态项展示文案首字母大写，并使用“推理强度/Reasoning”避免误解。
 - `ProjectFilePanel`：项目文件懒加载树、搜索、树/内容单页切换、文本/图片/二进制状态，以及带 Checkbox 语义、独立预览和固定确认栏的显式多选模式。
 - `OpenCodeCodeViewer`：复用 Markdown 的 Prism4j 高亮配置，提供行号、文本选择和纵向虚拟列表；文件预览限制 500,000 字符、20,000 行和单行 20,000 字符。
-- `SessionListDrawerContent`：带完整 TalkBack Tab 标签的同服务器有界项目 rail、项目标题/路径、更多菜单、新会话、会话列表、归档按钮、加载更多。
+- `SessionListDrawerContent`：带完整 TalkBack Tab 标签的同服务器有界项目 rail、项目标题/路径、更多菜单、新会话和 Store 共享会话窗口；加载更多每次增加 20 条根会话目标，需要网络时带 50 条余量重取，并展示加载、重试和末尾状态。
 - `SessionMessageCard`：消息内容、引用评论卡片、独立项目文件上下文行、agent/助手 Markdown 渲染、Compose 代码块高亮、复制、reset/revert、错误状态。引用评论由用户消息 synthetic text part 的顶层 `metadata.opencodeComment` 提取，REST 与 SSE 使用同一 typed 模型，并以固定 synthetic 文本解析作为兼容 fallback；`file://` 评论配对 part 从独立上下文行排除，也不按手机本地附件展示。
 - `SessionRevertDock`：位于普通 Composer 上方，默认折叠，展示回滚数量和首条预览，支持逐步恢复、全部恢复与新分支提交提示；不覆盖 `PermissionDock`、问题交互或子会话只读 Dock。
 - 上下文用量：token、使用率和成本等摘要，当前适合使用 anchored popup。
@@ -654,7 +658,7 @@ Existing session id
 - 固定 SSH host fingerprint 必须通过 `HostKeyRepository` 或等价机制在用户认证前校验，禁止关闭严格校验并在认证后补验。
 - Server base URL 只允许带有效 host 且不含 userinfo/query/fragment 的 HTTP(S) URL；保存、连接和 UI 展示都执行同一校验，异常旧值不得原样显示。
 - 保存带有效 OpenCode Basic 认证的直连服务器前，对规范化 URL 做无 DNS 的纯语法分类。用户名非空白且存在新密码或保留密码时，非本机回环 `http://` 地址必须显示明确但不阻断能力的确认弹窗；`localhost` 及保留子域、IPv4 `127.0.0.0/8`、IPv6 `::1` 和 mapped loopback 字面量豁免。SSH/STCP 保存和后续连接不增加门禁。确认只消费一次冻结的已校验请求，并继续使用原有凭据事务；取消不调用 Repository。Keystore 只保护本机存储，不保护 HTTP 流量。
-- URI、网络响应、Base64、native bridge 返回值和私钥必须在完整分配内存前执行流式硬上限检查。普通 Retrofit 成功实体限制为 16 MiB，session messages direct transport 限制为 64 MiB，SSE 行/event 限制为 32 MiB 线缆数据。这些上限不等于 heap 峰值：Retrofit converter 在限额内仍可能完整构建 String、DTO 图或 JSON tree，并发项目快照也可能产生较高内存峰值；`/file/content` 保留 reader 层第二道防御。这不代表所有 REST endpoint 已完成审计，其他潜在大响应仍需逐端点改造。SSH 私钥文件固定最多 256 KiB，在 IO dispatcher 读取，并在保存与 JSch 前按 UTF-8 字节数复验。
+- URI、网络响应、Base64、native bridge 返回值和私钥必须在完整分配内存前执行流式硬上限检查。普通 Retrofit/file 响应分别限制 16 MiB encoded response-body 与 decoded entity，session messages direct transport 分别限制 64 MiB；SSE 请求 identity encoding，并对该 response-body representation 的行/event 限制 32 MiB。这些上限不等于 heap 峰值：Retrofit converter 在限额内仍可能完整构建 String、DTO 图或 JSON tree，并发项目快照也可能产生较高内存峰值；`/file/content` 保留 reader 层 decoded 防御。这不代表所有 REST endpoint 已完成审计，其他潜在大响应仍需逐端点改造。SSH 私钥文件固定最多 256 KiB，在 IO dispatcher 读取，并在保存与 JSch 前按 UTF-8 字节数复验。
 - `ServerRepository` 通过窄 `CredentialStore` 边界持久化服务器凭据。候选 alias 构建完成后检查取消，配置写入、结果确认、epoch 更新与 SSH/STCP 运行态失效放入 `NonCancellable` 提交段；写入异常后重新读取目标配置，已持久化则按成功继续，明确未提交才回滚，结果未知时保留候选并抛安全类型化异常。
 - 配置提交后的旧 alias 清理移到配置锁外，重新读取全部服务器引用后 best-effort 删除，兼容历史共享 alias且不回滚已提交配置。`SecureCredentialStore` 在 IO dispatcher 使用 SharedPreferences `commit()` 报告失败，只包装预期 `Exception` 并让取消及 JVM `Error` 原样传播。SSH pin 仅可在 host/port endpoint 未变时继承；GoMobile Kotlin 配置 DTO 的 `toString()` 必须脱敏 token 和 secret key。
 - 敏感或可能很大的 DTO、领域模型、Store 状态、transport identity、prompt value 与 UI state 使用结构化摘要覆盖 `toString()`；摘要不展开凭据、URL/endpoint、alias、路径、prompt、Base64、SSE payload 或 tool output，敏感字段严格使用 `<redacted>`，且不改变 serialization、`copy`、equals 或 hashCode。
@@ -664,11 +668,11 @@ Existing session id
 当前测试重点：
 
 - `PathNormalizerTest`：Windows 路径、根路径、尾斜杠、大小写、重复项目去重。
-- `ProjectDrawerModelTest` 与 `ProjectInitialTest`：活动/最近项目合并、Windows 路径别名去重、项目首页导航决策和 Unicode 项目首字。
+- `ProjectDrawerModelTest`、`ProjectInitialTest`、`ProjectPickerViewModelTest`、`RecentProjectRecorderTest` 与 `RecentProjectStoreReducerTest`：活动/最近项目合并、Windows 路径别名去重、非阻塞导航、有序/重试 best-effort 持久化、项目首页导航决策和 Unicode 项目首字。
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest`：Build/Plan 过滤和回退、初始模型/Variant 校验与切换，以及仅对新会话解码项目首页的轻量 Composer 选择。
 - `ProjectFilePathNormalizerTest` 与 `ProjectFileUrlBuilderTest`：平台差异、NUL、绝对路径、`..`、直接子项校验、POSIX/盘符/UNC URL 构造、百分号编码、往返和项目根包含关系。
 - `RedactorTest`：key/token/password/header/env/config 脱敏。
-- `RetrofitInboundResponsePolicyTest`：所有 `OpenCodeApi` 方法显式声明模式；缺少策略时 fail-closed；已知、未知和低报长度均执行 `max + 1`；非 2xx 与成功 Unit body 不读取即关闭；无 `Invocation` 的 direct call 不进入策略。
+- `RetrofitInboundResponsePolicyTest` 与 `EncodedResponseLimitInterceptorTest`：所有 `OpenCodeApi` 方法显式声明模式；缺少策略时 fail-closed；encoded/decoded 已知、未知和低报长度均执行 `max + 1`；真实 OkHttp gzip chain 在 Bridge 解码前执行 encoded 上限；非 2xx 与成功 Unit body 不读取即关闭；无 `Invocation` 的 direct call 不进入 Retrofit 策略。
 - `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`FileContentResponseReaderTest`：无 body HTTP 失败、流式 decode、EOF 验证、取消/关闭竞态、session messages 64 MiB 边界和 `/file/content` 第二道防御。
 - `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest`：不解析异常 message 的语义分类、本地化资源与操作 fallback 映射、Repository 传播，以及取消/JVM `Error` 行为。
 - `ProviderSettingsParsingTest` 与 `ProviderCapabilityRefreshTest`：对可能含密钥的 Provider/auth payload 做安全投影、以 `connected` 为权威、保留 auth wire index 与条件、安全解析 OAuth URL，并通过当前 project/global SSE authority lease 刷新 capability。
@@ -682,14 +686,15 @@ Existing session id
 - Go wrapper/downstream tests：startup config 更新不丢失、真实 bind 后才 ready、bind failure、closed manager、control epoch、superseded revision、Stop 等待端口释放和敏感错误脱敏；并发相关包使用 `go test -race`。
 - `PromptSendStateMachineTest`：空输入、附件、纯项目上下文输入和工作中 stop/send 状态。
 - `OpenCodePromptSenderTest`：懒创建 session、Store 权威 capability revision、附件/项目上下文终检、乐观 `file://` parts、条件回滚、SSE 先确认、普通/已加载命令上下文透传、真实 session alias、abort 和 single-flight。
-- `EventReducerTest`：SSE 事件合并到 Store。
-- `BoundedSseReaderTest`、`OkHttpSseEventSourceFactoryTest`、`OpenCodeEventClientLifecycleTest`、`ProjectSnapshotCoordinatorTest`：线缆解析、MIME/status/无 body 协议处理、超限/取消、永久与可重试原因、owner/generation/transport 竞态、权威源切换、有界重放和快照失败/恢复。
+- `EventReducerTest`、`SessionListWindowCoordinatorTest` 与 Store/Repository 会话窗口测试：SSE 事件合并、有序前缀替换、共享可见目标、加载/重试/末尾状态、旧 generation/transport 拒绝、tombstone、workspace 隔离和有界会话/父链 metadata 补取。
+- `NotificationAlertPolicyTest`、`NotificationChannelMigrationPolicyTest`、`OpenCodeNotificationAudioAttributesTest` 与 `SessionVisibilityRegistryTest`：单事件唯一声音所有者、v2 channel 迁移、系统显式静音/声音优先级、notification audio usage 和前台 destination 可见性。
+- `BoundedSseReaderTest`、`OkHttpSseEventSourceFactoryTest`、`OpenCodeEventClientLifecycleTest`、`ProjectSnapshotCoordinatorTest`：identity response-body 解析、显式 `Accept-Encoding`、非 identity 零读取拒绝、MIME/status/无 body 协议处理、超限/取消、永久与可重试原因、owner/generation/transport 竞态、权威源切换、有界重放和快照失败/恢复。
 - Repository 单元测试：错误解析、directory 参数、provider/model DTO 容错、服务器配置序列化不包含明文 SSH/STCP 凭据。
 - `ServerRepositoryCredentialPersistenceTest`：第二个候选写入失败、配置提交失败、持久化后迟到异常、提交前/提交段取消、unknown outcome、delete 迟到异常、部分轮换、明确移除、SSH endpoint pin、TOFU、提交后旧 alias 删除失败和共享 alias 删除保护。
 - `ServerBaseUrlTest`：URL 结构校验，以及 HTTPS、远端/LAN HTTP、localhost 子域、IPv4 `127/8`、IPv6 loopback、mapped loopback 与伪装域名的无 DNS 分类。
 - `AddServerViewModelTest`：保存操作使用原子 single-flight；带有效 Basic 凭据的直连非本机回环 HTTP 等待一次提示确认，取消不写入，确认只保存一份冻结请求，覆盖编辑保留密码语义，且 SSH/STCP 绕过警告。
 - 文件单元测试：项目文件相对路径的平台差异与越界拒绝、项目 URL 构造/包含关系、`/file/content` 必填字段和未知字段容忍、已声明/未知长度响应的有界读取、树深度/循环/重复 path、文本预览复杂度限制、独立上下文/评论 backing 历史分类和 reset 投影。
-- 入站载荷测试：session messages 直接 OkHttp transport 的 4xx/5xx body 零读取、已知/未知/低报长度、`max + 1`、流式 decode、阻塞读取取消、callback race 和关闭路径；SSE LF/CRLF/CR、CRLF 跨 chunk、BOM、字段、EOF 三态、行/event 边界、巨大无换行源、200 MIME、204/HTTP 分类、取消和回调异常关闭。
+- 入站载荷测试：encoded/decoded identity 与 gzip body 覆盖已知/未知/低报长度和 `max + 1`；session messages 直接 OkHttp transport 的 4xx/5xx body 零读取、流式 decode、阻塞读取取消、callback race 和关闭路径；SSE 覆盖 identity 协商、非 identity 拒绝、LF/CRLF/CR、CRLF 跨 chunk、BOM、字段、EOF 三态、行/event 边界、巨大无换行源、200 MIME、204/HTTP 分类、取消和回调异常关闭。
 - SSE 生命周期测试：关闭竞态、generation/lease、快照失败不阻断重连、每次恢复一次校准和前台恢复。
 - SSH/外部输入测试：host key 认证前校验、Server URL 结构约束、data URL header/payload、URI/网络响应/Base64/native 返回值和私钥的流式上限。
 
@@ -702,6 +707,7 @@ Existing session id
 - 模型/agent/variant picker。
 - Provider 搜索与已加载/可连接状态、动态 API/OAuth prompt、浏览器/code/取消路径、loopback 与明文警告、断开，以及多模型/Header 的 Custom Provider 创建/编辑/停用流程。
 - 权限 Dock、问题 sheet。
+- 在代表性的 API 26、29、30+、33+ 设备验证 fresh install 与旧通知 channel 升级：默认单次播放、App 内“无”、系统显式声音、channel 显式静音/阻止/低 importance、通知权限拒绝以及当前会话前后台行为。
 - selected/checked/expanded 语义、非颜色状态提示，以及服务器卡片上移/下移自定义操作。
 
 构建门禁：
@@ -724,19 +730,19 @@ Existing session id
 ### 15.1 已具备或主体已具备
 
 - Android 工程、手动 DI、DataStore/Keystore/内存 Store、带客户端说明空态的服务器列表、新增/健康检查和直连/SSH/STCP 三种互斥连接模式；不自动创建 localhost 服务器。
-- 路径规范化、最近项目去重、项目选择与壳层、会话 drawer/详情、懒创建 session、普通 prompt、全局/项目 SSE、provider/model/agent 基础数据；session messages 通过共享 REST OkHttp client 的专用 transport 具备 64 MiB 流式入站上限。
-- 所有普通 `OpenCodeApi` Retrofit 方法都具备显式 16 MiB 有界或 empty-success 策略；非 2xx 与 Unit body 不读取即丢弃，`/file/content` 保留第二道 reader 边界。
+- 路径规范化、最近项目 best-effort 有序持久化、项目选择与壳层、支持网络加载更多的 Store 共享会话窗口、会话 drawer/详情、懒创建 session、普通 prompt、全局/项目 SSE、provider/model/agent 基础数据；session messages 具备独立 64 MiB encoded 与 decoded 上限。
+- 所有普通 `OpenCodeApi` Retrofit 方法都具备显式且独立的 16 MiB encoded/decoded 边界或 empty-success 策略；非 2xx 与 Unit body 不读取即丢弃，`/file/content` 保留 reader 层 decoded 边界。
 - Slash command 与 `@` mention UI、agent/model/variant picker、手机本地附件、项目文件树/搜索/只读预览及完整文件 Composer 上下文、permission/question、会话内 Changes/diff 和 context usage。
 - Repository/SSE/快照类型化失败映射为本地化 UI 资源，不解析异常 message；敏感与大型 value object 使用经过测试的结构化摘要。
 - 移动控件已覆盖 48dp 目标、选择 role、展开/折叠说明、非颜色状态提示、TalkBack 服务器排序、对比度测试过的浅色/深色 palette，以及面向小屏、200% 字体和 IME 遮挡的受约束滚动。
-- Session rename/archive/delete/revert/unrevert、项目名称编辑、语言/配色/通知/音效/后台设置、本机模型隐藏偏好和 MCP/LSP/plugin 状态展示。
+- Session rename/archive/delete/revert/unrevert、项目名称编辑、语言/配色/通知/音效/后台设置、三个默认静音 v2 notification channel 与单一声音所有者仲裁、前台 route 可见性、本机模型隐藏偏好和 MCP/LSP/plugin 状态展示。
 - Provider 管理已具备安全 catalog/config 投影、搜索、动态 API/OAuth 认证、断开、有界且可取消的 OAuth callback、活动项目 capability 刷新，以及多模型/Header 的分阶段 Custom Provider 持久化。
 - Store 权威 prompt capability 校验、附件/项目上下文 sender 终检、条件乐观回滚、send/abort/revert 共享 operation gate、纯附件/纯上下文 reset 与历史可恢复内容完整性失败提示。
 - Server URL 无 userinfo/query/fragment 约束、旧值安全隐藏、直连明文 HTTP 凭据确认、自由文本 URL/认证 scheme 脱敏，以及 SSH 私钥 256 KiB 有界读取与双重校验。
 
 ### 15.2 部分完成或仍需加固
 
-- SSE 自定义流式 reader、32 MiB 行/event 上限、owner lease、关闭终态、project/global 去重与 fallback、generation/source/单调 transport identity、revision 快照防覆盖、消息并发合并、dirty follow-up 校准和应用级前台恢复已实现；仍需真实服务长时间断网、系统前后台和 STCP control epoch 切换验证。
+- identity-only SSE 自定义流式 reader、32 MiB 行/event 上限、owner lease、关闭终态、project/global 去重与 fallback、generation/source/单调 transport identity、revision 快照防覆盖、消息并发合并、dirty follow-up 校准和应用级前台恢复已实现；仍需真实服务长时间断网、系统前后台、通知 channel 升级和 STCP control epoch 切换的设备验证。
 - 独立 Review route 仍为占位；当前可用 diff 位于会话详情 Changes tab。
 - Provider 管理仍需在支持的真实 Server/provider 版本上做兼容验证，重点包括远程 loopback OAuth 拓扑、真机长 callback 取消，以及 custom-config partial/unknown outcome；global-config deep merge 不提供字段或配置的物理删除。
 - 模型 enabled/hidden 仅是按 server 保存的本机过滤偏好，不代表修改 OpenCode server config。
@@ -759,7 +765,7 @@ Existing session id
 | 路径格式混乱 | 项目重复、请求失败 | 强制 `PathNormalizer`，所有 Repository 入参统一规范化 |
 | 敏感信息泄露 | 安全事故 | Redactor、日志拦截器、Provider UI 禁止明文回显 |
 | Provider 管理 API/版本或 OAuth 拓扑不匹配 | 认证失败或留下结果不确定的 server-global 配置 | 容错安全投影、保留原 method index 与 scope、有界可取消 callback、loopback 警告、disabled 分阶段写入、类型化 partial/unknown outcome，以及真实版本/设备验证 |
-| 把线缆字节上限误当成 heap 保证 | Converter 分配或并发快照产生高内存峰值 | 保持 16/64/32 MiB 线缆边界、保留 `/file/content` 纵深防御、逐端点审计并在真机验证大输入 |
+| 把 encoded/decoded 响应上限误当成 heap 保证 | Converter 分配或并发快照产生高内存峰值 | 保持独立 16/64 MiB encoded/decoded 边界和 32 MiB identity-SSE 边界、保留 `/file/content` 纵深防御、逐端点审计并在真机验证大输入 |
 | 过早引入 Room/Hilt | 构建复杂、迁移成本高 | 手动 DI + DataStore + memory store，按触发条件并经确认后再引入 |
 | 桌面交互或不可访问的状态样式照搬到手机 | 小屏或辅助技术不可用 | 全屏页面、受约束滚动、48dp 目标、语义 role/状态说明、非颜色提示、对比度门禁、TalkBack 操作和 IME inset 适配 |
 | 本地 JDK/SDK 不一致 | 构建失败 | 明确 JDK 21、compileSdk 36、buildTools 36.0.0，统一 Android Studio 和命令行 JDK |

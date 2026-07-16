@@ -39,7 +39,8 @@ internal class OkHttpSessionMessagesTransport(
     baseUrl: String,
     private val callFactory: Call.Factory,
     private val json: Json,
-    private val maxBytes: Long = InboundPayloadLimits.SESSION_MESSAGES_RESPONSE_BYTES,
+    private val maxDecodedBytes: Long = InboundPayloadLimits.SESSION_MESSAGES_DECODED_RESPONSE_BYTES,
+    private val maxEncodedBytes: Long = InboundPayloadLimits.SESSION_MESSAGES_ENCODED_RESPONSE_BYTES,
 ) : SessionMessagesTransport {
     private val baseUrl = baseUrl.trim().trimEnd('/').toHttpUrl()
 
@@ -58,12 +59,13 @@ internal class OkHttpSessionMessagesTransport(
         val request = Request.Builder()
             .url(urlBuilder.build())
             .header("Accept", "application/json")
+            .tag(EncodedResponseLimit::class.java, EncodedResponseLimit(maxEncodedBytes))
             .get()
             .build()
 
         return suspendCancellableCoroutine { continuation ->
             val call = callFactory.newCall(request)
-            val callback = SessionMessagesCallback(call, continuation, json, maxBytes)
+            val callback = SessionMessagesCallback(call, continuation, json, maxDecodedBytes)
             continuation.invokeOnCancellation { callback.cancelByOwner() }
             try {
                 call.enqueue(callback)

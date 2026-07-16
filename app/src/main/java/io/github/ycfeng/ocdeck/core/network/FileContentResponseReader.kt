@@ -9,7 +9,7 @@ internal class FileContentResponseTooLargeException : InboundPayloadTooLargeExce
 
 internal fun ResponseBody.readFileContentDto(
     json: Json,
-    maxBytes: Long = MaxFileContentResponseBytes,
+    maxBytes: Long = MaxFileContentDecodedResponseBytes,
 ): FileContentDto = use { body ->
     require(maxBytes > 0) { "File content response limit must be positive" }
     val declaredLength = body.contentLength()
@@ -34,5 +34,5 @@ internal fun ResponseBody.readFileContentDto(
     json.decodeFromString(output.toByteArray().toString(Charsets.UTF_8))
 }
 
-internal const val MaxFileContentResponseBytes = InboundPayloadLimits.RETROFIT_RESPONSE_BYTES
+internal const val MaxFileContentDecodedResponseBytes = InboundPayloadLimits.FILE_CONTENT_DECODED_RESPONSE_BYTES
 private const val DefaultResponseBufferBytes = 8 * 1024

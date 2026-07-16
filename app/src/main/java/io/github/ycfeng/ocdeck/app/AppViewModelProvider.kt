@@ -7,6 +7,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.ycfeng.ocdeck.domain.model.PromptModelSelection
 import io.github.ycfeng.ocdeck.feature.file.ProjectFileBrowserViewModel
 import io.github.ycfeng.ocdeck.feature.project.ProjectPickerViewModel
+import io.github.ycfeng.ocdeck.feature.project.ProjectDirectorySuggestionLoader
 import io.github.ycfeng.ocdeck.feature.project.ProjectShellViewModel
 import io.github.ycfeng.ocdeck.feature.server.AddServerViewModel
 import io.github.ycfeng.ocdeck.feature.server.ServerListViewModel
@@ -38,8 +39,11 @@ class AppViewModelProvider(private val container: AppContainer) {
         initializer {
             ProjectPickerViewModel(
                 serverId = serverId,
-                repository = container.openCodeRepository,
-                recentProjectStore = container.recentProjectStore,
+                suggestionLoader = ProjectDirectorySuggestionLoader(
+                    container.openCodeRepository::suggestProjectDirectories,
+                ),
+                recentProjectRepository = container.recentProjectRepository,
+                recentProjectRecorder = container.recentProjectRecorder,
                 pathNormalizer = container.pathNormalizer,
             )
         }
@@ -54,7 +58,8 @@ class AppViewModelProvider(private val container: AppContainer) {
                 serverRepository = container.serverRepository,
                 store = container.openCodeStore,
                 eventClient = container.openCodeEventClient,
-                recentProjectStore = container.recentProjectStore,
+                sessionListWindowCoordinator = container.sessionListWindowCoordinator,
+                recentProjectRecorder = container.recentProjectRecorder,
                 pathNormalizer = container.pathNormalizer,
             )
         }
@@ -87,9 +92,10 @@ class AppViewModelProvider(private val container: AppContainer) {
                 serverRepository = container.serverRepository,
                 store = container.openCodeStore,
                 eventClient = container.openCodeEventClient,
-                recentProjectStore = container.recentProjectStore,
+                recentProjectRecorder = container.recentProjectRecorder,
                 promptSender = container.promptSender,
                 sessionOperationCoordinator = container.sessionOperationCoordinator,
+                sessionVisibilityRegistry = container.sessionVisibilityRegistry,
                 pathNormalizer = container.pathNormalizer,
                 projectFilePathNormalizer = container.projectFilePathNormalizer,
                 initialAgentId = initialAgentId,

@@ -25,6 +25,14 @@ class OpenCodeFailureTest {
             OpenCodeFailureClassifier.classify(SessionMessagesResponseTooLargeException()),
         )
         assertEquals(
+            OpenCodeFailure.ResponseTooLarge,
+            OpenCodeFailureClassifier.classify(EncodedResponseTooLargeException()),
+        )
+        assertEquals(
+            OpenCodeFailure.InvalidResponse,
+            OpenCodeFailureClassifier.classify(SseContentEncodingException()),
+        )
+        assertEquals(
             OpenCodeFailure.OperationRejected(),
             OpenCodeFailureClassifier.classify(SshHostKeyMismatchException()),
         )

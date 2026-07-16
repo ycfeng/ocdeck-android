@@ -30,7 +30,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -62,8 +61,7 @@ import io.github.ycfeng.ocdeck.feature.composer.agentParameterLabel
 import io.github.ycfeng.ocdeck.feature.composer.composerAgentOptions
 import io.github.ycfeng.ocdeck.feature.composer.rememberPromptPlaceholderText
 import io.github.ycfeng.ocdeck.feature.composer.toVariantDisplayLabel
-import io.github.ycfeng.ocdeck.feature.sessionlist.SessionListBatchSize
-import io.github.ycfeng.ocdeck.feature.sessionlist.SessionListLoadMoreButton
+import io.github.ycfeng.ocdeck.feature.sessionlist.SessionListWindowFooter
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeCard
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeHeaderIconButton
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeNotificationDot
@@ -90,9 +88,8 @@ fun ProjectShellScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val state = uiState.project
-    var visibleSessionLimit by remember(state.normalizedDirectory) { mutableIntStateOf(SessionListBatchSize) }
     val rootSessions = remember(state.sessions) { state.sessions.filter { it.parentId.isNullOrBlank() } }
-    val visibleSessions = rootSessions.take(visibleSessionLimit)
+    val visibleSessions = rootSessions.take(state.sessionListWindow.visibleRootLimit)
 
     Scaffold(
         containerColor = OpenCodePalette.Canvas,
@@ -195,14 +192,14 @@ fun ProjectShellScreen(
                     }
                 }
             }
-            if (rootSessions.size > visibleSessionLimit) {
-                item(key = "load-more-sessions") {
-                    SessionListLoadMoreButton(
-                        onClick = {
-                            visibleSessionLimit = (visibleSessionLimit + SessionListBatchSize).coerceAtMost(rootSessions.size)
-                        },
-                    )
-                }
+            item(key = "session-list-window-footer") {
+                SessionListWindowFooter(
+                    window = state.sessionListWindow,
+                    hasMoreLoadedRoots = rootSessions.size > state.sessionListWindow.visibleRootLimit,
+                    isProjectLoading = state.isLoading,
+                    onLoadMore = viewModel::loadMoreSessions,
+                    onRetry = viewModel::retrySessionListWindow,
+                )
             }
         }
     }

@@ -56,7 +56,14 @@ class OpenCodeSoundPlayer(
 
     private fun playRaw(rawResId: Int) {
         pendingPlayback = null
-        val player = runCatching { MediaPlayer.create(applicationContext, rawResId) }.getOrNull() ?: return
+        val player = runCatching {
+            MediaPlayer.create(
+                applicationContext,
+                rawResId,
+                OpenCodeNotificationAudioAttributes.create(),
+                0,
+            )
+        }.getOrNull() ?: return
         currentPlayer = player
         player.setOnCompletionListener { completed ->
             if (currentPlayer === completed) currentPlayer = null

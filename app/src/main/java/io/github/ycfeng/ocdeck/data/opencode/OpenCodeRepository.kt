@@ -20,6 +20,8 @@ import io.github.ycfeng.ocdeck.core.network.PermissionToolDto
 import io.github.ycfeng.ocdeck.core.network.LoadedProjectSnapshot
 import io.github.ycfeng.ocdeck.core.network.LoadedActiveSessionMessages
 import io.github.ycfeng.ocdeck.core.network.ProjectSnapshotLoader
+import io.github.ycfeng.ocdeck.core.network.LoadedSessionListWindow
+import io.github.ycfeng.ocdeck.core.network.SessionListWindowLoader
 import io.github.ycfeng.ocdeck.core.network.ProjectDto
 import io.github.ycfeng.ocdeck.core.network.ProjectIconDto
 import io.github.ycfeng.ocdeck.core.network.PromptModelDto
@@ -38,6 +40,8 @@ import io.github.ycfeng.ocdeck.core.network.UpdateSessionTimeDto
 import io.github.ycfeng.ocdeck.core.network.toOpenCodeMessageComment
 import io.github.ycfeng.ocdeck.core.network.readFileContentDto
 import io.github.ycfeng.ocdeck.core.security.Redactor
+import io.github.ycfeng.ocdeck.core.store.SessionListWindowLoadRequest
+import io.github.ycfeng.ocdeck.core.store.SessionListWindowState
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFilePathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFileUrlBuilder
@@ -98,27 +102,40 @@ private val projectFileEntryComparator = compareBy<OpenCodeFileEntry>(
     { it.name },
 )
 
+internal const val MaxSessionMetadataDepth = 16
+
+private val sessionDisplayComparator = compareByDescending<OpenCodeSession> { it.updatedAt ?: 0L }
+    .thenByDescending(OpenCodeSession::id)
+
 class OpenCodeRepository(
     private val serverRepository: OpenCodeServerRepository,
     private val pathNormalizer: PathNormalizer,
     private val projectFilePathNormalizer: ProjectFilePathNormalizer,
     private val json: Json,
     private val redactor: Redactor,
-) : PromptGateway, SessionRevertGateway, ProjectSnapshotLoader {
+) : PromptGateway, SessionRevertGateway, ProjectSnapshotLoader, SessionListWindowLoader {
     private val promptCapabilityRevision = AtomicLong()
     private val projectFileUrlBuilder = ProjectFileUrlBuilder(pathNormalizer, projectFilePathNormalizer)
 
     suspend fun loadProject(
         serverId: String,
         directory: String,
+        sessionWindow: SessionListWindowState,
         workspace: String? = null,
-    ): Result<OpenCodeProjectSnapshot> = loadProjectSnapshot(serverId, directory, workspace, activeSessionMessages = null)
+    ): Result<OpenCodeProjectSnapshot> = loadProjectSnapshot(
+        serverId = serverId,
+        directory = directory,
+        workspace = workspace,
+        sessionWindow = sessionWindow,
+        activeSessionMessages = null,
+    )
         .map(LoadedProjectSnapshot::snapshot)
 
     override suspend fun loadProjectSnapshot(
         serverId: String,
         directory: String,
         workspace: String?,
+        sessionWindow: SessionListWindowState,
         activeSessionMessages: ActiveSessionMessagesRequest?,
     ): Result<LoadedProjectSnapshot> = catching {
         val normalized = pathNormalizer.normalize(directory)
@@ -137,7 +154,14 @@ class OpenCodeRepository(
                         null
                     }
                 }
-                val sessions = async { api.getSessions(normalized, workspace, roots = false) }
+                val sessions = async {
+                    api.getSessions(
+                        directory = normalized,
+                        workspace = workspace,
+                        roots = true,
+                        limit = sessionWindow.requestedRawLimit,
+                    )
+                }
                 val statuses = async { api.getSessionStatus(normalized, workspace) }
                 val providers = async { api.getProviders(normalized, workspace) }
                 val agents = async { api.getAgents(normalized, workspace) }
@@ -175,13 +199,17 @@ class OpenCodeRepository(
                 )
                 val permissionRequests = permissions.await().map { it.toDomain() }
                 val questionRequests = questions.await().map { it.toDomain() }
+                val sessionDtos = sessions.await()
                 val snapshot = OpenCodeProjectSnapshot(
                     serverId = serverId,
                     normalizedDirectory = normalized,
                     workspace = workspace,
                     project = project.await(),
                     pathInfo = path.await().toDomain(normalized),
-                    sessions = sessions.await().map { it.toDomain(normalized) },
+                    sessions = sessionDtos.map { it.toDomain(normalized) }.sortedWith(sessionDisplayComparator),
+                    sessionWindowRequestedRawLimit = sessionWindow.requestedRawLimit,
+                    sessionWindowRawResultCount = sessionDtos.size,
+                    sessionWindowRequestGeneration = sessionWindow.requestGeneration,
                     statuses = statuses.await().mapValues { OpenCodeSessionStatus(it.value.type ?: "idle") },
                     providerCount = providerJson.providerCount(),
                     models = promptCapabilities.models,
@@ -211,6 +239,76 @@ class OpenCodeRepository(
                 )
             },
         )
+    }
+
+    override suspend fun loadSessionListWindow(
+        serverId: String,
+        directory: String,
+        workspace: String?,
+        request: SessionListWindowLoadRequest,
+    ): Result<LoadedSessionListWindow> = catching {
+        val normalized = pathNormalizer.normalize(directory)
+        val stable = withStableServerConnection(
+            getConnection = { serverRepository.getConnection(serverId) },
+            transportIdentity = { it.transportIdentity },
+        ) { connection ->
+            connection.api.getSessions(
+                directory = normalized,
+                workspace = workspace,
+                roots = true,
+                limit = request.requestedRawLimit,
+            )
+        }
+        LoadedSessionListWindow(
+            sessions = stable.value.map { it.toDomain(normalized) }.sortedWith(sessionDisplayComparator),
+            requestedRawLimit = request.requestedRawLimit,
+            rawResultCount = stable.value.size,
+            requestGeneration = request.requestGeneration,
+            transportIdentity = stable.transportIdentity,
+        )
+    }
+
+    override suspend fun isSessionListTransportCurrent(
+        serverId: String,
+        transportIdentity: io.github.ycfeng.ocdeck.data.server.ServerTransportIdentity,
+    ): Boolean = try {
+        serverRepository.getConnection(serverId).transportIdentity == transportIdentity
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (fatal: Error) {
+        throw fatal
+    } catch (_: Exception) {
+        false
+    }
+
+    suspend fun loadSessionMetadataChain(
+        serverId: String,
+        directory: String,
+        sessionId: String,
+        workspace: String? = null,
+    ): Result<List<OpenCodeSession>> = catching {
+        requireOperation(sessionId.isNotBlank())
+        val normalized = pathNormalizer.normalize(directory)
+        withStableServerConnection(
+            getConnection = { serverRepository.getConnection(serverId) },
+            transportIdentity = { it.transportIdentity },
+        ) { connection ->
+            val sessions = mutableListOf<OpenCodeSession>()
+            val visited = mutableSetOf<String>()
+            var nextSessionId: String? = sessionId
+            repeat(MaxSessionMetadataDepth) {
+                val currentId = nextSessionId?.takeIf(visited::add) ?: return@repeat
+                val session = connection.api.getSession(
+                    sessionId = currentId,
+                    directory = normalized,
+                    workspace = workspace,
+                ).toDomain(normalized)
+                sessions += session
+                nextSessionId = session.parentId?.takeIf { it.isNotBlank() && it !in visited }
+                if (nextSessionId == null) return@withStableServerConnection sessions
+            }
+            sessions
+        }.value
     }
 
     suspend fun updateProjectName(
