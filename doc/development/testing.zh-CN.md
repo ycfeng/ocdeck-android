@@ -17,7 +17,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 | Android 构建 | 两个 Android 模块的单元测试和 Debug APK 构建。 |
 | 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
 | Release 制品校验 | APK metadata、单 signer、预期证书指纹、ABI 隔离、`zipalign -P 16`、AAR native 字节绑定、内嵌法律文件、文件名和 checksum。 |
-| 真机验证 | 正式发布前必须完成，但目标 ABI native load、16KB page-size 真机和真实 STCP 闭环尚未完成。 |
+| 真机验证 | 维护者已记录 `0.1.0` 发布门禁通过真机 native load/启动、16KB page-size native 运行，以及覆盖 `/global/health`、代表性 REST、全局/项目 SSE 和受控重连的真实 STCP 闭环。具体环境信息未公开；后续候选版本仍须重复执行这些门禁。 |
 
 当前没有 `app/src/androidTest` 测试集，CI 也没有 emulator/instrumentation job。项目选择、会话导航、Composer 交互、picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
 
@@ -155,4 +155,4 @@ Fixture 规则见[测试夹具](test-fixtures.zh-CN.md)。
 - 验证破坏性回退与卸载/重装行为，包括应用私有本地数据丢失，以及不存在受支持导出/恢复流程的限制。
 - 从公开 Release 重新下载，并执行完整 `SHA256SUMS` 校验和文档中的单 APK checksum 流程。
 
-在这些检查有记录之前，对应环境的兼容性仍是 `Unknown`，不能写成有证据的 `Tested` 或 `Supported`。详见[兼容性矩阵](../user/compatibility.zh-CN.md)。
+对于 `0.1.0` 候选版本，维护者已记录上述 native load、16KB page-size 和真实 STCP 检查通过。具体设备与部署信息未公开，因此该证据只适用于此候选版本，不构成对全部 Android 环境或 OpenCode Server 版本的覆盖。其他未勾选人工项目仍相互独立，后续每个候选版本都必须重复执行适用门禁。详见[兼容性矩阵](../user/compatibility.zh-CN.md)。

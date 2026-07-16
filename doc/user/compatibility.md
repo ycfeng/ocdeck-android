@@ -34,9 +34,9 @@ Do not interpret `Observed only` or `Tested` as `Supported`, and do not infer co
 | Direct HTTP(S) | Reachable server with valid URL and optional Basic authentication | Supported | The client implements this connection mode. Network, TLS, authentication, and server behavior still depend on the deployment. |
 | SSH forwarding | Supported Android device and compatible SSH endpoint | Supported | The client implements local forwarding, host-key verification, password/private-key modes, and unit-tested state handling. Broad device/server interoperability is not yet documented. |
 | STCP bridge artifact | Fixed GoMobile bridge `0.3.2-frp0.69.1-p1` | Tested | Automated gates verify checksum, Java API, provenance, ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, and reproducibility. |
-| Native loading | Each published ABI on a physical target device | Unknown | Required physical-device native-load validation has not yet been completed. Static ELF and APK checks do not replace it. |
-| 16KB page size | Physical Android device configured with a 16KB page size | Unknown | Static alignment checks exist, but physical-device validation has not yet been completed. |
-| STCP end to end | Physical Android device through real frps/STCP to OpenCode Server | Unknown | Readiness and control-epoch logic are implemented and unit tested, but the required real STCP loop has not yet been completed. |
+| Native loading | Recorded `0.1.0` physical-device release-gate run | Tested | Maintainers recorded successful native loading and app startup with the signed candidate APK. Exact device and ABI details are not published, so this is not a complete device or per-ABI matrix; future candidates must repeat the gate. |
+| 16KB page size | Recorded `0.1.0` physical Android release-gate run using a 16KB page size | Tested | Maintainers recorded successful app startup and native loading on a 16KB page-size device. Exact device details are not published, and static alignment checks remain only a prerequisite. |
+| STCP end to end | Recorded `0.1.0` physical-device run through real frps/STCP to OpenCode Server | Tested | Maintainers recorded listener readiness, tunneled `/global/health`, representative REST, global/project SSE, and controlled reconnect with existing UI data retained. Exact deployment versions are not published; this is not an OpenCode Server version-support claim. |
 
 ## Server Compatibility Guidance
 

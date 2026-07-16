@@ -38,6 +38,7 @@ This section records the prepared first-release scope. It intentionally has no f
 
 - Unified launcher, splash, notification, and in-app identity surfaces around the new OC Deck console-control-panel logo, with Android-specific monochrome derivatives where required. / 使用新的 OC Deck 控制台面板 Logo 统一启动器、启动画面、通知和应用内身份标识界面，并在 Android 平台要求的场景使用对应的单色派生图标。
 - Release automation now renders a reviewable bilingual notes artifact for both tag runs and manual dry runs; publication consumes the same artifact without regeneration. / Release 自动化现在会为 tag 与手动 dry-run 生成可审阅的双语说明 artifact，发布过程直接消费同一 artifact，不再重新生成。
+- Recorded passing external release-gate validation for `0.1.0` physical-device native loading, 16KB page-size operation, and a real frps/STCP path covering health, REST, global/project SSE, and controlled reconnect, without broadening the result into a universal compatibility claim. / 已记录 `0.1.0` 真机 native load、16KB page-size 运行，以及覆盖健康检查、REST、全局/项目 SSE 和受控重连的真实 frps/STCP 路径通过外部发布门禁验证，但不将该结果扩大为普遍兼容性声明。
 
 ### Security / 安全
 

@@ -121,7 +121,7 @@ At runtime OC Deck starts the visitor, waits for a listener in the current frps 
 
 The STCP secret authorizes the visitor; do not describe it as end-to-end encryption for OpenCode traffic. Protect frps and OpenCode transport according to the deployment's security requirements. The same HTTPS loopback hostname limitation described for SSH also applies after STCP rewrites the URL to `127.0.0.1:<local-bind-port>`.
 
-The bridge artifact has extensive static validation, but physical-device native loading, 16 KiB page-size operation, and a real STCP end-to-end path remain `Unknown` until recorded device evidence exists. See [Compatibility](compatibility.md).
+For the `0.1.0` candidate, maintainers recorded passing release-gate evidence for physical-device native loading, 16 KiB page-size operation, and a real STCP end-to-end path. Exact device and deployment details are not published, so this evidence applies only to that candidate and does not replace the same manual gates for future releases. See [Compatibility](compatibility.md).
 
 ## 6. Credential Boundaries
 

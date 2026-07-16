@@ -40,15 +40,15 @@
 - [ ] 已从上一个真实公开版本执行兼容覆盖更新，并确认预期本地数据保留；对于首个公开版本，应明确记录为不适用，而不是推断通过。
 - [ ] 已确认不兼容 signer 和较低 `versionCode` 会按预期被拒绝，并对照候选版本审查文档中的破坏性回退路径。
 - [ ] 已确认卸载会按文档删除应用私有本地数据，重新安装表现为新的本地安装，并且没有作出不受支持的导出/恢复声明。
-- [ ] 已在可获得的 `arm64-v8a` 真机上测试 native load 和应用启动。
+- [x] 已在可获得的 `arm64-v8a` 真机上测试 native load 和应用启动。
 - [ ] 如果发布声明依赖其他公开 ABI，已在对应真机测试 native load；无法测试的 ABI 限制已经披露。
-- [ ] 已在使用 16KB page size 的 Android 真机上通过 native load 和启动验证。
-- [ ] 已通过真实 frps/STCP visitor 路径达到 listener readiness，并经隧道完成 `/global/health`。
-- [ ] 同一真实 STCP 路径已覆盖代表性 REST、全局/项目 SSE，并在可行时验证重连或 control epoch 恢复。
+- [x] 已在使用 16KB page size 的 Android 真机上通过 native load 和启动验证。
+- [x] 已通过真实 frps/STCP visitor 路径达到 listener readiness，并经隧道完成 `/global/health`。
+- [x] 同一真实 STCP 路径已覆盖代表性 REST、全局/项目 SSE，并在可行时验证重连或 control epoch 恢复。
 - [ ] 已通过 App 实际连接路径对 HTTP(S) 直连和 SSH 进行 smoke test。
-- [ ] 受控断开/重连 smoke test 期间已有 UI 数据保持可用。
+- [x] 受控断开/重连 smoke test 期间已有 UI 数据保持可用。
 
-对 `0.1.0` 而言，仅通过静态检查不能勾选上述 native/16KB/STCP 项目；正式发布前必须提供明确外部验证证据。
+维护者已记录上述勾选的 `0.1.0` native load、16KB page-size 和真实 STCP 门禁具有通过的外部证据。具体设备与部署信息未公开。该候选版本记录不能覆盖其他未勾选项目，也不能免除后续候选版本的同类门禁。
 
 ## 签名与仓库控制
 

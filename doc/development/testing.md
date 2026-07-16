@@ -17,7 +17,7 @@ OC Deck uses several independent gates. Passing one layer does not imply that th
 | Android build | Unit tests for both Android modules and the Debug APK build. |
 | Manual UI/accessibility validation | Compact screens, 200% font scale, IME overlap, project-file selection, Provider auth/OAuth/Custom Provider flows, TalkBack semantics/actions, both themes, and real model-settings navigation. |
 | Release artifact validation | APK metadata, one signer, expected certificate fingerprint, ABI isolation, `zipalign -P 16`, AAR native-byte binding, embedded legal files, filenames, and checksums. |
-| Physical-device validation | Required before release, but native loading on target ABIs, a 16KB page-size device, and a real STCP loop have not yet been completed. |
+| Physical-device validation | Maintainer-recorded `0.1.0` release-gate validation passed physical-device native loading/startup, 16KB page-size native operation, and a real STCP loop covering `/global/health`, representative REST, global/project SSE, and controlled reconnect. Exact environment details are not published; future candidates must repeat these gates. |
 
 There is currently no `app/src/androidTest` suite and no emulator/instrumentation job in CI. Project selection, session navigation, Composer interactions, pickers, permission/question UI, large-text behavior, and TalkBack still need systematic device automation.
 
@@ -156,4 +156,4 @@ Static checks cannot prove that Android can load a native library on every targe
 - Destructive rollback and uninstall/reinstall behavior, including app-private local-data loss and the absence of a supported export/restore workflow.
 - Re-download from the public Release and execution of both the complete `SHA256SUMS` check and the documented one-APK checksum procedure.
 
-Until these checks are recorded, compatibility for those environments remains `Unknown`, not `Tested` or `Supported` by evidence. See the [compatibility matrix](../user/compatibility.md).
+For the `0.1.0` candidate, maintainers recorded the native-loading, 16KB page-size, and real STCP checks above as passing. Exact device and deployment details are not published, so the evidence applies only to this candidate and does not establish universal Android or OpenCode Server coverage. Other unchecked manual items remain independent, and every future candidate must repeat the applicable gates. See the [compatibility matrix](../user/compatibility.md).

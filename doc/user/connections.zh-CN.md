@@ -121,7 +121,7 @@ SSH 会保留 URL 的 scheme 和 path，但把 host 和 port 重写为 `127.0.0.
 
 STCP secret 用于授权 visitor，不能把它描述为 OpenCode 流量的端到端加密。应按实际部署安全要求保护 frps 和 OpenCode transport。STCP 把 URL 重写到 `127.0.0.1:<local-bind-port>` 后，同样存在 SSH 一节所述的 HTTPS loopback hostname 限制。
 
-Bridge 制品已经过大量静态验证，但真机 native load、16 KiB page-size 运行和真实 STCP 端到端路径，在记录设备证据前仍为 `Unknown`。详见[兼容性](compatibility.zh-CN.md)。
+对于 `0.1.0` 候选版本，维护者已记录真机 native load、16 KiB page-size 运行和真实 STCP 端到端路径通过发布门禁。具体设备与部署信息未公开，因此该证据只适用于此候选版本，不能替代后续版本的同类人工门禁。详见[兼容性](compatibility.zh-CN.md)。
 
 ## 6. 凭据边界
 

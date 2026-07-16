@@ -40,15 +40,15 @@ This English checklist is canonical. The Chinese document is a complete convenie
 - [ ] A compatible replacement update from the previous real public version preserved expected local data; for the first public version, this item is explicitly recorded as not applicable rather than inferred.
 - [ ] An incompatible signer and a lower `versionCode` were rejected as expected, and the documented destructive rollback path was reviewed against the candidate.
 - [ ] Uninstall removed app-private local data as documented, reinstall behaved as a new local installation, and no unsupported export/restore claim was made.
-- [ ] Native loading and app startup were tested on available physical `arm64-v8a` targets.
+- [x] Native loading and app startup were tested on available physical `arm64-v8a` targets.
 - [ ] Native loading was tested for other published ABIs on physical hardware where a release claim depends on them; any untested ABI limitation is disclosed.
-- [ ] Native loading and startup passed on a physical Android device using a 16KB page size.
-- [ ] A real frps/STCP visitor path reached listener readiness and completed `/global/health` through the tunnel.
-- [ ] The same real STCP path exercised representative REST and both global/project SSE behavior, including reconnect or control-epoch recovery where practical.
+- [x] Native loading and startup passed on a physical Android device using a 16KB page size.
+- [x] A real frps/STCP visitor path reached listener readiness and completed `/global/health` through the tunnel.
+- [x] The same real STCP path exercised representative REST and both global/project SSE behavior, including reconnect or control-epoch recovery where practical.
 - [ ] Direct HTTP(S) and SSH paths received smoke testing through the app's actual connection path.
-- [ ] Existing UI data remained available during a controlled disconnect/reconnect smoke test.
+- [x] Existing UI data remained available during a controlled disconnect/reconnect smoke test.
 
-The three native/STCP items above are not currently satisfied for `0.1.0` merely because static checks pass. They require explicit external evidence before a formal publication.
+Maintainers recorded passing external evidence for the checked `0.1.0` native-loading, 16KB page-size, and real STCP gates above. Exact device and deployment details are not published. This candidate-specific record does not satisfy other unchecked items or waive the same gates for future candidates.
 
 ## Signing and Repository Controls
 
