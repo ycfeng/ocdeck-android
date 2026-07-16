@@ -2,7 +2,7 @@
 
 [简体中文](PRIVACY.zh-CN.md)
 
-Last updated: 2026-07-15
+Last updated: 2026-07-14
 
 This document describes the current OC Deck `0.1.0` codebase. It is not a promise that every future build, distribution channel, OpenCode Server, model provider, Android device, or network operator behaves the same way.
 

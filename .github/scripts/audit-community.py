@@ -421,7 +421,7 @@ def audit_repository_hygiene() -> None:
         check=False,
     )
     require(process.returncode == 0, f"git ls-files failed: {process.stderr.strip()}")
-    forbidden = re.compile(r"(^|/)(local\.properties|signing\.properties|\.idea/|\.playwright-cli/|tmp/|build/|app/release/|__pycache__/)|\.py[co]$")
+    forbidden = re.compile(r"(^|/)(local\.properties(?=$|/)|signing\.properties(?=$|/)|\.idea/|\.playwright-cli/|tmp/|build/|app/release/|__pycache__/)|\.py[co]$")
     tracked_forbidden = [path for path in process.stdout.splitlines() if forbidden.search(path)]
     require(not tracked_forbidden, f"local/generated files are tracked: {tracked_forbidden}")
 
