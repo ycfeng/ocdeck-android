@@ -17,6 +17,7 @@ OC Deck is a native Android client for [OpenCode](https://github.com/anomalyco/o
 - Multiple server profiles using direct HTTP(S), SSH local forwarding, or an embedded frpc STCP visitor
 - Project selection, recent projects, session lists, session details, rename/archive/delete, revert/unrevert, and asynchronous prompts
 - Global and project SSE synchronization with reconnect and snapshot reconciliation
+- Provider catalog/search, dynamic API/OAuth authentication, disconnect, capability refresh, and staged custom-provider persistence on OpenCode Server
 - Slash commands, agent mentions, agent/model/variant pickers, local-device attachments, and server project-file context selection
 - Read-only server project file browsing, search, text highlighting, and image preview
 - Permission and question handling, context usage, and Git/session diff in the session Changes tab
@@ -24,7 +25,7 @@ OC Deck is a native Android client for [OpenCode](https://github.com/anomalyco/o
 
 ## Not Yet Complete
 
-- Provider authentication, disconnect, OAuth, and custom-provider persistence are still prototypes
+- Provider management still requires real-server/provider compatibility and device validation, especially remote loopback OAuth, long-callback cancellation, and partial or unknown custom-provider outcomes
 - The standalone Review route is a placeholder; usable diff is in the session Changes tab
 - Model enabled/hidden settings are local filters and do not modify OpenCode Server configuration
 - Shell mode, session sharing, workspace/worktree flows, and PTY/terminal are not implemented
