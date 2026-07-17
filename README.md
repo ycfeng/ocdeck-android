@@ -85,7 +85,7 @@ Debug builds can compile without a generated GoMobile AAR, but STCP is unavailab
 
 ## Screenshots
 
-Screenshots are intentionally not included in the `0.1.2` project facade. Add only reviewed screenshots that reflect the current Android UI and contain no server addresses, project paths, session content, credentials, or other sensitive data.
+Screenshots are intentionally not included in the `0.1.2` project facade. Add only reviewed screenshots that reflect the current Android UI and contain no real, private, or sensitive data. Clearly constructed demonstration data is allowed.
 
 ## Support and Contributing
 
