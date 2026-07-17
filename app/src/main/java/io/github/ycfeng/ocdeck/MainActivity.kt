@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
@@ -39,7 +40,10 @@ class MainActivity : ComponentActivity() {
             val localizedContext = remember(baseContext, languagePreference) {
                 baseContext.localized(languagePreference)
             }
-            CompositionLocalProvider(LocalContext provides localizedContext) {
+            CompositionLocalProvider(
+                LocalContext provides localizedContext,
+                LocalActivityResultRegistryOwner provides this@MainActivity,
+            ) {
                 OpenCodeTheme(colorSchemePreference = colorSchemePreference) {
                     OpenCodeApp(
                         appContainer = appContainer,
