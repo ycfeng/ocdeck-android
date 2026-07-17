@@ -154,6 +154,8 @@ Selecting a rail project closes the drawer first. Selecting the project already 
 
 The project home and drawer share one Store-backed session window per normalized server/directory/workspace key. They initially show 20 root sessions and request `/session?roots=true&limit=70`, keeping 50 raw entries of headroom for archived filtering. Load More raises the shared visible target by 20; it reveals already loaded roots immediately or refetches the ordered prefix with `limit = target + 50`. A raw response shorter than the requested limit marks the end, while failure keeps existing sessions and exposes an inline retry. Snapshot reconciliation preserves the current requested window instead of shrinking back to a fixed limit. `GET /session/{sessionID}` supplements a route that targets a session outside the current window and follows at most 16 parent links with cycle detection.
 
+Working session rows on the project home and in the drawer use the shared OpenCode-style 4-by-4 running indicator: the four corner cells remain empty and the other dots pulse with independent deterministic timing. Build and Plan retain their semantic colors, every animation frame preserves the 3:1 graphical-contrast floor, and disabling system animations leaves a visible static indicator. On the project home, this working state takes precedence over the trailing notification dot. The same indicator is reused for running subagent cards.
+
 Visible fixture sessions:
 
 | Title |

@@ -119,17 +119,24 @@ class OpenCodeContrastTest {
             assertContrast("$name warning status on $backgroundName", colors.Warning, background, GraphicContrast)
             assertContrast("$name error status on $backgroundName", colors.Danger, background, GraphicContrast)
         }
-        listOf(
+        val runningIndicators = listOf(
             "running build" to colors.RunningBuild,
             "running plan" to colors.RunningPlan,
-        ).forEach { (indicatorName, indicatorColor) ->
-            assertContrast("$name $indicatorName on panel", indicatorColor, colors.Panel, GraphicContrast)
-            assertContrast(
-                "$name $indicatorName minimum alpha on panel",
-                indicatorColor.copy(alpha = SessionRunningIndicatorMinimumAlpha),
-                colors.Panel,
-                GraphicContrast,
-            )
+            "running default" to colors.Text,
+        )
+        listOf(
+            "panel" to colors.Panel,
+            "subagentBackground" to colors.SubagentBackground,
+        ).forEach { (backgroundName, background) ->
+            runningIndicators.forEach { (indicatorName, indicatorColor) ->
+                assertContrast("$name $indicatorName on $backgroundName", indicatorColor, background, GraphicContrast)
+                assertContrast(
+                    "$name $indicatorName minimum alpha on $backgroundName",
+                    indicatorColor.copy(alpha = SessionRunningIndicatorMinimumAlpha),
+                    background,
+                    GraphicContrast,
+                )
+            }
         }
 
         val contextColors = listOf(

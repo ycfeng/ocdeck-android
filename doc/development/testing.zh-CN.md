@@ -30,6 +30,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `FrpcStcpReadinessRetryClassifierTest` 与 `GoMobileFrpcStcpVisitorClientTest` 覆盖 readiness 瞬时/永久失败、入站策略失败、typed unavailable/API mismatch bridge 错误、安全 bridge 摘要、API v2 JSON、revision/control epoch、`WaitVisitorReady`，以及反射取消/JVM `Error` 传播。
 - `SensitiveValueToStringTest` 验证 network、domain、Store、feature 和 UI value 摘要不暴露人工凭据、URL/endpoint、alias、路径、prompt、Base64、SSE payload 或 tool output，同时保持普通 value object 行为。
 - `OpenCodeContrastTest` 对浅色/深色主题执行 4.5:1 文字与 3:1 图形对比度门禁，覆盖主题文字、语义化 Diff/Markdown/语法/图表颜色、状态指示、附件遮罩、选择边框和 `ControlBorder`。
+- `SessionRunningIndicatorTest` 覆盖 4×4 四角遮罩、每个点独立的 1–2 秒节奏、有界相位偏移、满足无障碍要求的透明度与缩放范围、可见帧变化、差异化初始帧和公共循环的无缝连续性。
 - `ProjectDrawerModelTest`、`ProjectInitialTest`、`ProjectPickerViewModelTest`、`RecentProjectRecorderTest` 与 `RecentProjectStoreReducerTest` 覆盖当前项目补入、MRU 顺序保持、Windows 路径别名去重、不等待 DataStore 的导航、有序重试、本地失败分类、项目首页导航决策和 Unicode 项目首字。
 - `SessionListWindowCoordinatorTest`、`InMemoryOpenCodeStoreSessionWindowTest` 与 `OpenCodeRepositorySessionWindowTest` 覆盖共享 20 条目标、50 条请求余量、本地展开与网络加载、重试/末尾状态、有序前缀替换、快速点击合并、旧 generation/transport 拒绝、tombstone、项目/workspace 隔离和有界 metadata/父链补取。
 - `NotificationAlertPolicyTest`、`NotificationChannelMigrationPolicyTest`、`OpenCodeNotificationAudioAttributesTest` 与 `SessionVisibilityRegistryTest` 覆盖单事件唯一声音所有者、App/系统设置独立、系统显式声音/静音优先级、legacy 到 v2 迁移决策、notification audio usage 和前台 destination 可见性。

@@ -1,5 +1,6 @@
 package io.github.ycfeng.ocdeck.ui.component
 
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -23,6 +24,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
+import kotlin.math.abs
 
 @Composable
 fun OpenCodeSessionRunningIndicator(
@@ -49,14 +51,17 @@ private fun RunningSessionSpinner(
     modifier: Modifier = Modifier,
 ) {
     val transition = rememberInfiniteTransition(label = "session-running-spinner")
-    val progress by transition.animateFloat(
+    val elapsedMillis by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 1f,
+        targetValue = SessionRunningIndicatorAnimationLoopMillis.toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1600, easing = LinearEasing),
+            animation = tween(
+                durationMillis = SessionRunningIndicatorAnimationLoopMillis,
+                easing = LinearEasing,
+            ),
             repeatMode = RepeatMode.Restart,
         ),
-        label = "session-running-spinner-progress",
+        label = "session-running-spinner-elapsed",
     )
 
     Canvas(modifier = modifier.size(15.dp)) {
@@ -68,45 +73,72 @@ private fun RunningSessionSpinner(
         for (index in 0 until 16) {
             if (index.isHiddenSpinnerDot()) continue
 
-            val outerDot = !index.isCenterSpinnerDot()
+            val frame = sessionRunningIndicatorDotFrame(index, elapsedMillis)
+            val animatedDotSize = dotSize * frame.scale
+            val dotInset = (dotSize - animatedDotSize) / 2f
             drawRoundRect(
-                color = color.copy(alpha = spinnerDotAlpha(index, outerDot, progress)),
+                color = color.copy(alpha = frame.alpha),
                 topLeft = Offset(
-                    x = index % 4 * step,
-                    y = index / 4 * step,
+                    x = index % 4 * step + dotInset,
+                    y = index / 4 * step + dotInset,
                 ),
-                size = Size(dotSize, dotSize),
-                cornerRadius = CornerRadius(radius, radius),
+                size = Size(animatedDotSize, animatedDotSize),
+                cornerRadius = CornerRadius(radius * frame.scale, radius * frame.scale),
             )
         }
     }
 }
 
-private val SpinnerPulseOffsets = floatArrayOf(
-    0.00f, 0.15f, 0.72f, 0.00f,
-    0.44f, 0.03f, 0.57f, 0.28f,
-    0.81f, 0.36f, 0.12f, 0.65f,
-    0.00f, 0.51f, 0.91f, 0.00f,
+internal data class SessionRunningIndicatorDotMotion(
+    val durationMillis: Int,
+    val phaseOffsetMillis: Int,
 )
 
-private val SpinnerPulseSpeeds = floatArrayOf(
-    1.00f, 0.92f, 1.17f, 1.00f,
-    1.08f, 0.86f, 1.21f, 0.97f,
-    1.14f, 1.03f, 0.89f, 1.24f,
-    1.00f, 0.95f, 1.11f, 1.00f,
+internal data class SessionRunningIndicatorDotFrame(
+    val alpha: Float,
+    val scale: Float,
 )
 
-private fun spinnerDotAlpha(index: Int, outerDot: Boolean, progress: Float): Float {
-    val phase = (progress * SpinnerPulseSpeeds[index] + SpinnerPulseOffsets[index]) % 1f
-    val pulse = if (phase < 0.5f) phase * 2f else (1f - phase) * 2f
-    val minAlpha = if (outerDot) SessionRunningIndicatorMinimumAlpha else 0.82f
-    val maxAlpha = 1f
-    return minAlpha + (maxAlpha - minAlpha) * pulse
+// Every duration divides the shared timeline so restart returns each dot to the same phase.
+internal val SessionRunningIndicatorDotMotions = listOf(
+    SessionRunningIndicatorDotMotion(1_000, 0),
+    SessionRunningIndicatorDotMotion(1_200, 150),
+    SessionRunningIndicatorDotMotion(1_500, 900),
+    SessionRunningIndicatorDotMotion(1_000, 0),
+    SessionRunningIndicatorDotMotion(2_000, 600),
+    SessionRunningIndicatorDotMotion(1_200, 0),
+    SessionRunningIndicatorDotMotion(1_500, 750),
+    SessionRunningIndicatorDotMotion(1_000, 250),
+    SessionRunningIndicatorDotMotion(1_500, 1_200),
+    SessionRunningIndicatorDotMotion(2_000, 400),
+    SessionRunningIndicatorDotMotion(1_200, 1_000),
+    SessionRunningIndicatorDotMotion(1_500, 150),
+    SessionRunningIndicatorDotMotion(1_000, 0),
+    SessionRunningIndicatorDotMotion(1_000, 700),
+    SessionRunningIndicatorDotMotion(2_000, 1_450),
+    SessionRunningIndicatorDotMotion(1_000, 0),
+)
+
+internal fun sessionRunningIndicatorDotFrame(
+    index: Int,
+    elapsedMillis: Float,
+): SessionRunningIndicatorDotFrame {
+    val motion = SessionRunningIndicatorDotMotions[index]
+    val phase = ((elapsedMillis + motion.phaseOffsetMillis) % motion.durationMillis) / motion.durationMillis
+    val linearPulse = 1f - abs(phase * 2f - 1f)
+    val pulse = SessionRunningIndicatorPulseEasing.transform(linearPulse.coerceIn(0f, 1f))
+    val centerDot = index.isCenterSpinnerDot()
+    val minAlpha = if (centerDot) SessionRunningIndicatorCenterMinimumAlpha else SessionRunningIndicatorMinimumAlpha
+    val maxAlpha = if (centerDot) 1f else SessionRunningIndicatorOuterMaximumAlpha
+    return SessionRunningIndicatorDotFrame(
+        alpha = minAlpha + (maxAlpha - minAlpha) * pulse,
+        scale = SessionRunningIndicatorMinimumScale + (1f - SessionRunningIndicatorMinimumScale) * pulse,
+    )
 }
 
-private fun Int.isHiddenSpinnerDot(): Boolean = this == 0 || this == 3 || this == 12 || this == 15
+internal fun Int.isHiddenSpinnerDot(): Boolean = this == 0 || this == 3 || this == 12 || this == 15
 
-private fun Int.isCenterSpinnerDot(): Boolean = this == 5 || this == 6 || this == 9 || this == 10
+internal fun Int.isCenterSpinnerDot(): Boolean = this == 5 || this == 6 || this == 9 || this == 10
 
 @Composable
 private fun String?.runningSpinnerColor(defaultColor: Color): Color = when (this?.lowercase()) {
@@ -116,3 +148,9 @@ private fun String?.runningSpinnerColor(defaultColor: Color): Color = when (this
 }
 
 internal const val SessionRunningIndicatorMinimumAlpha = 0.72f
+internal const val SessionRunningIndicatorMinimumScale = 0.56f
+internal const val SessionRunningIndicatorAnimationLoopMillis = 60_000
+
+private const val SessionRunningIndicatorCenterMinimumAlpha = 0.82f
+private const val SessionRunningIndicatorOuterMaximumAlpha = 0.90f
+private val SessionRunningIndicatorPulseEasing = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
