@@ -631,7 +631,7 @@ Visible fixtures:
 
 Android recommendation: group by provider, support search, and show a trailing check for the current model. Use an anchored popup when content fits within a constrained small screen; use `ModalBottomSheet` for a long list or complex search/management entries. Connect Provider and Manage Models need real touch targets of at least 48 dp and localized `contentDescription` values.
 
-Current Android implementation: both management actions close the picker first. Connect Provider navigates to `ProviderSettingsRoute(serverId, directory?, workspace?)` and preserves the current project scope when available; Manage Models navigates to `ModelSettingsRoute(serverId)`. Neither remains a placeholder action.
+Current Android implementation: both management actions close the picker first. Connect Provider navigates to `ProviderSettingsRoute(serverId, directory?, workspace?)` and preserves the current project scope when available; Manage Models navigates to `ModelSettingsRoute(serverId)`. Neither remains a placeholder action. Reopening the picker automatically scrolls the current model into view and centers its measured row within the list viewport as closely as the scroll bounds allow; provider headers count as separate lazy-list items, and subsequent search or manual scrolling is not overridden.
 
 Android should use DataStore keyed by `serverId` to remember the last Composer model and the reasoning strength selected for that model. Restore automatically after process restart when entering the recent-session page or any project session. Before restoration, verify that the model still belongs to a connected provider and the cached variant remains in the model's current `variants`. If the model no longer exists, do not restore it. If the variant is no longer supported, restore the model with Default.
 
@@ -646,7 +646,7 @@ Pressing the bottom reasoning-strength control opens a listbox. Web does not har
 | provider-beta / `model-small` | `Default`, `none`, `high` |
 | provider-beta / `model-basic` | No variants; hide the entry |
 
-This is a model variant/reasoning-strength selector, not a permission mode. Use explicit copy such as Reasoning Strength or Reasoning. Capitalize dynamic display labels, for example `none` as `None`, `max` as `Max`, and `xhigh` as `Xhigh`. When switching models, reset to Default if the old variant is absent from the new model's `variants`, preventing unsupported values from being sent.
+This is a model variant/reasoning-strength selector, not a permission mode. Use explicit copy such as Reasoning Strength or Reasoning. Capitalize dynamic display labels, for example `none` as `None`, `max` as `Max`, and `xhigh` as `Xhigh`. When switching models, reset to Default if the old variant is absent from the new model's `variants`, preventing unsupported values from being sent. Reopening the list automatically brings the current Default or dynamic variant into view and centers its measured row as closely as the list boundaries allow.
 
 ### 13.8 Accessibility, Contrast, and Large-Text Behavior
 

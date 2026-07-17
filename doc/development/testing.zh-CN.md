@@ -34,6 +34,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `SessionListWindowCoordinatorTest`、`InMemoryOpenCodeStoreSessionWindowTest` 与 `OpenCodeRepositorySessionWindowTest` 覆盖共享 20 条目标、50 条请求余量、本地展开与网络加载、重试/末尾状态、有序前缀替换、快速点击合并、旧 generation/transport 拒绝、tombstone、项目/workspace 隔离和有界 metadata/父链补取。
 - `NotificationAlertPolicyTest`、`NotificationChannelMigrationPolicyTest`、`OpenCodeNotificationAudioAttributesTest` 与 `SessionVisibilityRegistryTest` 覆盖单事件唯一声音所有者、App/系统设置独立、系统显式声音/静音优先级、legacy 到 v2 迁移决策、notification audio usage 和前台 destination 可见性。
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest` 覆盖按服务端顺序过滤 Build/Plan 及回退、初始模型/Variant 校验与切换回退，以及只对新会话接受项目首页轻量 Composer 路由选择。
+- `ComposerParameterPickerScrollTest` 覆盖跨 provider 标题的模型 lazy-list 索引、带“默认”前缀的 Variant 索引、选择不存在时的行为，以及基于实测 item 与 viewport 的居中偏移。
 - `ProjectFilePathNormalizerTest` 与 `ProjectFileUrlBuilderTest` 覆盖相对路径平台语义、遍历/绝对路径拒绝、POSIX/Windows 盘符/UNC `file://` 构造、UTF-8 百分号编码、往返和项目根包含关系。
 - `PromptSendStateMachineTest`、`OpenCodePromptSenderTest` 与 `PromptRequestDtoSerializationTest` 覆盖纯项目上下文发送、上下文终检与去重、普通/已加载命令透传、乐观 `file://` parts、新 session 消息移动和线缆序列化。
 - `UserMessagePartsTest` 与 `SessionRevertProjectionTest` 区分本地 `data:` 附件、独立项目上下文和评论 backing file，并只在数量上限内恢复当前项目上下文。
@@ -133,7 +134,7 @@ Fixture 规则见[测试夹具](test-fixtures.zh-CN.md)。
 | IME 打开 | 固定底部 Composer、建议面板、model/agent/variant popup、附件条、系统返回 | Inset 保持 Composer 可见；浮层不被遮挡；系统返回先关闭聚焦浮层，再离开页面 |
 | TalkBack 启用 | 项目 Tab 与路径、可点击图标标签、Tab/RadioButton/Checkbox/Switch 状态、展开/折叠控件、未读/错误/权限/连接提示、服务器排序 | 项目 Tab 播报唯一完整标签和选中状态；其他 role 与状态正确播报；重要含义不只依赖颜色；服务器卡片提供本地化上移/下移自定义操作 |
 | 浅色和深色主题 | 正文/辅助文字、文本框和边框、选中/错误/状态指示、Diff/Markdown/代码、附件遮罩 | 文字达到 4.5:1 目标，必要非文本控件/指示达到 3:1；状态在两种主题下都可理解 |
-| Composer 模型选择器 | 搜索、provider 分组、当前 check、连接 Provider、管理模型 | 行和图标操作保持 48dp 目标；操作关闭 picker 并导航到真实 Provider/模型设置路由 |
+| Composer 模型与 Variant 选择器 | 选中视野外项目后重新打开、搜索、provider 分组、当前 check、连接 Provider、管理模型 | 重新打开时当前选择会自动滚入视野，并在滚动边界允许时居中；搜索和手动滚动仍由用户控制；行和图标操作保持 48dp 目标；管理操作关闭 picker 并导航到真实 Provider/模型设置路由 |
 | Provider 设置与认证 | 搜索和已加载/可连接分组；动态 text/select prompt；API key 键盘；OAuth 浏览器、code、auto callback 与取消；明文/loopback/断开确认 | 浮层关闭后 secret 消失；系统返回先关闭聚焦 sheet；IME 与 200% 字体下操作仍可达；已加载、disabled、pending、错误均有非颜色提示；取消不会静默重试 |
 | Custom Provider 创建/编辑 | 多模型/Header 行、数量/上限状态、持久化标识限制、密码字段、保存、disabled/unknown outcome、停用与凭据清理 | 行和操作保持可达且至少 48dp；满额/超限状态明确，移除新增行后可重新添加；已保存值不回显；partial/unknown 状态明确；停用不宣称物理删除；两种主题和 TalkBack 表达相同状态 |
 | 项目首页 Composer 预览 | Agent、模型、Variant 控件；输入区与附件入口；系统返回；紧凑屏幕和 200% 字体 | 参数 picker 原地打开和更新且不导航；返回先关闭聚焦 popup；Provider/模型操作进入真实设置路由；输入区和附件入口携带当前已校验选择进入 `"new"` |

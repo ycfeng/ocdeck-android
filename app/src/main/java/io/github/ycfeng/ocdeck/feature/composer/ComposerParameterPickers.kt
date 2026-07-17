@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,7 +18,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,9 +30,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +58,8 @@ import io.github.ycfeng.ocdeck.domain.model.OpenCodeModel
 import io.github.ycfeng.ocdeck.domain.model.PromptModelSelection
 import io.github.ycfeng.ocdeck.ui.component.openCodeTextFieldCursorBrush
 import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 
 @Composable
 internal fun ComposerParameterButton(
@@ -227,6 +234,12 @@ internal fun ModelPickerPopup(
             }
         }
     }
+    val selectedItemIndex = remember(models, selectedModel) {
+        modelPickerSelectedItemIndex(models, selectedModel)
+    }
+    val listState = rememberSelectionCenteredLazyListState(
+        selectedItemIndex = selectedItemIndex.takeIf { query.isBlank() && filtered.isNotEmpty() },
+    )
     val popupOffsetY = with(LocalDensity.current) {
         -(48.dp + ComposerPopupGap).roundToPx()
     }
@@ -267,6 +280,7 @@ internal fun ModelPickerPopup(
                     )
                 } else {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f, fill = false)
@@ -476,6 +490,9 @@ internal fun VariantPickerPopup(
 ) {
     val options = listOf(ReasoningOption(stringResource(R.string.composer_default_variant), null)) +
         variants.map { variant -> ReasoningOption(variant.toVariantDisplayLabel(), variant) }
+    val listState = rememberSelectionCenteredLazyListState(
+        selectedItemIndex = variantPickerSelectedItemIndex(variants, selectedVariant),
+    )
     val popupOffsetY = with(LocalDensity.current) {
         -(48.dp + ComposerPopupGap).roundToPx()
     }
@@ -497,12 +514,13 @@ internal fun VariantPickerPopup(
         ) {
             Box(modifier = Modifier.padding(VariantPickerPopupPadding)) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .width(VariantPickerListWidth)
                         .heightIn(max = VariantPickerPopupMaxHeight - VariantPickerPopupPadding * 2)
                         .selectableGroup(),
                 ) {
-                    items(options, key = { it.value ?: "default" }) { option ->
+                    items(options, key = { it.value?.let { value -> "variant:$value" } ?: "variant:null" }) { option ->
                         VariantPickerOption(
                             option = option,
                             selected = selectedVariant == option.value,
@@ -583,6 +601,77 @@ private data class ReasoningOption(
     val label: String,
     val value: String?,
 )
+
+@Composable
+private fun rememberSelectionCenteredLazyListState(selectedItemIndex: Int?): LazyListState {
+    val listState = rememberLazyListState()
+    var hasPositionedSelection by remember { mutableStateOf(false) }
+
+    LaunchedEffect(selectedItemIndex) {
+        if (hasPositionedSelection || selectedItemIndex == null) return@LaunchedEffect
+
+        listState.scrollToItem(selectedItemIndex)
+        val selectedItem = snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            if (layoutInfo.viewportEndOffset <= layoutInfo.viewportStartOffset) {
+                null
+            } else {
+                layoutInfo.visibleItemsInfo.firstOrNull { it.index == selectedItemIndex }
+            }
+        }.filterNotNull().first()
+        val layoutInfo = listState.layoutInfo
+        listState.scrollBy(
+            centeredLazyListScrollDelta(
+                itemOffset = selectedItem.offset,
+                itemSize = selectedItem.size,
+                viewportStartOffset = layoutInfo.viewportStartOffset,
+                viewportEndOffset = layoutInfo.viewportEndOffset,
+            ),
+        )
+        hasPositionedSelection = true
+    }
+
+    return listState
+}
+
+internal fun modelPickerSelectedItemIndex(
+    models: List<OpenCodeModel>,
+    selectedModel: PromptModelSelection?,
+): Int? {
+    if (selectedModel == null) return null
+
+    var itemIndex = 0
+    models.groupBy { it.providerName }.values.forEach { providerModels ->
+        itemIndex += 1
+        providerModels.forEach { model ->
+            if (model.providerId == selectedModel.providerId && model.modelId == selectedModel.modelId) {
+                return itemIndex
+            }
+            itemIndex += 1
+        }
+    }
+    return null
+}
+
+internal fun variantPickerSelectedItemIndex(
+    variants: List<String>,
+    selectedVariant: String?,
+): Int? {
+    if (selectedVariant == null) return 0
+    val variantIndex = variants.indexOf(selectedVariant)
+    return if (variantIndex >= 0) variantIndex + 1 else null
+}
+
+internal fun centeredLazyListScrollDelta(
+    itemOffset: Int,
+    itemSize: Int,
+    viewportStartOffset: Int,
+    viewportEndOffset: Int,
+): Float {
+    val itemCenter = itemOffset + itemSize / 2f
+    val viewportCenter = (viewportStartOffset + viewportEndOffset) / 2f
+    return itemCenter - viewportCenter
+}
 
 private val ComposerPopupGap = 4.dp
 private val AgentPickerPopupWidth = 96.dp

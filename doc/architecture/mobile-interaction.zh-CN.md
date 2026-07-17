@@ -633,7 +633,7 @@ Composer agent 下拉只显示：
 
 Android 建议：模型选择器按 provider 分组并支持搜索，当前模型右侧显示 check。内容能在小屏内受约束展示时可使用 anchored popup；列表较长、搜索或管理入口较复杂时使用 `ModalBottomSheet`。`连接提供商` 和 `管理模型` 使用至少 48dp 真实触控目标及本地化 contentDescription。
 
-当前 Android 实现：两个管理入口都会先关闭 picker；`连接提供商` 导航到 `ProviderSettingsRoute(serverId, directory?, workspace?)`，并在可用时保留当前项目作用域；`管理模型` 导航到 `ModelSettingsRoute(serverId)`。两者均不是占位操作。
+当前 Android 实现：两个管理入口都会先关闭 picker；`连接提供商` 导航到 `ProviderSettingsRoute(serverId, directory?, workspace?)`，并在可用时保留当前项目作用域；`管理模型` 导航到 `ModelSettingsRoute(serverId)`。两者均不是占位操作。再次打开 picker 时会自动把当前模型滚入视野，并根据实测行高在滚动边界允许范围内尽量置于列表视野中央；provider 标题按独立 lazy-list item 计入索引，完成首次定位后不会干扰搜索或手动滚动。
 
 Android 端应按 `serverId` 使用 DataStore 记住 Composer 上一次选择的模型和该模型对应的推理强度。应用重启后进入最近会话页或任意项目会话时自动恢复；恢复前必须校验模型仍来自已连接 provider，且缓存的 variant 仍在当前模型 `variants` 中。模型不存在时不恢复；variant 不再支持时恢复模型但使用 `默认`。
 
@@ -648,7 +648,7 @@ Android 端应按 `serverId` 使用 DataStore 记住 Composer 上一次选择的
 | provider-beta / `model-small` | `默认`、`none`、`high` |
 | provider-beta / `model-basic` | 无可选 variants，不展示入口 |
 
-它不是权限模式，而是模型 variant/推理强度选择。Android 文案建议明确为“推理强度”或“Reasoning”，避免误解；动态 variant 的展示文案首字母大写，例如 `none` 展示为 `None`、`max` 展示为 `Max`、`xhigh` 展示为 `Xhigh`。切换模型时，如果旧 variant 不在新模型 `variants` 中，必须重置为 `默认`，避免发送服务端不支持的 variant。
+它不是权限模式，而是模型 variant/推理强度选择。Android 文案建议明确为“推理强度”或“Reasoning”，避免误解；动态 variant 的展示文案首字母大写，例如 `none` 展示为 `None`、`max` 展示为 `Max`、`xhigh` 展示为 `Xhigh`。切换模型时，如果旧 variant 不在新模型 `variants` 中，必须重置为 `默认`，避免发送服务端不支持的 variant。再次打开列表时会自动把当前“默认”或动态 variant 滚入视野，并根据实测行高在列表边界允许范围内尽量置于视野中央。
 
 ### 13.8 无障碍、对比度与大字体行为
 
