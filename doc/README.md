@@ -35,6 +35,7 @@ English documents are the public canonical versions. Simplified Chinese document
 - [GitHub Actions release process](release/github-actions.md) ([简体中文](release/github-actions.zh-CN.md))
 - [Release checklist](release/checklist.md) ([简体中文](release/checklist.zh-CN.md))
 - [Changelog](../CHANGELOG.md)
+- [0.1.3 release notes](../release-notes/v0.1.3.md)
 - [0.1.2 release notes](../release-notes/v0.1.2.md)
 - [0.1.1 release notes](../release-notes/v0.1.1.md)
 - [0.1.0 release notes](../release-notes/v0.1.0.md)

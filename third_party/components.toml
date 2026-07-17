@@ -1,10 +1,10 @@
 schema_version = 1
 audited_on = "2026-07-17"
-app_version = "0.1.2"
+app_version = "0.1.3"
 application_id = "io.github.ycfeng.ocdeck"
 min_android_api = 26
-bridge_version = "0.3.5-frp0.69.1-p1"
-bridge_maven_coordinate = "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.5-frp0.69.1-p1"
+bridge_version = "0.3.6-frp0.69.1-p1"
+bridge_maven_coordinate = "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.6-frp0.69.1-p1"
 
 [audit]
 android_configuration = ":app:releaseRuntimeClasspath"
@@ -16,7 +16,7 @@ notes = "AndroidX is represented by resolved artifact families. Go modules are t
 id = "ocdeck"
 name = "OC Deck original code"
 kind = "project"
-version = "0.1.2"
+version = "0.1.3"
 license = "MIT"
 license_file = "../LICENSE"
 source = "."

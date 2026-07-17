@@ -71,15 +71,15 @@ macOS/Linux：
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
 ```
 
-当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.5-frp0.69.1-p1`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
+当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.6-frp0.69.1-p1`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
 
 ## Release 构建
 
 应用版本只来自根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=3
-VERSION_NAME=0.1.2
+VERSION_CODE=4
+VERSION_NAME=0.1.3
 ```
 
 本地 Release 构建要求先生成并校验 bridge，同时提供发布签名输入。使用 `signing.properties.example` 记录的配置键或等价环境变量。Keystore、密码、alias、证书材料和本机路径不得进入 Git、日志、shell 历史、截图或 artifact。App 打包配置会保留 GoMobile AAR 中已经 stripped 且通过校验的 `libgojni.so` 原始字节；APK 发布门禁仍会独立复核 native 字节绑定、ELF metadata、16KB 对齐和 stripped 状态。

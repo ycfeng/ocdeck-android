@@ -13,7 +13,25 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the `0.1.2` release. / 尚无超出 `0.1.2` 发布范围的变更。
+No changes have been assigned beyond the `0.1.3` release. / 尚无超出 `0.1.3` 发布范围的变更。
+
+## [0.1.3] - 2026-07-17
+
+### Added / 新增
+
+- Added reviewed English and Simplified Chinese README screenshots for both light and dark themes using constructed demonstration data. / 新增经过审查的英文与简体中文 README 截图，覆盖浅色和深色主题，并仅使用构造的演示数据。
+- Added Android instrumentation coverage for localized Popup and modal bottom-sheet roots, including live language changes while a Popup remains open. / 新增 Android instrumentation 测试，覆盖本地化 Popup 与 modal bottom sheet 独立窗口根，以及 Popup 保持打开时的实时语言切换。
+
+### Changed / 变更
+
+- Repository automation now prefers the configured local OpenCode source and dedicated local Web test project before considering online references or state-changing browser inspection. / 仓库自动化现在优先使用已配置的本地 OpenCode 源码和专用本地 Web 测试项目，再考虑联网参考或会改变状态的浏览器检查。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.6-frp0.69.1-p1` because the AAR embeds the `0.1.3` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.1.3` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.6-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Independent Compose Popup, dialog, and modal bottom-sheet windows now follow the selected app language, including an in-place language change while open. / 独立 Compose Popup、dialog 与 modal bottom sheet 窗口现在会跟随所选应用语言，并支持窗口保持打开时原地切换语言。
+- Preserved the Activity Result registry owner under the localized composition root so activity-result launchers such as file selection remain available. / 在本地化组合根中保留 Activity Result registry owner，使文件选择等 activity-result launcher 保持可用。
+- Aligned the project-path input text consistently within its field. / 修正项目路径输入文字在输入框内的对齐。
 
 ## [0.1.2] - 2026-07-17
 

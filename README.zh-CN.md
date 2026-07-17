@@ -4,7 +4,7 @@
 
 OC Deck 是一款 OpenCode 原生 Android 客户端，用于连接你自行运行或信任的 [OpenCode Server](https://opencode.ai/docs/server/)。注意：OC Deck 不是 OpenCode 项目或 Anomaly 官方开发、背书或关联的产品。
 
-> **Pre-1.0 提醒：** 当前版本为 `0.1.2`，仍在快速开发中。功能、存储格式、网络行为和兼容性可能变化。请备份重要工作，不要把 OC Deck 作为访问服务器的唯一方式。
+> **Pre-1.0 提醒：** 当前版本为 `0.1.3`，仍在快速开发中。功能、存储格式、网络行为和兼容性可能变化。请备份重要工作，不要把 OC Deck 作为访问服务器的唯一方式。
 
 ## 使用要求
 
@@ -84,6 +84,8 @@ macOS/Linux：
 没有生成 GoMobile AAR 时 Debug 仍可编译，但 STCP 运行时不可用。需要完整 STCP 能力时，先在 Windows 运行 `frpc-stcp-visitor-go/build-aar.ps1`，或在 macOS/Linux 运行 `frpc-stcp-visitor-go/build-aar.sh`，再执行[仓库代理规则](AGENTS.zh-CN.md)中的 bridge 门禁。
 
 ## 截图
+
+当前 `0.1.3` 项目门面中的截图均已审查，仅使用构造的演示数据，不包含真实服务器、项目、会话或凭据信息。
 
 | 浅色主题 | 深色主题 |
 | --- | --- |

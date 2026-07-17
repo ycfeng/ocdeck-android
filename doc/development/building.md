@@ -71,15 +71,15 @@ macOS/Linux:
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
 ```
 
-The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.5-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.6-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
 
 ## Release Builds
 
 Application versions come only from root `gradle.properties`:
 
 ```properties
-VERSION_CODE=3
-VERSION_NAME=0.1.2
+VERSION_CODE=4
+VERSION_NAME=0.1.3
 ```
 
 Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts. The App packaging configuration preserves the already-stripped `libgojni.so` bytes verified in the GoMobile AAR; APK release checks independently revalidate native-byte binding, ELF metadata, 16KB alignment, and stripped state.

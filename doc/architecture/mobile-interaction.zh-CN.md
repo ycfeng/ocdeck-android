@@ -8,7 +8,7 @@
 
 本文基于 Playwright 在 `http://127.0.0.1:4096/` 的实际探索结果整理，视口设置为 `390 x 844`，用于近似 iPhone 12 Pro 纵屏移动端。文中的观察数据已改写为通用 fixture；测试项目使用 `X:/workspace/sample-project`，POSIX 示例使用 `/workspace/sample-project`。
 
-目标是为 OC Deck 复刻 OpenCode Web UI 核心工作流提供可落地的页面、交互、状态、接口和移动端适配设计。OC Deck 是独立社区客户端，不是 OpenCode 项目或 Anomaly 官方产品；应用 `0.1.2` 使用 `io.github.ycfeng.ocdeck`，最低支持 Android API 26，并要求用户自行提供可访问的 OpenCode Server。本文不包含任何真实 provider API key、token、密码或本机凭据；所有配置接口中的敏感字段都必须在日志、文档、崩溃上报和调试 UI 中脱敏为 `<redacted>`。
+目标是为 OC Deck 复刻 OpenCode Web UI 核心工作流提供可落地的页面、交互、状态、接口和移动端适配设计。OC Deck 是独立社区客户端，不是 OpenCode 项目或 Anomaly 官方产品；应用 `0.1.3` 使用 `io.github.ycfeng.ocdeck`，最低支持 Android API 26，并要求用户自行提供可访问的 OpenCode Server。本文不包含任何真实 provider API key、token、密码或本机凭据；所有配置接口中的敏感字段都必须在日志、文档、崩溃上报和调试 UI 中脱敏为 `<redacted>`。
 
 探索过程中没有执行发送 prompt、归档、删除、关闭项目、断开 provider、保存项目编辑、添加服务器等有副作用操作。发送和管理类接口通过前端静态 JS 客户端与网络记录推断。
 

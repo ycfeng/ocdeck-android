@@ -6,7 +6,7 @@
 
 最后更新：2026-07-17
 
-本文档描述当前 OC Deck `0.1.2` 代码库。本文档不承诺所有未来构建版本、分发渠道、OpenCode Server、模型 Provider、Android 设备或网络运营商均以相同方式运行。
+本文档描述当前 OC Deck `0.1.3` 代码库。本文档不承诺所有未来构建版本、分发渠道、OpenCode Server、模型 Provider、Android 设备或网络运营商均以相同方式运行。
 
 ## OC Deck 服务和遥测
 

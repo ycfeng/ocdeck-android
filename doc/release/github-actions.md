@@ -20,15 +20,15 @@ The first public artifact set is fixed to:
 
 The workflow does not create a universal APK, AAB, or Play upload artifact. GitHub sideload users must download the APK matching their device ABI.
 
-The application ID is `io.github.ycfeng.ocdeck`, version `0.1.2` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
+The application ID is `io.github.ycfeng.ocdeck`, version `0.1.3` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
 
 ## 2. Version Rules
 
 The only source of the application version is root `gradle.properties`:
 
 ```properties
-VERSION_CODE=3
-VERSION_NAME=0.1.2
+VERSION_CODE=4
+VERSION_NAME=0.1.3
 ```
 
 Requirements:
