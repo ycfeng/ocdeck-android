@@ -10,8 +10,8 @@ OC Deck uses several independent gates. Passing one layer does not imply that th
 
 | Layer | Current coverage |
 | --- | --- |
-| Kotlin/JVM unit tests | Paths and project-file URLs, recent-project recording, session windows, notification/channel policy, redaction, encoded/decoded Retrofit/direct and identity-SSE inbound boundaries, typed failures and localized UI mapping, safe value summaries, DTO tolerance, Store revisions, prompt/project-context state and recovery, Provider auth/OAuth and staged custom-config transactions, server credential transactions, SSH/STCP coordination, contrast, and feature helpers. |
-| Go race tests | The GoMobile wrapper and the generated patched frp client packages. |
+| Kotlin/JVM unit tests | Paths and project-file URLs, recent-project recording, session windows, notification/channel policy, redaction, encoded/decoded Retrofit/direct and identity-SSE inbound boundaries, typed failures and localized UI mapping, safe value summaries, DTO tolerance, Store revisions, prompt/project-context state and recovery, Provider auth/OAuth and staged custom-config transactions, server credential transactions, SSH/STCP coordination and Kotlin bridge/fixture contracts, contrast, and feature helpers. |
+| Go race tests | The GoMobile wrapper, canonical STCP fixture oracle/check, and generated patched frp client packages. |
 | Third-party and legal audit | Pinned versions, dependency inventory, hashes, provenance, licenses, and release-script references. |
 | Bridge validation | AAR checksum, Java API signature, bridge/frp provenance, expected ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, and reproducibility. |
 | Android build | Unit tests for both Android modules and the Debug APK build. |
@@ -29,6 +29,7 @@ The `app/src/androidTest` suite currently covers localized independent-window ro
 - `OpenCodeFailureTest`, `ErrorUiTextTest`, and `OpenCodeRepositoryFailureHandlingTest` cover semantic classification without reading `Throwable.message`, localized resource mapping with operation-specific fallback, Repository propagation, response-too-large behavior, and propagation of cancellation and JVM `Error`.
 - `BoundedSseReaderTest`, `OkHttpSseEventSourceFactoryTest`, `OpenCodeEventClientLifecycleTest`, and `ProjectSnapshotCoordinatorTest` cover explicit identity encoding, non-identity zero-read rejection, all line endings and EOF states, 32 MiB line/event limits, body-free status/MIME failures, cancellation, retry classification, terminal close, owner/generation/source/transport races, project/global authority handoff, bounded replay, and snapshot failure/recovery.
 - `FrpcStcpReadinessRetryClassifierTest` and `GoMobileFrpcStcpVisitorClientTest` cover transient versus permanent readiness failures, inbound-policy failures, typed unavailable/API-mismatch bridge errors, safe bridge summaries, API v2 JSON, revision/control epoch, `WaitVisitorReady`, and reflection cancellation/JVM `Error` propagation.
+- `FrpcStcpVisitorSerializationContractTest`, `FrpcStcpVisitorFixtureContractTest`, and `FrpcStcpVisitorManagerContractTest` cover the implementable suspend bridge API and stable DTO defaults, field names, `Long` values, tolerant JSON, shared Go/Kotlin bridge DTO JSON, and safe summaries; Kotlin loading and integrity validation of the versioned canonical STCP manifest and small wire/control/yamux bytes, including the declared chunk-plan and mutation-recipe metadata; and manager validation of native-ready results, session identity, runtime and terminal recovery, control-epoch rollback, final ensured bind ports, cleanup/replacement, and secret-free diagnostics.
 - `SensitiveValueToStringTest` verifies that network, domain, Store, feature, and UI value summaries omit synthetic credentials, URLs/endpoints, aliases, paths, prompts, Base64, SSE payloads, and tool output while preserving normal value-object behavior.
 - `OpenCodeContrastTest` enforces light/dark 4.5:1 text contrast and 3:1 graphical contrast across theme text, semantic Diff/Markdown/syntax/chart colors, status indicators, attachment scrims, selection borders, and `ControlBorder`.
 - `SessionRunningIndicatorTest` covers the 4-by-4 corner mask, independent 1-2 second dot timing, bounded phase offsets, accessible alpha and scale ranges, visible frame changes, varied initial frames, and seamless common-loop continuity.
@@ -84,6 +85,10 @@ cd build/frp-v0.69.1-p1
 go test -race ./client/...
 ```
 
+The first Go race scope, run from `frpc-stcp-visitor-go/`, automatically executes the canonical fixture check against `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` through the fixed oracle in `frpc-stcp-visitor-go/internal/contractfixture/`. `go run ./cmd/preparefrp` must run first, as shown above. The existing root race-test command remains the CI gate; do not add a separate fixture-check command.
+
+The protocol fixtures do not replace runtime lifecycle tests. Initial-login failure cleanup, reconnect propagation of the prior RunID, invalidation of stale readiness after disconnect, and retry after a stop timeout remain covered by the existing Go wrapper and patched frp tests in the two race-test scopes above. The pinned runtime tracker also ignores visitor callbacks whose epoch is not the active control epoch; any change to that guard must add a focused downstream regression test.
+
 Return to the repository root, audit community/documentation and third-party/legal metadata, build the AAR, and run the Android gate:
 
 ```bash
@@ -93,21 +98,32 @@ bash frpc-stcp-visitor-go/build-aar.sh
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
 ```
 
+The Go race detector requires CGO and a supported C compiler. If that toolchain is unavailable on Windows, run both Go race scopes under WSL or Linux; ordinary Windows Go tests do not replace the race gate. PowerShell also does not stop on a failing native process by default, so the sequence below uses a small fail-fast wrapper.
+
 On Windows PowerShell, run the equivalent sequence from the repository root:
 
 ```powershell
+$ErrorActionPreference = 'Stop'
+function Invoke-NativeChecked {
+    param([scriptblock]$Command)
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native command failed with exit code $LASTEXITCODE"
+    }
+}
+
 Push-Location .\frpc-stcp-visitor-go
-go run ./cmd/preparefrp
-go test -race -modfile=build/frp-patched.mod ./...
+Invoke-NativeChecked { go run ./cmd/preparefrp }
+Invoke-NativeChecked { go test -race '-modfile=build/frp-patched.mod' ./... }
 Push-Location .\build\frp-v0.69.1-p1
-go test -race ./client/...
+Invoke-NativeChecked { go test -race ./client/... }
 Pop-Location
 Pop-Location
 
-python .github/scripts/audit-community.py
-python .github/scripts/audit-third-party.py
-.\frpc-stcp-visitor-go\build-aar.ps1
-.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+Invoke-NativeChecked { python .github/scripts/audit-community.py }
+Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
+Invoke-NativeChecked { .\frpc-stcp-visitor-go\build-aar.ps1 }
+Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true }
 ```
 
 The pinned Go, x/mobile, Android API, and NDK versions must come from `bridge-versions.properties`.
@@ -123,7 +139,7 @@ The Release workflow builds the bridge twice and rejects non-reproducible output
 - Cover Provider secret submission separately: a new API key or custom-header value over Direct non-loopback HTTP requires one frozen confirmation, while HTTPS, syntactic loopback, SSH, and STCP do not. Assert that API keys and header values never enter Android persistence, public UI state, raw response logs, or `toString()` output.
 - Test Provider auth method parsing with unknown entries before supported entries so original wire indexes cannot be renumbered. OAuth tests retain directory/workspace and method index, reject unsafe browser URLs, cover code and cancellable auto callbacks, and never automatically retry stateful authorize/callback operations.
 - Test Custom Provider's disabled-stage, optional credential write, final enable, disable-before-auth-cleanup, partial/unknown outcomes, and deep-merge deletion restrictions. Config projections retain only safe identities and header names.
-- Test bounded readers at the exact limit and at `max + 1`; do not create giant committed fixture files.
+- Generate exact-limit and `max + 1` bodies in test code. Keep committed canonical STCP contract files small, synthetic, and deterministic; do not create giant fixture files.
 - Exercise cancellation, callback races, late results, generation changes, and unknown commit outcomes for network and credential state machines.
 - For HTTP errors that must not consume a body, test that the body remains unread.
 - For tolerant DTOs, include unknown fields and malformed optional subtrees while preserving valid surrounding data.

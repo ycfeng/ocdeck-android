@@ -7,10 +7,10 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
 /**
- * Thin Kotlin boundary for the future GoMobile generated frp binding.
+ * Stable Kotlin boundary for an frpc STCP visitor backend.
  *
- * Keep this API limited to simple value objects so the actual GoMobile bridge can
- * map it to JSON strings and primitive return values without exposing frp internals.
+ * Keep this API limited to simple value objects so backend implementations can
+ * map them to serialized payloads and primitive return values without exposing frp internals.
  */
 interface FrpcStcpVisitorClient {
     suspend fun startSession(config: FrpcSessionConfig): String

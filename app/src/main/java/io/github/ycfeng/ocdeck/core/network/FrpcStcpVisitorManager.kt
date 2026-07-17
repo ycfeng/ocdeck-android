@@ -311,7 +311,7 @@ class FrpcStcpVisitorManager(
                     ready = ready,
                     visitorName = tunnel.visitorName,
                     desiredRevision = tunnel.desiredRevision,
-                    minimumControlEpoch = tunnel.controlEpoch,
+                    minimumControlEpoch = maxOf(tunnel.controlEpoch, nativeState.controlEpoch),
                 )
                 ensureCurrent(state)
                 val refreshedTunnel = tunnel.copy(controlEpoch = ready.boundControlEpoch)
@@ -730,7 +730,8 @@ private data class EpochRefreshPayload(
 
 private fun FrpcStcpVisitorState.isReadyFor(tunnel: FrpcStcpVisitorTunnel): Boolean {
     val visitor = visitors[tunnel.visitorName] ?: return false
-    return phase == "open" &&
+    return sessionId == tunnel.sessionId &&
+        phase == "open" &&
         controlEpoch == tunnel.controlEpoch &&
         visitor.desiredRevision == tunnel.desiredRevision &&
         visitor.phase == "ready" &&
