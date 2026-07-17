@@ -10,6 +10,8 @@
 
 - 本仓库用于开发 OC Deck，即由社区独立维护的 OpenCode Server 原生 Android 客户端。OC Deck 不是由 OpenCode 项目或 Anomaly 开发、背书、赞助或关联的产品。
 - 复刻 OpenCode 核心工作流时，不要机械照搬桌面 Web 的弹窗、布局或交互。优先保证移动端可用性、稳定连接、实时状态一致性和敏感信息安全。
+- 需要参考 OpenCode 源码时，必须先从 `local.properties` 读取 `opencode.source.dir`，并在配置路径存在时使用该本地源码目录。只有该属性未配置或配置路径不存在时，才考虑联网搜索。
+- 使用 Playwright 检查或测试 OpenCode Web 前，必须先从 `local.properties` 读取 `opencode.web.url` 和 `opencode.test.project.dir`。使用配置的本机 Web 根地址，并将可能修改项目文件、会话或项目状态的交互严格限制在配置的专用测试项目中。如果任一属性未配置或测试项目路径不存在，则不得执行会改变状态的 Playwright 交互。
 - 修改实现前，先阅读[移动端交互设计](doc/architecture/mobile-interaction.zh-CN.md)和[项目框架](doc/architecture/project-framework.zh-CN.md)；对应英文文件是 canonical 来源。通过[中文文档索引](doc/README.zh-CN.md)查找更具体的规则。
 - 实现、测试与文档不一致时，保持改动简单正确，验证预期行为，并在同一次变更中更新所有受影响的中英文文档配对。不得明知存在矛盾却不处理。
 
