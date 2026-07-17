@@ -190,8 +190,8 @@ private fun RecentProjectCard(
                     .weight(1f)
                     .heightIn(min = 48.dp)
                     .clickable(enabled = !isOpening && !isDeleting, onClick = onOpen)
-                    .padding(top = 6.dp, end = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                    .padding(end = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
             ) {
                 Text(project.displayName, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(

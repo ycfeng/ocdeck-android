@@ -659,20 +659,24 @@ private fun SessionTitleHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
-            text = state.parentTitle?.takeIf { it.isNotBlank() } ?: state.title,
+        Box(
             modifier = Modifier
                 .weight(0.42f, fill = false)
                 .widthIn(min = 48.dp)
                 .heightIn(min = 48.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .clickable(role = Role.Button) { onOpenSession(parentSessionId) }
-                .padding(horizontal = 8.dp, vertical = 7.dp),
-            style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium),
-            color = OpenCodePalette.MutedText,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = state.parentTitle?.takeIf { it.isNotBlank() } ?: state.title,
+                style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.sp, fontWeight = FontWeight.Medium),
+                color = OpenCodePalette.MutedText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
         Text(
             text = "/",
             style = MaterialTheme.typography.labelMedium,
@@ -2969,7 +2973,8 @@ private fun SheetScaffold(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 10.dp)
-            .navigationBarsPadding(),
+            .navigationBarsPadding()
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(title, style = MaterialTheme.typography.titleLarge, color = OpenCodePalette.Text)

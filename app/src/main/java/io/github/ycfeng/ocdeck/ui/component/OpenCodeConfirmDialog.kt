@@ -149,22 +149,27 @@ fun OpenCodeDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 16.dp),
+                            .heightIn(min = 48.dp)
+                            .padding(horizontal = 20.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                        verticalAlignment = Alignment.Top,
                     ) {
-                        Text(
-                            text = title,
-                            modifier = Modifier.weight(1f),
-                            color = OpenCodePalette.Text,
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontSize = 16.sp,
-                                lineHeight = 28.8.sp,
-                                fontWeight = FontWeight.Medium,
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text(
+                                text = title,
+                                color = OpenCodePalette.Text,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontSize = 16.sp,
+                                    lineHeight = 28.8.sp,
+                                    fontWeight = FontWeight.Medium,
+                                ),
+                            )
+                        }
                         CloseButton(
                             enabled = !isBusy,
                             onClick = onDismiss,
@@ -173,7 +178,7 @@ fun OpenCodeDialog(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 24.dp, end = 10.dp, bottom = 12.dp),
+                            .padding(start = 24.dp, top = 8.dp, end = 10.dp, bottom = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         content = content,
                     )
