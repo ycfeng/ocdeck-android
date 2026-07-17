@@ -50,12 +50,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeAgent
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeModel
 import io.github.ycfeng.ocdeck.domain.model.PromptModelSelection
+import io.github.ycfeng.ocdeck.ui.component.LocalizedPopup
 import io.github.ycfeng.ocdeck.ui.component.openCodeTextFieldCursorBrush
 import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
 import kotlinx.coroutines.flow.filterNotNull
@@ -134,7 +134,7 @@ internal fun AgentPickerPopup(
         -(48.dp + ComposerPopupGap).roundToPx()
     }
 
-    Popup(
+    LocalizedPopup(
         alignment = Alignment.BottomStart,
         offset = IntOffset(0, popupOffsetY),
         onDismissRequest = onDismiss,
@@ -244,7 +244,7 @@ internal fun ModelPickerPopup(
         -(48.dp + ComposerPopupGap).roundToPx()
     }
 
-    Popup(
+    LocalizedPopup(
         alignment = Alignment.BottomStart,
         offset = IntOffset(0, popupOffsetY),
         onDismissRequest = onDismiss,
@@ -497,7 +497,7 @@ internal fun VariantPickerPopup(
         -(48.dp + ComposerPopupGap).roundToPx()
     }
 
-    Popup(
+    LocalizedPopup(
         alignment = Alignment.BottomStart,
         offset = IntOffset(0, popupOffsetY),
         onDismissRequest = onDismiss,

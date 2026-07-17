@@ -42,7 +42,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -90,6 +89,7 @@ import io.github.ycfeng.ocdeck.domain.model.ProviderAuthSelectOption
 import io.github.ycfeng.ocdeck.domain.model.ProviderAuthSelectPrompt
 import io.github.ycfeng.ocdeck.domain.model.ProviderAuthTextPrompt
 import io.github.ycfeng.ocdeck.domain.model.ProviderOAuthMode
+import io.github.ycfeng.ocdeck.ui.component.LocalizedModalBottomSheet
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeCard
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeConfirmDialog
 import io.github.ycfeng.ocdeck.ui.component.OpenCodePrimaryButton
@@ -306,7 +306,7 @@ fun GeneralSettingsScreen(
     }
 
     if (showColorSchemeSheet) {
-        ModalBottomSheet(
+        LocalizedModalBottomSheet(
             onDismissRequest = { showColorSchemeSheet = false },
             containerColor = OpenCodePalette.Panel,
         ) {
@@ -344,7 +344,7 @@ fun GeneralSettingsScreen(
     }
 
     if (showLanguageSheet) {
-        ModalBottomSheet(
+        LocalizedModalBottomSheet(
             onDismissRequest = { showLanguageSheet = false },
             containerColor = OpenCodePalette.Panel,
         ) {
@@ -382,7 +382,7 @@ fun GeneralSettingsScreen(
     }
 
     soundSheetTarget?.let { target ->
-        ModalBottomSheet(
+        LocalizedModalBottomSheet(
             onDismissRequest = { soundSheetTarget = null },
             containerColor = OpenCodePalette.Panel,
         ) {
@@ -786,7 +786,7 @@ private fun ProviderAuthenticationSheet(
     var oauthCode by remember(authentication.providerId, selectedMethod?.wireIndex) { mutableStateOf("") }
     val visiblePrompts = selectedMethod?.visiblePrompts(inputs).orEmpty()
 
-    ModalBottomSheet(
+    LocalizedModalBottomSheet(
         onDismissRequest = if (authentication.isCompletingOAuth) onCancelOAuth else onDismiss,
     ) {
         Column(

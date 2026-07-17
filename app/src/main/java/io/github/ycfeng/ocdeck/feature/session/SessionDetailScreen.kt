@@ -60,7 +60,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -106,7 +105,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.ycfeng.ocdeck.R
@@ -128,6 +126,8 @@ import io.github.ycfeng.ocdeck.domain.prompt.OpenCodePromptSender
 import io.github.ycfeng.ocdeck.domain.prompt.PromptAttachment
 import io.github.ycfeng.ocdeck.domain.prompt.PromptSendAction
 import io.github.ycfeng.ocdeck.domain.prompt.ProjectFileContext
+import io.github.ycfeng.ocdeck.ui.component.LocalizedModalBottomSheet
+import io.github.ycfeng.ocdeck.ui.component.LocalizedPopup
 import io.github.ycfeng.ocdeck.feature.composer.AgentPickerPopup
 import io.github.ycfeng.ocdeck.feature.composer.ComposerParameterButton
 import io.github.ycfeng.ocdeck.feature.composer.ModelPickerPopup
@@ -945,7 +945,7 @@ private fun ReviewModeSelector(
         }
 
         if (expanded) {
-            Popup(
+            LocalizedPopup(
                 alignment = Alignment.TopStart,
                 offset = IntOffset(0, popupOffsetY),
                 onDismissRequest = { expanded = false },
@@ -1183,7 +1183,7 @@ private fun ContextUsageButton(
         }
 
         if (expanded && enabled) {
-            Popup(
+            LocalizedPopup(
                 alignment = Alignment.TopEnd,
                 offset = IntOffset(0, popupOffsetY),
                 onDismissRequest = { onExpandedChange(false) },
@@ -1566,7 +1566,7 @@ private fun SessionMoreMenu(
         }
 
         if (expanded && enabled) {
-            Popup(
+            LocalizedPopup(
                 alignment = Alignment.TopEnd,
                 offset = IntOffset(0, popupOffsetY),
                 onDismissRequest = { onExpandedChange(false) },
@@ -2561,7 +2561,7 @@ private fun BottomComposer(
     }
 
     if (activeSheet == ComposerSheet.Attach) {
-        ModalBottomSheet(onDismissRequest = { activeSheet = null }) {
+        LocalizedModalBottomSheet(onDismissRequest = { activeSheet = null }) {
             AttachmentChoiceSheet(
                 onLocalClick = {
                     activeSheet = null

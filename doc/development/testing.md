@@ -15,13 +15,14 @@ OC Deck uses several independent gates. Passing one layer does not imply that th
 | Third-party and legal audit | Pinned versions, dependency inventory, hashes, provenance, licenses, and release-script references. |
 | Bridge validation | AAR checksum, Java API signature, bridge/frp provenance, expected ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, and reproducibility. |
 | Android build | Unit tests for both Android modules and the Debug APK build. |
+| Android instrumentation tests | Compose window localization across Popup and modal bottom-sheet roots, including an in-place language change while a Popup remains open. |
 | Manual UI/accessibility validation | Compact screens, 200% font scale, IME overlap, project-file selection, Provider auth/OAuth/Custom Provider flows, TalkBack semantics/actions, both themes, and real model-settings navigation. |
 | Release artifact validation | APK metadata, one signer, expected certificate fingerprint, ABI isolation, `zipalign -P 16`, AAR native-byte binding, embedded legal files, filenames, and checksums. |
 | Physical-device validation | Maintainer-recorded `0.1.0` release-gate validation passed physical-device native loading/startup, 16KB page-size native operation, and a real STCP loop covering `/global/health`, representative REST, global/project SSE, and controlled reconnect. Exact environment details are not published; future candidates must repeat these gates. |
 
-There is currently no `app/src/androidTest` suite and no emulator/instrumentation job in CI. Project selection, session navigation, Composer interactions, pickers, permission/question UI, large-text behavior, and TalkBack still need systematic device automation.
+The `app/src/androidTest` suite currently covers localized independent-window roots, but CI has no emulator/instrumentation job. Project selection, session navigation, broader Composer interactions and pickers, permission/question UI, large-text behavior, and TalkBack still need systematic device automation.
 
-## Focused JVM Test Inventory
+## Focused Test Inventory
 
 - `RetrofitInboundResponsePolicyTest` and `EncodedResponseLimitInterceptorTest` verify that every `OpenCodeApi` method declares `BOUNDED` or `EMPTY_SUCCESS`; missing policy fails before network proceed; encoded and decoded declared/unknown/understated lengths enforce their 16 MiB boundaries at `max + 1`; a real OkHttp gzip chain applies the encoded cap before Bridge decoding; non-2xx and successful Unit bodies close without reading; `/file/content` remains lazy; and requests without Retrofit `Invocation` pass outside the Retrofit interceptor.
 - `SessionMessagesTransportTest`, `SessionMessagesResponseReaderTest`, and `FileContentResponseReaderTest` cover body-free non-2xx failures, direct OkHttp callback-thread decode, encoded and decoded exact/unknown/underreported lengths, EOF verification, cancellation and callback races, the separate 64 MiB session-message limits, and `/file/content` reader-level decoded defense in depth.
@@ -36,6 +37,7 @@ There is currently no `app/src/androidTest` suite and no emulator/instrumentatio
 - `NotificationAlertPolicyTest`, `NotificationChannelMigrationPolicyTest`, `OpenCodeNotificationAudioAttributesTest`, and `SessionVisibilityRegistryTest` cover one sound owner per event, app/system setting independence, explicit channel sound/mute precedence, legacy-to-v2 migration decisions, notification audio usage, and foreground destination visibility.
 - `SessionComposerAgentResolverTest`, `SessionModelPreferenceResolverTest`, and `SessionComposerRouteSelectionTest` cover server-ordered Build/Plan filtering and fallback, initial model/Variant validation and switching fallback, and new-session-only acceptance of lightweight project-home Composer route selections.
 - `ComposerParameterPickerScrollTest` covers model lazy-list indexes across provider headers, Default-prefixed Variant indexes, missing selections, and measured item-to-viewport center offsets.
+- `LocalizedWindowTest` is an Android instrumentation test that gives the parent composition a locale different from the Activity, verifies Popup and modal bottom-sheet resources use the parent locale, and verifies an open Popup updates when the language changes.
 - `ProjectFilePathNormalizerTest` and `ProjectFileUrlBuilderTest` cover relative-path platform semantics, traversal/absolute rejection, POSIX/Windows-drive/UNC `file://` construction, UTF-8 percent encoding, round trips, and project-root containment.
 - `PromptSendStateMachineTest`, `OpenCodePromptSenderTest`, and `PromptRequestDtoSerializationTest` cover project-context-only submission, final context validation and deduplication, ordinary/loaded-command propagation, optimistic `file://` parts, new-session message moves, and wire serialization.
 - `UserMessagePartsTest` and `SessionRevertProjectionTest` distinguish local `data:` attachments, standalone project contexts, and comment backing files, then restore only current-project contexts under the count limit.
@@ -61,6 +63,12 @@ Run focused tests during development by naming a test class, for example:
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest --tests "io.github.ycfeng.ocdeck.core.security.RedactorTest"
+```
+
+With an emulator or device connected, run the instrumentation suite:
+
+```powershell
+.\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
 ## Full Bridge and CI-Equivalent Gate

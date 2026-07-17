@@ -50,7 +50,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
@@ -107,7 +106,7 @@ fun OpenCodeServerStatusButton(
         }
 
         if (expanded) {
-            Popup(
+            LocalizedPopup(
                 alignment = Alignment.TopEnd,
                 offset = IntOffset(0, popupOffsetY),
                 onDismissRequest = { expanded = false },

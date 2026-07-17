@@ -15,13 +15,14 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 | 第三方与法律审计 | 固定版本、依赖清单、哈希、provenance、许可证和发布脚本引用。 |
 | Bridge 校验 | AAR checksum、Java API signature、bridge/frp provenance、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态和可复现性。 |
 | Android 构建 | 两个 Android 模块的单元测试和 Debug APK 构建。 |
+| Android instrumentation 测试 | 覆盖 Popup 与 modal bottom sheet 独立 Compose 窗口根的本地化，包括 Popup 保持打开时的原地语言切换。 |
 | 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
 | Release 制品校验 | APK metadata、单 signer、预期证书指纹、ABI 隔离、`zipalign -P 16`、AAR native 字节绑定、内嵌法律文件、文件名和 checksum。 |
 | 真机验证 | 维护者已记录 `0.1.0` 发布门禁通过真机 native load/启动、16KB page-size native 运行，以及覆盖 `/global/health`、代表性 REST、全局/项目 SSE 和受控重连的真实 STCP 闭环。具体环境信息未公开；后续候选版本仍须重复执行这些门禁。 |
 
-当前没有 `app/src/androidTest` 测试集，CI 也没有 emulator/instrumentation job。项目选择、会话导航、Composer 交互、picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
+`app/src/androidTest` 测试集目前覆盖独立窗口根的本地化，但 CI 尚无 emulator/instrumentation job。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
 
-## 聚焦 JVM 测试清单
+## 聚焦测试清单
 
 - `RetrofitInboundResponsePolicyTest` 与 `EncodedResponseLimitInterceptorTest` 验证每个 `OpenCodeApi` 方法声明 `BOUNDED` 或 `EMPTY_SUCCESS`；缺少策略时在网络请求前失败；encoded/decoded 已声明、未知和低报长度都在 `max + 1` 执行各自 16 MiB 边界；真实 OkHttp gzip chain 在 Bridge 解码前执行 encoded 上限；非 2xx 与成功 Unit body 不读取即关闭；`/file/content` 保持延迟读取；没有 Retrofit `Invocation` 的请求绕过 Retrofit interceptor。
 - `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`FileContentResponseReaderTest` 覆盖无 body 的非 2xx 失败、OkHttp callback 线程 direct decode、encoded/decoded 精确/未知/低报长度、EOF 验证、取消与 callback race、session messages 独立 64 MiB 边界，以及 `/file/content` reader 层 decoded 纵深防御。
@@ -36,6 +37,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `NotificationAlertPolicyTest`、`NotificationChannelMigrationPolicyTest`、`OpenCodeNotificationAudioAttributesTest` 与 `SessionVisibilityRegistryTest` 覆盖单事件唯一声音所有者、App/系统设置独立、系统显式声音/静音优先级、legacy 到 v2 迁移决策、notification audio usage 和前台 destination 可见性。
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest` 覆盖按服务端顺序过滤 Build/Plan 及回退、初始模型/Variant 校验与切换回退，以及只对新会话接受项目首页轻量 Composer 路由选择。
 - `ComposerParameterPickerScrollTest` 覆盖跨 provider 标题的模型 lazy-list 索引、带“默认”前缀的 Variant 索引、选择不存在时的行为，以及基于实测 item 与 viewport 的居中偏移。
+- `LocalizedWindowTest` 是 Android instrumentation 测试：它为父组合提供与 Activity 不同的 locale，验证 Popup 与 modal bottom sheet 的资源使用父组合 locale，并验证已打开的 Popup 会随语言切换更新。
 - `ProjectFilePathNormalizerTest` 与 `ProjectFileUrlBuilderTest` 覆盖相对路径平台语义、遍历/绝对路径拒绝、POSIX/Windows 盘符/UNC `file://` 构造、UTF-8 百分号编码、往返和项目根包含关系。
 - `PromptSendStateMachineTest`、`OpenCodePromptSenderTest` 与 `PromptRequestDtoSerializationTest` 覆盖纯项目上下文发送、上下文终检与去重、普通/已加载命令透传、乐观 `file://` parts、新 session 消息移动和线缆序列化。
 - `UserMessagePartsTest` 与 `SessionRevertProjectionTest` 区分本地 `data:` 附件、独立项目上下文和评论 backing file，并只在数量上限内恢复当前项目上下文。
@@ -61,6 +63,12 @@ macOS/Linux：
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest --tests "io.github.ycfeng.ocdeck.core.security.RedactorTest"
+```
+
+连接 emulator 或设备后，运行 instrumentation 测试集：
+
+```powershell
+.\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
 ## 完整 Bridge 与等价 CI 门禁

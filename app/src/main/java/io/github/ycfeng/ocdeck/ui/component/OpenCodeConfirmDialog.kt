@@ -43,7 +43,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import io.github.ycfeng.ocdeck.R
@@ -116,7 +115,7 @@ fun OpenCodeDialog(
     onDismiss: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Dialog(
+    LocalizedDialog(
         onDismissRequest = { if (!isBusy) onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {

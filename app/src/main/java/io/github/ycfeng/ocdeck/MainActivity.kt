@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.ycfeng.ocdeck.app.OpenCodeApp
@@ -42,6 +43,7 @@ class MainActivity : ComponentActivity() {
             }
             CompositionLocalProvider(
                 LocalContext provides localizedContext,
+                LocalConfiguration provides localizedContext.resources.configuration,
                 LocalActivityResultRegistryOwner provides this@MainActivity,
             ) {
                 OpenCodeTheme(colorSchemePreference = colorSchemePreference) {

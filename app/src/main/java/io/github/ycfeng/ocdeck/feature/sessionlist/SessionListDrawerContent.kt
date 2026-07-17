@@ -50,13 +50,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.core.store.NotificationDotKind
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeSession
 import io.github.ycfeng.ocdeck.domain.model.ProjectRef
+import io.github.ycfeng.ocdeck.ui.component.LocalizedPopup
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeNotificationDot
 import io.github.ycfeng.ocdeck.ui.component.OpenCodePrimaryButton
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeSectionLabel
@@ -311,7 +311,7 @@ private fun ProjectMoreMenuButton(
         }
 
         if (expanded) {
-            Popup(
+            LocalizedPopup(
                 alignment = Alignment.TopStart,
                 offset = menuOffset,
                 onDismissRequest = { expanded = false },
