@@ -133,6 +133,7 @@ fun ProjectPickerScreen(
                     if (textChanged) viewModel.onDirectoryChanged(value.text)
                 },
                 placeholder = stringResource(R.string.project_path_placeholder),
+                contentAlignment = Alignment.CenterStart,
                 singleLine = true,
             )
             ProjectDirectorySuggestions(
