@@ -13,7 +13,19 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the `0.1.1` release. / 尚无超出 `0.1.1` 发布范围的变更。
+No changes have been assigned beyond the `0.1.2` release. / 尚无超出 `0.1.2` 发布范围的变更。
+
+## [0.1.2] - 2026-07-17
+
+### Changed / 变更
+
+- Reopening the Composer Model and Reasoning pickers now brings the current selection into view and centers it when bounds allow, without overriding search or manual scrolling. / 重新打开 Composer 的模型与 Reasoning 选择器时，当前选项会自动滚动到可见区域并在边界允许时居中，同时不会覆盖搜索或手动滚动。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.5-frp0.69.1-p1` because the AAR embeds the `0.1.2` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.1.2` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.5-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Restored the animated running-state indicator across project sessions, the session drawer, and subagent cards while preserving semantic colors and accessible contrast. / 恢复项目会话、会话抽屉和 subagent 卡片中的运行状态动画，同时保留语义颜色和无障碍对比度。
+- Improved responsive alignment, multiline titles, scrollable attachment content, and the compact subagent read-only dock for small screens and large text. / 改善小屏和大字号下的对齐、多行标题、附件内容滚动及紧凑型 subagent 只读底栏。
 
 ## [0.1.1] - 2026-07-16
 
