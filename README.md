@@ -85,7 +85,11 @@ Debug builds can compile without a generated GoMobile AAR, but STCP is unavailab
 
 ## Screenshots
 
-Screenshots are intentionally not included in the `0.1.2` project facade. Add only reviewed screenshots that reflect the current Android UI and contain no real, private, or sensitive data. Clearly constructed demonstration data is allowed.
+| Light theme | Dark theme |
+| --- | --- |
+| ![OC Deck English UI screenshot 1 in the light theme](doc/assets/screenshots/01-en-light.png) | ![OC Deck English UI screenshot 1 in the dark theme](doc/assets/screenshots/01-en-dark.png) |
+| ![OC Deck English UI screenshot 2 in the light theme](doc/assets/screenshots/02-en-light.png) | ![OC Deck English UI screenshot 2 in the dark theme](doc/assets/screenshots/02-en-dark.png) |
+| ![OC Deck English UI screenshot 3 in the light theme](doc/assets/screenshots/03-en-light.png) | ![OC Deck English UI screenshot 3 in the dark theme](doc/assets/screenshots/03-en-dark.png) |
 
 ## Support and Contributing
 

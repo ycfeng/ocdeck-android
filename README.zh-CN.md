@@ -85,7 +85,11 @@ macOS/Linux：
 
 ## 截图
 
-`0.1.2` 项目门面暂不放置截图。后续只应加入与当前 Android UI 一致且经过审查的截图，截图中不得包含真实、私有或敏感数据；允许使用明确构造的演示数据。
+| 浅色主题 | 深色主题 |
+| --- | --- |
+| ![OC Deck 中文界面浅色主题截图 1](doc/assets/screenshots/01-zh-CN-light.png) | ![OC Deck 中文界面深色主题截图 1](doc/assets/screenshots/01-zh-CN-dark.png) |
+| ![OC Deck 中文界面浅色主题截图 2](doc/assets/screenshots/02-zh-CN-light.png) | ![OC Deck 中文界面深色主题截图 2](doc/assets/screenshots/02-zh-CN-dark.png) |
+| ![OC Deck 中文界面浅色主题截图 3](doc/assets/screenshots/03-zh-CN-light.png) | ![OC Deck 中文界面深色主题截图 3](doc/assets/screenshots/03-zh-CN-dark.png) |
 
 ## 支持与贡献
 
