@@ -715,29 +715,40 @@ private fun SubagentReadonlyDock(
             border = BorderStroke(1.dp, OpenCodePalette.Border),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .padding(start = 12.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Text(
                     text = stringResource(R.string.session_child_prompt_disabled),
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.bodyMedium,
                     color = OpenCodePalette.MutedText,
                 )
-                Text(
-                    text = stringResource(R.string.session_child_back_to_parent),
+                Box(
                     modifier = Modifier
                         .widthIn(min = 48.dp)
                         .heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(6.dp))
                         .clickable(enabled = canOpenParent, role = Role.Button) {
                             parentSessionId?.let(onOpenSession)
-                        }
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (canOpenParent) OpenCodePalette.Text else OpenCodePalette.MutedText.copy(alpha = 0.55f),
-                )
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(R.string.session_child_back_to_parent),
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (canOpenParent) {
+                            OpenCodePalette.Text
+                        } else {
+                            OpenCodePalette.MutedText.copy(alpha = 0.55f)
+                        },
+                    )
+                }
             }
         }
     }
