@@ -26,10 +26,15 @@ SECONDARY_ROOT="$TEMP_ROOT/secondary-checkout-with-a-distinct-absolute-path"
 WORKTREE_ADDED=false
 
 cleanup() {
+  local status=$?
+  trap - EXIT
+  set +e
   if [[ "$WORKTREE_ADDED" == true ]]; then
     git -C "$ROOT_DIR" worktree remove --force "$SECONDARY_ROOT" >/dev/null 2>&1 || true
   fi
-  rm -rf "$TEMP_ROOT"
+  chmod -R u+w "$TEMP_ROOT" >/dev/null 2>&1 || true
+  rm -rf "$TEMP_ROOT" >/dev/null 2>&1 || true
+  exit "$status"
 }
 trap cleanup EXIT
 
