@@ -2,7 +2,7 @@ OC DECK THIRD-PARTY NOTICES
 
 Last reviewed: 2026-07-17
 OC Deck application version: 0.1.3
-GoMobile bridge version: 0.3.6-frp0.69.1-p1
+GoMobile bridge version: 0.3.7-frp0.69.1-p1
 
 This file identifies third-party software and assets used by OC Deck. It does
 not replace the applicable license texts. Copies of the relevant licenses are
@@ -12,7 +12,8 @@ third_party/components.toml.
 Application APKs embed the project notices and license texts under
 assets/legal/. The GoMobile bridge AAR embeds the same project notices,
 individual third-party license texts, its exact Java API, and bridge/frp
-provenance under META-INF/OCDECK/.
+provenance, including the validated native module-graph digest and
+local-path-free proof, under META-INF/OCDECK/.
 
 OC Deck original code is licensed separately under the repository MIT LICENSE.
 

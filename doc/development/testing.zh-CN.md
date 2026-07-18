@@ -13,7 +13,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 | Kotlin/JVM 单元测试 | 路径与项目文件 URL、最近项目记录、会话窗口、通知/channel 策略、脱敏、Retrofit/direct encoded/decoded 与 identity-SSE 入站边界、类型化失败与本地化 UI 映射、安全 value 摘要、DTO 容错、Store revision、prompt/项目上下文状态与恢复、Provider auth/OAuth 与分阶段 custom-config 事务、服务器凭据事务、SSH/STCP 协调及 Kotlin bridge/fixture 契约、对比度和 feature helper。 |
 | Go race tests | GoMobile wrapper、canonical STCP fixture oracle/check 与生成的 patched frp client 包。 |
 | 第三方与法律审计 | 固定版本、依赖清单、哈希、provenance、许可证和发布脚本引用。 |
-| Bridge 校验 | AAR checksum、Java API signature、bridge/frp provenance、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态和可复现性。 |
+| Bridge 校验 | AAR 与必需的 sources JAR、checksum、Java API signature、bridge/frp provenance、四 ABI Go BuildInfo/module graph 证明、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态，以及完整制品/sidecar 集合在同一平台跨 checkout 的可复现性。 |
 | Android 构建 | 两个 Android 模块的单元测试和 Debug APK 构建。 |
 | Android instrumentation 测试 | 覆盖 Popup 与 modal bottom sheet 独立 Compose 窗口根的本地化，包括 Popup 保持打开时的原地语言切换。 |
 | 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
@@ -84,16 +84,16 @@ cd build/frp-v0.69.1-p1
 go test -race ./client/...
 ```
 
-第一组 Go race 范围从 `frpc-stcp-visitor-go/` 运行，通过 `frpc-stcp-visitor-go/internal/contractfixture/` 中的固定 oracle，自动对 `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` 执行 canonical fixture check。必须像上面所示先运行 `go run ./cmd/preparefrp`。现有根级 race-test 命令继续作为 CI 门禁；不要增加独立 fixture-check 命令。
+第一组 Go race 范围从 `frpc-stcp-visitor-go/` 运行，通过 `frpc-stcp-visitor-go/internal/contractfixture/` 中的固定 oracle，自动对 `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` 执行 canonical fixture check。当前 `k0-go-oracle-v4` manifest 包含 29 个条目，其中新增 v1 `LoginResp`、v1/v2 `StartWorkConn` 和 v1/v2 `NewVisitorConnResp` golden。必须像上面所示先运行 `go run ./cmd/preparefrp`。现有根级 race-test 命令继续作为 CI 门禁；不要增加独立 fixture-check 命令。
 
 协议 fixture 不替代运行时生命周期测试。首登失败清理、重连时传递先前 RunID、断线后使旧 readiness 失效，以及 stop timeout 后重试，继续由上述两组 race-test 范围中的现有 Go wrapper 与 patched frp 测试覆盖。固定的 runtime tracker 还会忽略 epoch 不等于当前活动 control epoch 的 visitor callback；若修改这项 guard，必须新增聚焦的 downstream 回归测试。
 
-返回仓库根目录后，审计社区/文档与第三方/法律 metadata、构建 AAR 并运行 Android 门禁：
+返回仓库根目录后，审计社区/文档与第三方/法律 metadata，运行跨 checkout bridge 可复现门禁，再运行 Android 门禁：
 
 ```bash
 python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
-bash frpc-stcp-visitor-go/build-aar.sh
+bash .github/scripts/verify-bridge-reproducibility.sh
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
 ```
 
@@ -121,13 +121,15 @@ Pop-Location
 
 Invoke-NativeChecked { python .github/scripts/audit-community.py }
 Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
-Invoke-NativeChecked { .\frpc-stcp-visitor-go\build-aar.ps1 }
+Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
 Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true }
 ```
 
+可复现脚本要求干净 checkout。它们会在当前主机平台构建当前 checkout，以及位于不同绝对路径的 detached worktree；两个构建分别隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较完整的 AAR、必需 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 集合。脚本会删除临时 checkout 与 cache，但保留当前 checkout 中的主构建输出供 Gradle 门禁使用。这不代表 Windows 与 Linux 之间的字节一致性声明。CI 与 Release 使用 shell 脚本；Windows 开发者可运行对应 PowerShell 脚本。
+
 固定 Go、x/mobile、Android API 与 NDK 版本必须来自 `bridge-versions.properties`。
 
-Release workflow 会连续构建两次 bridge，并拒绝不可复现输出。修改 Go wrapper、downstream frp patch、Android bridge 模块、bridge API、失败处理或版本 metadata 时，必须执行完整 bridge 门禁，不能只运行 Android 单元测试。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+修改 Go wrapper、downstream frp patch、Android bridge 模块、bridge API、失败处理或版本 metadata 时，必须执行完整 bridge 门禁，不能只运行 Android 单元测试。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
 
 ## 安全与边界测试
 

@@ -29,8 +29,8 @@
 - [ ] 使用固定输入完成 `go run ./cmd/preparefrp`。
 - [ ] 外层 wrapper 与生成的 patched frp `client/...` race tests 已通过。
 - [ ] 社区/文档与第三方/法律清单审计均已通过。
-- [ ] 同一输入连续两次构建的 GoMobile AAR SHA-256 完全一致。
-- [ ] AAR checksum、精确 Java API、bridge/frp provenance、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
+- [ ] Bridge 可复现门禁已在同一主机平台构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，并隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 逐字节一致。
+- [ ] AAR checksum、精确 Java API、bridge/frp provenance、四 ABI BuildInfo module identity/version/sum、无本地路径与跨 ABI graph digest 证明、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
 - [ ] `:app:testDebugUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug` 和强制 bridge 门禁已通过。
 - [ ] 签名 Release APK 的 metadata、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、native 字节绑定、法律资产、文件名和 `SHA256SUMS` 校验已通过。
 

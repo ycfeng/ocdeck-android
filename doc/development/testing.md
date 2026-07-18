@@ -13,7 +13,7 @@ OC Deck uses several independent gates. Passing one layer does not imply that th
 | Kotlin/JVM unit tests | Paths and project-file URLs, recent-project recording, session windows, notification/channel policy, redaction, encoded/decoded Retrofit/direct and identity-SSE inbound boundaries, typed failures and localized UI mapping, safe value summaries, DTO tolerance, Store revisions, prompt/project-context state and recovery, Provider auth/OAuth and staged custom-config transactions, server credential transactions, SSH/STCP coordination and Kotlin bridge/fixture contracts, contrast, and feature helpers. |
 | Go race tests | The GoMobile wrapper, canonical STCP fixture oracle/check, and generated patched frp client packages. |
 | Third-party and legal audit | Pinned versions, dependency inventory, hashes, provenance, licenses, and release-script references. |
-| Bridge validation | AAR checksum, Java API signature, bridge/frp provenance, expected ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, and reproducibility. |
+| Bridge validation | AAR and required sources JAR, checksum, Java API signature, bridge/frp provenance, four-ABI Go BuildInfo/module-graph proof, ELF machine, 16KB `PT_LOAD` alignment, stripped state, and same-platform cross-checkout reproducibility of the complete artifact/sidecar set. |
 | Android build | Unit tests for both Android modules and the Debug APK build. |
 | Android instrumentation tests | Compose window localization across Popup and modal bottom-sheet roots, including an in-place language change while a Popup remains open. |
 | Manual UI/accessibility validation | Compact screens, 200% font scale, IME overlap, project-file selection, Provider auth/OAuth/Custom Provider flows, TalkBack semantics/actions, both themes, and real model-settings navigation. |
@@ -85,16 +85,16 @@ cd build/frp-v0.69.1-p1
 go test -race ./client/...
 ```
 
-The first Go race scope, run from `frpc-stcp-visitor-go/`, automatically executes the canonical fixture check against `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` through the fixed oracle in `frpc-stcp-visitor-go/internal/contractfixture/`. `go run ./cmd/preparefrp` must run first, as shown above. The existing root race-test command remains the CI gate; do not add a separate fixture-check command.
+The first Go race scope, run from `frpc-stcp-visitor-go/`, automatically executes the canonical fixture check against `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` through the fixed oracle in `frpc-stcp-visitor-go/internal/contractfixture/`. The current `k0-go-oracle-v4` manifest has 29 entries, including new goldens for v1 `LoginResp`, v1/v2 `StartWorkConn`, and v1/v2 `NewVisitorConnResp`. `go run ./cmd/preparefrp` must run first, as shown above. The existing root race-test command remains the CI gate; do not add a separate fixture-check command.
 
 The protocol fixtures do not replace runtime lifecycle tests. Initial-login failure cleanup, reconnect propagation of the prior RunID, invalidation of stale readiness after disconnect, and retry after a stop timeout remain covered by the existing Go wrapper and patched frp tests in the two race-test scopes above. The pinned runtime tracker also ignores visitor callbacks whose epoch is not the active control epoch; any change to that guard must add a focused downstream regression test.
 
-Return to the repository root, audit community/documentation and third-party/legal metadata, build the AAR, and run the Android gate:
+Return to the repository root, audit community/documentation and third-party/legal metadata, run the cross-checkout bridge reproducibility gate, and run the Android gate:
 
 ```bash
 python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
-bash frpc-stcp-visitor-go/build-aar.sh
+bash .github/scripts/verify-bridge-reproducibility.sh
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
 ```
 
@@ -122,13 +122,15 @@ Pop-Location
 
 Invoke-NativeChecked { python .github/scripts/audit-community.py }
 Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
-Invoke-NativeChecked { .\frpc-stcp-visitor-go\build-aar.ps1 }
+Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
 Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true }
 ```
 
+The reproducibility scripts require a clean checkout. On the current host platform, they build the current checkout plus a detached worktree at a different absolute path, isolate `GOCACHE`, `GOMODCACHE`, and `GOPATH` for each build, and compare the complete AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native-sidecar set byte-for-byte. They remove the temporary checkout and caches but leave the primary outputs in the current checkout for the Gradle gate. This is not a Windows-versus-Linux byte-identity claim. CI and Release use the shell script; Windows developers may run the PowerShell counterpart.
+
 The pinned Go, x/mobile, Android API, and NDK versions must come from `bridge-versions.properties`.
 
-The Release workflow builds the bridge twice and rejects non-reproducible output. Changes to the Go wrapper, downstream frp patch, Android bridge module, bridge API, failure handling, or version metadata require the complete bridge gate rather than only Android unit tests. A Kotlin-only bridge API or failure-handling change may leave generated AAR bytes and `BRIDGE_VERSION` unchanged, but it does not waive any gate above. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
+Changes to the Go wrapper, downstream frp patch, Android bridge module, bridge API, failure handling, or version metadata require the complete bridge gate rather than only Android unit tests. A Kotlin-only bridge API or failure-handling change may leave generated AAR bytes and `BRIDGE_VERSION` unchanged, but it does not waive any gate above. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
 
 ## Security and Boundary Tests
 

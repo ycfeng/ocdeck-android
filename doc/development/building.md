@@ -43,7 +43,9 @@ macOS/Linux:
 
 ## Build the Fixed GoMobile Bridge
 
-The bridge scripts prepare the pinned and patched frp source, install the pinned x/mobile tools, build and normalize the AAR, verify its API and native metadata, and write a local Maven artifact. Generated AARs and local build repositories are build outputs and must not be committed.
+The bridge scripts prepare the pinned and patched frp source and install the pinned x/mobile tools. Before `gomobile bind`, `cmd/preparemoduleproxy` creates a stable, versioned local `GOPROXY` and bind module graph so the formal AAR does not record checkout-path replacements. The bind must produce both the AAR and its companion sources JAR; either one missing is a build failure. Both archives are normalized before the AAR, sources JAR, POM, checksum, API, provenance, and native metadata are written to the local Maven repository.
+
+`cmd/checkaar` reads Go BuildInfo from all four `libgojni.so` files, verifies fixed module identities, versions, and sums, rejects local module identities and embedded repository/cache paths, and requires the canonical module-graph digest to match across ABIs. Schema-2 bridge provenance and native metadata bind this proof. Generated AARs and local build repositories are build outputs and must not be committed.
 
 Windows:
 
@@ -56,6 +58,24 @@ macOS/Linux:
 ```bash
 bash frpc-stcp-visitor-go/build-aar.sh
 ```
+
+### Verify Cross-Checkout Reproducibility
+
+Run the CI-equivalent reproducibility gate from the repository root in a clean checkout. The scripts reject any tracked or untracked worktree changes.
+
+Windows:
+
+```powershell
+.\.github\scripts\verify-bridge-reproducibility.ps1
+```
+
+macOS/Linux:
+
+```bash
+bash .github/scripts/verify-bridge-reproducibility.sh
+```
+
+On the current host platform, the gate builds the current checkout and a detached worktree at a different absolute path. It gives each build isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH` directories, then compares the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. This is a same-platform, cross-checkout guarantee; it does not claim byte identity between Windows and Linux. The temporary checkout and caches are removed, while the primary build outputs remain in the invoking checkout for the subsequent Gradle gate.
 
 Then require the bridge during Android verification:
 
@@ -71,7 +91,7 @@ macOS/Linux:
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
 ```
 
-The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.6-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.7-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
 
 ## Release Builds
 

@@ -53,18 +53,20 @@ const (
 var cryptoRandMutex sync.Mutex
 
 type oracleSpec struct {
-	login          *msg.Login
-	loginResponse  *msg.LoginResp
-	visitor        *msg.NewVisitorConn
-	ping           *msg.Ping
-	newWork        *msg.NewWorkConn
-	pong           *msg.Pong
-	reqWork        *msg.ReqWorkConn
-	profiles       map[string]*cryptoProfile
-	controls       map[string]*controlVector
-	yamuxTraces    map[string][]yamuxFrame
-	clientMessages []string
-	serverMessages []string
+	login           *msg.Login
+	loginResponse   *msg.LoginResp
+	visitor         *msg.NewVisitorConn
+	visitorResponse *msg.NewVisitorConnResp
+	ping            *msg.Ping
+	newWork         *msg.NewWorkConn
+	startWork       *msg.StartWorkConn
+	pong            *msg.Pong
+	reqWork         *msg.ReqWorkConn
+	profiles        map[string]*cryptoProfile
+	controls        map[string]*controlVector
+	yamuxTraces     map[string][]yamuxFrame
+	clientMessages  []string
+	serverMessages  []string
 }
 
 type cryptoProfile struct {
@@ -197,19 +199,33 @@ func buildOracleArtifacts() (*oracleSpec, map[string][]byte, []entry, error) {
 		UseEncryption:  false,
 		UseCompression: false,
 	}
+	loginResponse := &msg.LoginResp{
+		Version: "0.69.1-fixture",
+		RunID:   "run_fixture_001",
+	}
+	startWork := &msg.StartWorkConn{
+		ProxyName: visitor.ProxyName,
+		SrcAddr:   "127.0.0.1",
+		DstAddr:   "127.0.0.1",
+		SrcPort:   7000,
+		DstPort:   4096,
+	}
+	visitorResponse := &msg.NewVisitorConnResp{ProxyName: visitor.ProxyName}
 	spec := &oracleSpec{
-		login:          login,
-		loginResponse:  &msg.LoginResp{Version: "0.69.1-fixture", RunID: "run_fixture_001"},
-		visitor:        visitor,
-		ping:           ping,
-		newWork:        newWork,
-		pong:           &msg.Pong{},
-		reqWork:        &msg.ReqWorkConn{},
-		profiles:       make(map[string]*cryptoProfile),
-		controls:       make(map[string]*controlVector),
-		yamuxTraces:    make(map[string][]yamuxFrame),
-		clientMessages: []string{"ping", "new-work"},
-		serverMessages: []string{"pong", "req-work"},
+		login:           login,
+		loginResponse:   loginResponse,
+		visitor:         visitor,
+		visitorResponse: visitorResponse,
+		ping:            ping,
+		newWork:         newWork,
+		startWork:       startWork,
+		pong:            &msg.Pong{},
+		reqWork:         &msg.ReqWorkConn{},
+		profiles:        make(map[string]*cryptoProfile),
+		controls:        make(map[string]*controlVector),
+		yamuxTraces:     make(map[string][]yamuxFrame),
+		clientMessages:  []string{"ping", "new-work"},
+		serverMessages:  []string{"pong", "req-work"},
 	}
 	if err := validateAuthInputs(spec); err != nil {
 		return nil, nil, nil, err
@@ -243,7 +259,7 @@ func buildOracleArtifacts() (*oracleSpec, map[string][]byte, []entry, error) {
 	spec.profiles[xChaChaProfile.name] = xChaChaProfile
 
 	files := make(map[string][]byte)
-	entries := make([]entry, 0, 24)
+	entries := make([]entry, 0, 29)
 	add := func(id, path, layer, expected string, data []byte) error {
 		if _, exists := files[path]; exists {
 			return fmt.Errorf("duplicate generated fixture path %s", path)
@@ -271,14 +287,30 @@ func buildOracleArtifacts() (*oracleSpec, map[string][]byte, []entry, error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	v1ServerStandaloneParts, err := encodeMessageParts(
+		wire.ProtocolV1,
+		[]msg.Message{spec.loginResponse, spec.startWork, spec.visitorResponse},
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	v1VisitorParts, err := encodeMessageParts(wire.ProtocolV1, []msg.Message{visitor})
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := add("wire-v1-login-response", "wire/v1/login-response.bin", "wire-v1", "decode-login-response; run-id=present; error=empty", v1ServerStandaloneParts[0]); err != nil {
 		return nil, nil, nil, err
 	}
 	if err := add("wire-v1-login-token", "wire/v1/login-token.bin", "wire-v1", "decode-login; token-auth=valid", v1LoginParts[0]); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := add("wire-v1-new-visitor-conn-response", "wire/v1/new-visitor-conn-response.bin", "wire-v1", "decode-new-visitor-conn-response; proxy=present; error=empty", v1ServerStandaloneParts[2]); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := add("wire-v1-new-visitor-stcp", "wire/v1/new-visitor-stcp.bin", "wire-v1", "decode-new-visitor; stcp-auth=valid", v1VisitorParts[0]); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := add("wire-v1-start-work-conn", "wire/v1/start-work-conn.bin", "wire-v1", "decode-start-work-conn; proxy-addresses-ports=present; error=empty", v1ServerStandaloneParts[1]); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -303,8 +335,21 @@ func buildOracleArtifacts() (*oracleSpec, map[string][]byte, []entry, error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	v2ServerStandaloneParts, err := encodeMessageParts(
+		wire.ProtocolV2,
+		[]msg.Message{spec.startWork, spec.visitorResponse},
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := add("wire-v2-new-visitor-conn-response", "wire/v2/new-visitor-conn-response.bin", "wire-v2", "decode-new-visitor-conn-response; proxy=present; error=empty", v2ServerStandaloneParts[1]); err != nil {
+		return nil, nil, nil, err
+	}
 	v2Visitor := append([]byte(wire.MagicV2), v2VisitorParts[0]...)
 	if err := add("wire-v2-new-visitor-stcp", "wire/v2/new-visitor-stcp.bin", "wire-v2", "magic; decode-new-visitor; stcp-auth=valid", v2Visitor); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := add("wire-v2-start-work-conn", "wire/v2/start-work-conn.bin", "wire-v2", "decode-start-work-conn; proxy-addresses-ports=present; error=empty", v2ServerStandaloneParts[0]); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -662,11 +707,20 @@ func jsonMarshalIndent(value any) ([]byte, error) {
 }
 
 func validateOracleSemantics(files map[string][]byte, spec *oracleSpec, manifestValue manifest) error {
+	if err := validateMessageSequence(bytes.NewReader(files["wire/v1/login-response.bin"]), wire.ProtocolV1, []string{"login-response"}, spec); err != nil {
+		return fmt.Errorf("validate wire v1 login response")
+	}
 	if err := validateMessageSequence(bytes.NewReader(files["wire/v1/login-token.bin"]), wire.ProtocolV1, []string{"login"}, spec); err != nil {
 		return fmt.Errorf("validate wire v1 login")
 	}
+	if err := validateMessageSequence(bytes.NewReader(files["wire/v1/new-visitor-conn-response.bin"]), wire.ProtocolV1, []string{"visitor-response"}, spec); err != nil {
+		return fmt.Errorf("validate wire v1 visitor response")
+	}
 	if err := validateMessageSequence(bytes.NewReader(files["wire/v1/new-visitor-stcp.bin"]), wire.ProtocolV1, []string{"visitor"}, spec); err != nil {
 		return fmt.Errorf("validate wire v1 visitor")
+	}
+	if err := validateMessageSequence(bytes.NewReader(files["wire/v1/start-work-conn.bin"]), wire.ProtocolV1, []string{"start-work"}, spec); err != nil {
+		return fmt.Errorf("validate wire v1 start work connection")
 	}
 	for _, profileName := range []string{"aes-256-gcm", "xchacha20-poly1305"} {
 		profile := spec.profiles[profileName]
@@ -679,6 +733,12 @@ func validateOracleSemantics(files map[string][]byte, spec *oracleSpec, manifest
 	}
 	if err := validateV2Visitor(bytes.NewReader(files["wire/v2/new-visitor-stcp.bin"]), spec); err != nil {
 		return fmt.Errorf("validate wire v2 visitor")
+	}
+	if err := validateMessageSequence(bytes.NewReader(files["wire/v2/new-visitor-conn-response.bin"]), wire.ProtocolV2, []string{"visitor-response"}, spec); err != nil {
+		return fmt.Errorf("validate wire v2 visitor response")
+	}
+	if err := validateMessageSequence(bytes.NewReader(files["wire/v2/start-work-conn.bin"]), wire.ProtocolV2, []string{"start-work"}, spec); err != nil {
+		return fmt.Errorf("validate wire v2 start work connection")
 	}
 	if err := validateMessageSequence(bytes.NewReader(files["control/v1/plain/client-to-server.bin"]), wire.ProtocolV1, spec.clientMessages, spec); err != nil {
 		return fmt.Errorf("validate v1 client control plaintext")
@@ -783,10 +843,14 @@ func expectedDecodedMessage(kind string, spec *oracleSpec) (msg.Message, error) 
 		return spec.loginResponse, nil
 	case "visitor":
 		return spec.visitor, nil
+	case "visitor-response":
+		return spec.visitorResponse, nil
 	case "ping":
 		return spec.ping, nil
 	case "new-work":
 		return spec.newWork, nil
+	case "start-work":
+		return spec.startWork, nil
 	case "pong":
 		return spec.pong, nil
 	case "req-work":

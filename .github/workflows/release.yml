@@ -152,7 +152,7 @@ jobs:
     name: Build and verify signed release
     needs: preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: release
     permissions:
       contents: read
@@ -212,11 +212,9 @@ jobs:
         shell: bash
         run: go test -race ./client/...
 
-      - name: Build GoMobile bridge twice
+      - name: Verify reproducible GoMobile bridge
         shell: bash
-        run: |
-          bash frpc-stcp-visitor-go/build-aar.sh
-          bash frpc-stcp-visitor-go/build-aar.sh
+        run: bash .github/scripts/verify-bridge-reproducibility.sh
 
       - name: Run Android tests and build debug APKs
         shell: bash

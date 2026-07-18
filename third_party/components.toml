@@ -3,14 +3,14 @@ audited_on = "2026-07-17"
 app_version = "0.1.3"
 application_id = "io.github.ycfeng.ocdeck"
 min_android_api = 26
-bridge_version = "0.3.6-frp0.69.1-p1"
-bridge_maven_coordinate = "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.6-frp0.69.1-p1"
+bridge_version = "0.3.7-frp0.69.1-p1"
+bridge_maven_coordinate = "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.7-frp0.69.1-p1"
 
 [audit]
 android_configuration = ":app:releaseRuntimeClasspath"
 go_targets = ["android/arm64", "android/arm", "android/386", "android/amd64"]
 go_modfile = "frpc-stcp-visitor-go/build/frp-patched.mod"
-notes = "AndroidX is represented by resolved artifact families. Go modules are the union reached by Android arm64, arm, 386, and amd64 dependency walks."
+notes = "AndroidX is represented by resolved artifact families. Go modules are the union reached by Android arm64, arm, 386, and amd64 dependency walks using the pinned build/frp-patched.mod audit modfile, which remains the audit and wrapper race-test basis. The distributed AAR uses a stable, versioned local module proxy graph; Go BuildInfo validation checks fixed module identities, versions, and sums, rejects local paths, and requires one module-graph digest across all ABIs."
 
 [[components]]
 id = "ocdeck"

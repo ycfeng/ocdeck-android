@@ -308,6 +308,32 @@ def audit_release_metadata(version_name: str) -> None:
     require("check-release-version.sh" in version_check_run, "preflight does not run the release version check")
     require("git fetch" not in version_check_run, "preflight must rely on authenticated checkout instead of an unauthenticated fetch")
 
+    reproducibility_run = step_named(build_job, "Verify reproducible GoMobile bridge").get("run")
+    require(isinstance(reproducibility_run, str), "bridge reproducibility gate must use a run script")
+    require(
+        reproducibility_run.strip() == "bash .github/scripts/verify-bridge-reproducibility.sh",
+        "release workflow does not use the canonical cross-checkout bridge reproducibility gate",
+    )
+
+    ci_workflow = load_yaml(".github/workflows/ci.yml")
+    require(isinstance(ci_workflow, dict), "CI workflow must be an object")
+    ci_jobs = ci_workflow.get("jobs")
+    require(isinstance(ci_jobs, dict), "CI workflow has no jobs")
+    ci_verify_job = ci_jobs.get("verify")
+    require(isinstance(ci_verify_job, dict), "CI workflow has no verify job")
+    ci_reproducibility_steps = [
+        step
+        for step in ci_verify_job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == "Verify reproducible GoMobile bridge"
+    ]
+    require(len(ci_reproducibility_steps) == 1, "CI workflow must contain exactly one bridge reproducibility gate")
+    ci_reproducibility_run = ci_reproducibility_steps[0].get("run")
+    require(isinstance(ci_reproducibility_run, str), "CI bridge reproducibility gate must use a run script")
+    require(
+        ci_reproducibility_run.strip() == "bash .github/scripts/verify-bridge-reproducibility.sh",
+        "CI workflow does not use the canonical cross-checkout bridge reproducibility gate",
+    )
+
     assemble = step_named(prepare_job, "Assemble release notes")
     assemble_run = assemble.get("run")
     require(isinstance(assemble_run, str), "Assemble release notes must use a run script")

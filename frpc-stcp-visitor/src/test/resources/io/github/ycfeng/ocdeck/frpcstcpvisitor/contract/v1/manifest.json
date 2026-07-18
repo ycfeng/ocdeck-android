@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "generatorVersion": "k0-go-oracle-v3",
+  "generatorVersion": "k0-go-oracle-v4",
   "pins": {
-    "bridge": "0.3.5-frp0.69.1-p1",
+    "bridge": "0.3.7-frp0.69.1-p1",
     "frp": "github.com/fatedier/frp@v0.69.1 (frp-v0.69.1-p1)",
     "golib": "github.com/fatedier/golib@v0.7.0",
     "yamux": "github.com/fatedier/yamux@v0.0.0-20250825093530-d0154be01cd6"
@@ -112,6 +112,14 @@
       "expected": "decrypt=client-role; integrity=authenticated"
     },
     {
+      "id": "wire-v1-login-response",
+      "path": "wire/v1/login-response.bin",
+      "layer": "wire-v1",
+      "length": 64,
+      "sha256": "f98511aa08234b56314b79bfc0e85600e9fb785203aa3f24591e18506e89b61d",
+      "expected": "decode-login-response; run-id=present; error=empty"
+    },
+    {
       "id": "wire-v1-login-token",
       "path": "wire/v1/login-token.bin",
       "layer": "wire-v1",
@@ -120,12 +128,28 @@
       "expected": "decode-login; token-auth=valid"
     },
     {
+      "id": "wire-v1-new-visitor-conn-response",
+      "path": "wire/v1/new-visitor-conn-response.bin",
+      "layer": "wire-v1",
+      "length": 54,
+      "sha256": "e50fc643d1f7993adc6df1aed2adfd9ed87bd5b9d9b337556c640e175103ca25",
+      "expected": "decode-new-visitor-conn-response; proxy=present; error=empty"
+    },
+    {
       "id": "wire-v1-new-visitor-stcp",
       "path": "wire/v1/new-visitor-stcp.bin",
       "layer": "wire-v1",
       "length": 150,
       "sha256": "e6f0e096d71dbc4d7505d0fa7e2d59d55f144da384a0cfa167a8a85760260133",
       "expected": "decode-new-visitor; stcp-auth=valid"
+    },
+    {
+      "id": "wire-v1-start-work-conn",
+      "path": "wire/v1/start-work-conn.bin",
+      "layer": "wire-v1",
+      "length": 132,
+      "sha256": "e5174caeea67f4f64b9718b7f7bde48ac0d04c255906cb2a466c37bcaddfa9e8",
+      "expected": "decode-start-work-conn; proxy-addresses-ports=present; error=empty"
     },
     {
       "id": "wire-v2-aes-256-gcm-client-bootstrap",
@@ -144,12 +168,28 @@
       "expected": "server-hello; login-response"
     },
     {
+      "id": "wire-v2-new-visitor-conn-response",
+      "path": "wire/v2/new-visitor-conn-response.bin",
+      "layer": "wire-v2",
+      "length": 55,
+      "sha256": "634ebc132fbe2885445c6eb4345ce31364956d3f4d47f6fa687272c70f4af1a7",
+      "expected": "decode-new-visitor-conn-response; proxy=present; error=empty"
+    },
+    {
       "id": "wire-v2-new-visitor-stcp",
       "path": "wire/v2/new-visitor-stcp.bin",
       "layer": "wire-v2",
       "length": 158,
       "sha256": "554eaf28b9dc802aaff06679c1be974e91b23e20e99ab7a4b2305739eb18c56d",
       "expected": "magic; decode-new-visitor; stcp-auth=valid"
+    },
+    {
+      "id": "wire-v2-start-work-conn",
+      "path": "wire/v2/start-work-conn.bin",
+      "layer": "wire-v2",
+      "length": 133,
+      "sha256": "2a5d856c4a48e9e8f3e07fb90f0196d970e00f0861988188ca4d5de797816d1a",
+      "expected": "decode-start-work-conn; proxy-addresses-ports=present; error=empty"
     },
     {
       "id": "wire-v2-xchacha20-poly1305-client-bootstrap",

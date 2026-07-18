@@ -23,7 +23,7 @@ import (
 
 const (
 	schemaVersion          = 1
-	generatorVersion       = "k0-go-oracle-v3"
+	generatorVersion       = "k0-go-oracle-v4"
 	manifestFileName       = "manifest.json"
 	maxCanonicalFileSize   = 1 << 20
 	maxCanonicalFileCount  = 128

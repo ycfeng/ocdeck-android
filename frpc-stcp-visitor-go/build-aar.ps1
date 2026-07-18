@@ -3,6 +3,8 @@ if ($PSVersionTable.PSVersion -lt [Version]'7.3') {
     throw 'build-aar.ps1 requires PowerShell 7.3 or newer'
 }
 $PSNativeCommandUseErrorActionPreference = $true
+$env:GOWORK = 'off'
+$env:GOFLAGS = ''
 
 function Assert-NativeSuccess([string]$Description) {
     if ($LASTEXITCODE -ne 0) {
@@ -38,13 +40,14 @@ $RepoApi = "$RepoAar.api.txt"
 $RepoProvenance = "$RepoAar.provenance.json"
 $RepoFrpProvenance = "$RepoAar.frp-provenance.json"
 $RepoNative = "$RepoAar.native.json"
-$PatchedModFile = Join-Path $ScriptDir 'build\frp-patched.mod'
 $PatchProvenance = Join-Path $ScriptDir 'build\frp-patch-provenance.json'
-$BindModuleDir = Join-Path $ScriptDir 'build\bind-module'
+$ModuleProxyConfig = Join-Path $ScriptDir 'build\module-proxy.properties'
 $StagingDir = Join-Path $ScriptDir 'build\aar-staging'
 $StagedAar = Join-Path $StagingDir 'frpc-stcp-visitor.aar'
 $StagedSources = Join-Path $StagingDir 'frpc-stcp-visitor-sources.jar'
 $StagedApi = Join-Path $StagingDir 'bridge-api.txt'
+$PreNativeReport = Join-Path $StagingDir 'native-preflight.json'
+$ValidatedNativeReport = Join-Path $StagingDir 'native-validated.json'
 $EmbeddedProvenance = Join-Path $StagingDir 'bridge-provenance.json'
 $ExternalProvenance = Join-Path $StagingDir 'bridge-provenance-with-hash.json'
 $ApiCheckDir = Join-Path $StagingDir 'api-check'
@@ -67,7 +70,12 @@ if ($ActualGoVersion -ne $RequiredGoVersion) {
 
 $GoPath = (& go env GOPATH | Out-String).Trim()
 Assert-NativeSuccess 'go env GOPATH'
-$GoBin = Join-Path $GoPath 'bin'
+$GoPathEntries = $GoPath.Split([IO.Path]::PathSeparator, [StringSplitOptions]::RemoveEmptyEntries)
+if ($GoPathEntries.Count -eq 0) {
+    throw 'go env GOPATH returned no usable entries'
+}
+$PrimaryGoPath = $GoPathEntries[0]
+$GoBin = Join-Path $PrimaryGoPath 'bin'
 if ($env:Path -notlike "*$GoBin*") {
     $env:Path = "$GoBin;$env:Path"
 }
@@ -91,7 +99,7 @@ if (-not $SdkRoot) {
 }
 $NdkDir = Join-Path $SdkRoot "ndk\$NdkVersion"
 if (-not (Test-Path -LiteralPath $NdkDir)) {
-    throw "Android NDK $NdkVersion is missing at $NdkDir"
+    throw "Android NDK $NdkVersion is missing"
 }
 $env:ANDROID_NDK_HOME = $NdkDir
 
@@ -99,24 +107,37 @@ Push-Location $ScriptDir
 try {
     & go run ./cmd/preparefrp
     Assert-NativeSuccess 'preparefrp'
-    & go install "golang.org/x/mobile/cmd/gomobile@$XMobileVersion"
+    & go run ./cmd/preparemoduleproxy
+    Assert-NativeSuccess 'preparemoduleproxy'
+
+    $BuildConfig = @{}
+    Get-Content -LiteralPath $ModuleProxyConfig | ForEach-Object {
+        if ($_ -and -not $_.StartsWith('#')) {
+            $Parts = $_.Split('=', 2)
+            $BuildConfig[$Parts[0]] = $Parts[1]
+        }
+    }
+    foreach ($Key in @('PROXY_URL', 'BIND_PACKAGE', 'BIND_MODULE_DIR', 'GONOSUMDB')) {
+        if (-not $BuildConfig[$Key]) {
+            throw 'Generated module proxy configuration is incomplete'
+        }
+    }
+    $BindModuleRelative = $BuildConfig['BIND_MODULE_DIR'].Replace('/', [IO.Path]::DirectorySeparatorChar)
+    $BindModuleDir = Join-Path $ScriptDir $BindModuleRelative
+    $env:GOPROXY = "$($BuildConfig['PROXY_URL']),https://proxy.golang.org,direct"
+    $env:GONOSUMDB = $BuildConfig['GONOSUMDB']
+    $env:GONOPROXY = 'none'
+    $env:GOPRIVATE = ''
+
+    & go install golang.org/x/mobile/cmd/gomobile
     Assert-NativeSuccess 'install gomobile'
-    & go install "golang.org/x/mobile/cmd/gobind@$XMobileVersion"
+    & go install golang.org/x/mobile/cmd/gobind
     Assert-NativeSuccess 'install gobind'
-    & gomobile init
-    Assert-NativeSuccess 'gomobile init'
+    New-Item -ItemType Directory -Force -Path (Join-Path $PrimaryGoPath 'pkg\gomobile') | Out-Null
 
     Remove-Item -LiteralPath $AarOutput, $SourcesOutput -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $BindModuleDir, $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $BindModuleDir, $StagingDir, (Split-Path -Parent $AarOutput) | Out-Null
-    Copy-Item -LiteralPath (Join-Path $ScriptDir 'visitor.go'), (Join-Path $ScriptDir 'types.go') -Destination $BindModuleDir
-    $AnetPath = (Resolve-Path (Join-Path $ScriptDir 'internal\anetcompat')).Path.Replace('\', '/')
-    $BindGoMod = [IO.File]::ReadAllText($PatchedModFile).Replace(
-        'replace github.com/wlynxg/anet => ./internal/anetcompat',
-        "replace github.com/wlynxg/anet => $AnetPath"
-    )
-    [IO.File]::WriteAllText((Join-Path $BindModuleDir 'go.mod'), $BindGoMod)
-    Copy-Item -LiteralPath (Join-Path $ScriptDir 'build\frp-patched.sum') -Destination (Join-Path $BindModuleDir 'go.sum')
+    Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $StagingDir, (Split-Path -Parent $AarOutput) | Out-Null
 
     Push-Location $BindModuleDir
     try {
@@ -127,22 +148,23 @@ try {
             -trimpath `
             -ldflags '-s -w -extldflags=-Wl,-z,max-page-size=16384' `
             -o $StagedAar `
-            .
+            $BuildConfig['BIND_PACKAGE']
         Assert-NativeSuccess 'gomobile bind'
     }
     finally {
         Pop-Location
     }
     if (-not (Test-Path -LiteralPath $StagedAar)) {
-        throw "gomobile did not create AAR: $StagedAar"
+        throw 'gomobile did not create the AAR'
+    }
+    if (-not (Test-Path -LiteralPath $StagedSources)) {
+        throw 'gomobile did not create the sources JAR'
     }
 
     & go run ./cmd/normalizezip $StagedAar
     Assert-NativeSuccess 'normalize AAR'
-    if (Test-Path -LiteralPath $StagedSources) {
-        & go run ./cmd/normalizezip $StagedSources
-        Assert-NativeSuccess 'normalize sources JAR'
-    }
+    & go run ./cmd/normalizezip $StagedSources
+    Assert-NativeSuccess 'normalize sources JAR'
     New-Item -ItemType Directory -Force -Path $ApiCheckDir | Out-Null
     Push-Location $ApiCheckDir
     try {
@@ -157,11 +179,22 @@ try {
     $ExpectedApiText = [IO.File]::ReadAllText($ExpectedApi).Trim()
     $NormalizedApiText = $ApiText.Replace("`r`n", "`n")
     if ($NormalizedApiText -ne $ExpectedApiText.Replace("`r`n", "`n")) {
-        throw "GoMobile bridge API does not match $ExpectedApi"
+        throw 'GoMobile bridge API does not match the committed signature'
     }
     [IO.File]::WriteAllText($StagedApi, "$NormalizedApiText`n")
 
-    & go run ./cmd/writebridgeprovenance -versions $VersionsFile -output $EmbeddedProvenance
+    $PreNativeReportText = (& go run ./cmd/checkaar `
+        -native-only `
+        -root $RootDir `
+        -versions $VersionsFile `
+        $StagedAar | Out-String).Trim()
+    Assert-NativeSuccess 'preflight native AAR graph'
+    [IO.File]::WriteAllText($PreNativeReport, "$PreNativeReportText`n")
+
+    & go run ./cmd/writebridgeprovenance `
+        -versions $VersionsFile `
+        -native-report $PreNativeReport `
+        -output $EmbeddedProvenance
     Assert-NativeSuccess 'write embedded bridge provenance'
     $NormalizeArguments = @(
         'run', './cmd/normalizezip',
@@ -185,12 +218,14 @@ try {
     Assert-NativeSuccess 'inject and normalize AAR metadata'
 
     $NativeReport = (& go run ./cmd/checkaar `
+        -versions $VersionsFile `
         -root $RootDir `
         -api $ExpectedApi `
         -bridge-provenance $EmbeddedProvenance `
         -frp-provenance $PatchProvenance `
         $StagedAar | Out-String).Trim()
     Assert-NativeSuccess 'check AAR'
+    [IO.File]::WriteAllText($ValidatedNativeReport, "$NativeReport`n")
     $AarSha256 = (& go run ./cmd/filehash $StagedAar | Out-String).Trim()
     Assert-NativeSuccess 'hash AAR'
 
@@ -208,12 +243,10 @@ try {
     $TemporaryAarOutput = "$AarOutput.tmp"
     Copy-Item -LiteralPath $StagedAar -Destination $TemporaryAarOutput -Force
     Move-Item -LiteralPath $TemporaryAarOutput -Destination $AarOutput -Force
-    if (Test-Path -LiteralPath $StagedSources) {
-        Copy-Item -LiteralPath $StagedSources -Destination $RepoSources -Force
-        $TemporarySourcesOutput = "$SourcesOutput.tmp"
-        Copy-Item -LiteralPath $StagedSources -Destination $TemporarySourcesOutput -Force
-        Move-Item -LiteralPath $TemporarySourcesOutput -Destination $SourcesOutput -Force
-    }
+    Copy-Item -LiteralPath $StagedSources -Destination $RepoSources -Force
+    $TemporarySourcesOutput = "$SourcesOutput.tmp"
+    Copy-Item -LiteralPath $StagedSources -Destination $TemporarySourcesOutput -Force
+    Move-Item -LiteralPath $TemporarySourcesOutput -Destination $SourcesOutput -Force
 
     $Pom = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -238,9 +271,10 @@ try {
     [IO.File]::WriteAllText($RepoSha, "$AarSha256  $ArtifactName.aar`n")
     Copy-Item -LiteralPath $ExpectedApi -Destination $RepoApi -Force
     Copy-Item -LiteralPath $PatchProvenance -Destination $RepoFrpProvenance -Force
-    [IO.File]::WriteAllText($RepoNative, "$NativeReport`n")
+    Copy-Item -LiteralPath $ValidatedNativeReport -Destination $RepoNative -Force
     & go run ./cmd/writebridgeprovenance `
         -versions $VersionsFile `
+        -native-report $ValidatedNativeReport `
         -output $ExternalProvenance `
         -aar-sha256 $AarSha256
     Assert-NativeSuccess 'write external bridge provenance'

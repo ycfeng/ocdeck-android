@@ -205,11 +205,16 @@ frpc-stcp-visitor/src/main/java/io/github/ycfeng/ocdeck/frpcstcpvisitor/
 
 frpc-stcp-visitor-go/
   bridge-versions.properties
+  cmd/checkaar/
   cmd/preparefrp/
+  cmd/preparemoduleproxy/
   cmd/normalizezip/
+  cmd/writebridgeprovenance/
   downstream/frp-v0.69.1-p1/
   go.mod
   internal/anetcompat/
+  internal/moduleproxy/
+  internal/reprobuild/
   types.go
   visitor.go
   build-aar.ps1
@@ -218,7 +223,11 @@ frpc-stcp-visitor-go/
 
 `frpc-stcp-visitor-go/` contains the actual frp GoMobile wrapper source. `bridge-versions.properties` pins bridge, Go, x/mobile, and Android API versions; build scripts must never use `gomobile@latest`. Base frp is pinned to `github.com/fatedier/frp@v0.69.1`. `cmd/preparefrp` verifies upstream module sum, zip SHA, and target-file SHA before applying the minimal patch under `downstream/frp-v0.69.1-p1/` without editing the Go module cache. The patch fixes the race between dynamic visitor configuration and Control installation, propagates actual listener-bind state, and exposes config revision, control epoch, and blocking `WaitVisitorReady`.
 
-`build-aar.ps1` / `build-aar.sh` use the pinned toolchain, normalize ZIP ordering and timestamps through `cmd/normalizezip`, output `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`, and publish it to local Maven repository `frpc-stcp-visitor-go/build/repo/` under immutable coordinates `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.6-frp0.69.1-p1`. Reject overwriting the same coordinates when bytes differ. The artifact also generates sources, SHA-256, Java API signature, bridge provenance, frp patch provenance, and native-validation metadata. `META-INF/OCDECK/` in the AAR embeds project legal texts, each third-party license, the exact Java API, and bridge/frp provenance; external sidecars support Gradle and release revalidation. The GoMobile linker uses a fixed 16 KB maximum page size and strips DWARF/static symbol tables. `cmd/checkaar` verifies four expected ABIs, ELF machine, every `PT_LOAD` alignment, and stripped state. App packaging excludes `libgojni.so` from Android Gradle Plugin's later strip transform so Release APKs preserve those verified AAR bytes; APK gates still revalidate their hash, ELF metadata, alignment, and stripped state. The GoMobile `-javapkg` prefix maps to reflection entry `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`. `internal/anetcompat` replaces `github.com/wlynxg/anet` with standard-library network-interface functions, and the main module explicitly inherits frp's yamux replacement.
+`build-aar.ps1` / `build-aar.sh` use the pinned toolchain and first run `cmd/preparemoduleproxy` to expose the wrapper, patched frp, and local compatibility code through stable, versioned module identities in a local `GOPROXY` and bind module graph. Formal `gomobile bind` therefore does not encode checkout-path replacements. The scripts normalize AAR and sources-JAR ordering and timestamps through `cmd/normalizezip`, require both archives to exist, output `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`, and publish the complete Maven artifact set to `frpc-stcp-visitor-go/build/repo/` under immutable coordinates `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.7-frp0.69.1-p1`. Reject overwriting the same coordinates when bytes differ. The set includes the AAR, required sources JAR, POM, SHA-256, Java API signature, bridge provenance, frp patch provenance, and native-validation metadata.
+
+`cmd/checkaar` reads Go BuildInfo from all four ABI libraries, verifies the fixed Go identity and stable module identities, versions, and sums, rejects local module identities and embedded repository/cache paths, and requires one canonical module-graph digest across ABIs. Schema-2 embedded bridge provenance and the external native sidecar bind the module-graph digest and local-path-free proof. `META-INF/OCDECK/` in the AAR also embeds project legal texts, each third-party license, the exact Java API, and bridge/frp provenance. The GoMobile linker uses a fixed 16 KB maximum page size and strips DWARF/static symbol tables; `cmd/checkaar` additionally verifies the four expected ABIs, ELF machine, every `PT_LOAD` alignment, and stripped state.
+
+The canonical `.github/scripts/verify-bridge-reproducibility.sh` and `.ps1` gates require a clean checkout. On one host platform, they build the current checkout and a detached worktree at a different absolute path with separate `GOCACHE`, `GOMODCACHE`, and `GOPATH` directories, then compare the AAR, sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. The temporary checkout and caches are removed while primary outputs remain for the Gradle gate; CI and Release use the shell variant. This makes no cross-operating-system byte-identity claim. App packaging excludes `libgojni.so` from Android Gradle Plugin's later strip transform so Release APKs preserve those verified AAR bytes; APK gates still revalidate their hash, ELF metadata, alignment, and stripped state. The GoMobile `-javapkg` prefix maps to reflection entry `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`. `internal/anetcompat` replaces `github.com/wlynxg/anet` with standard-library network-interface functions, and the main module explicitly inherits frp's yamux replacement.
 
 Android Debug still compiles when the AAR has not been generated, but STCP returns a clear runtime unavailable error. Release `preReleaseBuild` must run `checkGoMobileBridgeAar`, byte-for-byte verifying checksum, pinned API signature, internal/external bridge and frp provenance, legal texts, licenses, native metadata, and each ABI's `libgojni.so` hash. `-PrequireGoMobileBridge=true` applies the same gate to Debug/CI. Passing static gates is not sufficient for release: native load and a real STCP loop must still be verified on target ABIs and 16 KB page-size devices.
 
@@ -717,9 +726,9 @@ Build gates:
 - `./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug`
 - `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`
 - `go run ./cmd/preparefrp`, `go test -race -modfile=build/frp-patched.mod ./...`, and `go test -race ./client/...` inside the patched frp module.
-- `build-aar.sh`, or `build-aar.ps1` on Windows, must use the Go/x-mobile/Android API/NDK versions pinned in `bridge-versions.properties`.
+- `.github/scripts/verify-bridge-reproducibility.sh`, or `.ps1` on Windows, must use the Go/x-mobile/Android API/NDK versions pinned in `bridge-versions.properties`; CI and Release use the shell variant.
 - A Kotlin-only bridge API or failure-handling change still runs this complete gate even when generated AAR bytes and `BRIDGE_VERSION` remain unchanged. Any native or generated AAR byte change requires a `BRIDGE_VERSION` increment.
-- AAR builds must produce identical SHA-256 across consecutive runs with identical inputs. Each ABI's `libgojni.so` in Release APKs must match the corresponding AAR entry hash, and ELF machine, every `PT_LOAD` 16 KB alignment, and stripped state must be rechecked.
+- On one host platform, the bridge gate must use a clean current checkout and a detached checkout at a different absolute path, isolate `GOCACHE`, `GOMODCACHE`, and `GOPATH`, and compare the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. Each ABI's `libgojni.so` in Release APKs must match the corresponding AAR entry hash, and ELF machine, every `PT_LOAD` 16 KB alignment, and stripped state must be rechecked.
 - APKs must contain current `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.txt`, `TRADEMARKS.md`, the merged full-license text, and every individual license byte-for-byte. The AAR must embed matching legal/API/provenance metadata under `META-INF/OCDECK/`.
 - Add ktlint/detekt to CI only after they are introduced. Add Android lint as an independent gate after existing errors are fixed.
 - `.github/workflows/ci.yml` runs unsigned gates on pushes/PRs to `main`. `.github/workflows/release.yml` reruns every gate and builds signed artifacts for stable tags.
@@ -761,7 +770,7 @@ Build gates:
 | SSE disconnect or event reordering | Inconsistent UI state | Refresh REST snapshots after foreground resume/reconnect; keep Store reducers idempotent |
 | STCP configuration committed before listener ready | False first-health or project-snapshot failure | Patched frp exposes actual revision/epoch listener state; Repository performs single-flight `/global/health` at the shared connection boundary |
 | frps reconnect or late old async work | Reuses invalid listener or closes a new tunnel | Per-generation identity/CAS cleanup; shared recovery after control-epoch change; old epoch results cannot publish |
-| Non-reproducible GoMobile artifact or API drift | Release cannot be audited/rolled back or reflection fails at runtime | Pin Go/x-mobile/frp/patch, use immutable Maven coordinates, normalized ZIP, SHA/API/provenance, and mandatory Release gates |
+| Non-reproducible GoMobile artifact or API drift | Release cannot be audited/rolled back or reflection fails at runtime | Pin Go/x-mobile/frp/patch, use a versioned local module graph and immutable Maven coordinates, validate BuildInfo/module digest with no local paths, and compare isolated-cache builds across distinct checkout paths |
 | Inconsistent path formats | Duplicate projects or failed requests | Enforce `PathNormalizer` and normalize every Repository input |
 | Secret leakage | Security incident | Redactor, logging interceptor, and no plaintext provider UI |
 | Provider management API/version or OAuth-topology mismatch | Authentication fails or an uncertain server-global configuration remains | Tolerant safe projection, original method indexes and scope, bounded cancellable callbacks, loopback warnings, staged disabled writes, typed partial/unknown outcomes, and real-version/device validation |

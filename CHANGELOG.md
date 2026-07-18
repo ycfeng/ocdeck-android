@@ -13,7 +13,15 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the `0.1.3` release. / 尚无超出 `0.1.3` 发布范围的变更。
+### Changed / 变更
+
+- Incremented the immutable GoMobile bridge coordinate to `0.3.7-frp0.69.1-p1` because the formal AAR now uses a stable, versioned local Go module proxy and module graph; native/AAR bytes changed, while the Go, x/mobile, frp, Android API, and NDK pins remain unchanged. / 正式 AAR 现改用稳定、版本化的本地 Go module proxy 与 module graph，因此将不可变 GoMobile bridge 坐标提升为 `0.3.7-frp0.69.1-p1`；native/AAR 字节已变化，Go、x/mobile、frp、Android API 和 NDK 固定版本保持不变。
+- CI and Release bridge reproducibility now build a clean candidate checkout and a detached checkout at a different absolute path on the same platform with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`, then compare the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. / CI 与 Release 的 bridge 可复现门禁现在会在同一平台分别构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，再逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
+- Regenerated the canonical K0 contract fixtures with `k0-go-oracle-v4`: 29 entries now include v1 `LoginResp`, v1/v2 `StartWorkConn`, and v1/v2 `NewVisitorConnResp` goldens. / 使用 `k0-go-oracle-v4` 重新生成 canonical K0 契约 fixture：当前 29 个条目包含 v1 `LoginResp`、v1/v2 `StartWorkConn` 和 v1/v2 `NewVisitorConnResp` golden。
+
+### Fixed / 修复
+
+- Removed checkout absolute paths from `libgojni.so` Go BuildInfo. `cmd/checkaar` now validates the four ABI BuildInfo graphs, fixed module identities, versions, and sums, local-path absence, and one consistent module-graph digest, with schema-2 provenance/native metadata binding the proof. / 消除 `libgojni.so` Go BuildInfo 中的 checkout 绝对路径；`cmd/checkaar` 现在校验四个 ABI 的 BuildInfo graph、固定 module identity/version/sum、无本地路径及一致的 module graph digest，并由 schema 2 provenance/native metadata 绑定该证明。
 
 ## [0.1.3] - 2026-07-17
 

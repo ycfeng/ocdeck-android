@@ -45,7 +45,7 @@ VERSION_NAME=0.1.3
 
 1. 审计社区/文档 metadata，生成 patched frp，并审计第三方/法律清单、四个 Android Go 目标依赖并集、资源哈希和完整 modified/added provenance。
 2. 运行外层 Go race tests，并在生成的 frp module 中单独运行 `client/...` race tests。
-3. 生成并验证 GoMobile AAR，包括内嵌法律文本、许可证、精确 API、bridge/frp provenance 和四 ABI native metadata。
+3. 在 Ubuntu runner 上运行 canonical shell 可复现门禁。它会构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；校验法律/API/provenance/native metadata 和四 ABI 固定且无本地路径的 Go BuildInfo module graph；并逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
 4. 执行 bridge AAR 门禁、两个 Android 模块的 Debug 单元测试和 Debug APK 构建。
 
 CI 不持有 JKS、密码或仓库写权限。目标真机 native load、16KB page-size 真机和真实 STCP 端到端闭环仍是正式发布前的强制人工门禁，静态构建检查不能替代这些验证。
@@ -135,7 +135,7 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 6. 在已经验证的 commit 上创建并推送 `vMAJOR.MINOR.PATCH` tag。
 7. `preflight` 校验源码版本、tag、`origin/main` 祖先关系、最高版本规则和历史 `VERSION_CODE` 单调递增。
 8. `prepare-notes` 在不读取签名 secret 的情况下生成并上传最终 `release-notes.md`。真实 tag 会追加 GitHub 自动说明。
-9. Environment 审批后，`build-release` 重新运行全部测试，连续生成两次 SHA-256 完全一致的 GoMobile AAR，构建三个签名 APK，并核对固定证书指纹。
+9. Environment 审批后，`build-release` 重新运行全部测试，并使用 shell 可复现门禁，在同一个 Ubuntu runner 上构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，同时隔离 Go cache。完整 bridge 制品/sidecar 集合必须逐字节一致，随后才构建三个签名 APK 并核对固定证书指纹。
 10. `publish` 下载两组已验证 artifact，使用 `GITHUB_TOKEN` 和 `gh release create --verify-tag --notes-file`。所有 `0.x` 版本创建为 prerelease，从 `1.0.0` 开始创建普通 release。
 
 ## 8. 制品检查
@@ -148,8 +148,8 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 - APK native library 重新通过 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态检查。
 - App 打包会保留 AAR 中已经 stripped 的 `libgojni.so` 原始字节，不再重复应用 Android Gradle Plugin 的 native strip transform；上述独立 APK 校验确保该排除规则不会降低 native 门禁。
 - 每个 APK 中的 `assets/legal/` 与当前 LICENSE、NOTICE、第三方通知、商标声明、合并许可证和每份单独许可证逐字节一致。
-- AAR 的 `META-INF/OCDECK/` 包含当前法律文本、许可证、精确 Java API 和 bridge/frp provenance。
-- 外部 checksum/API/provenance/native sidecar 与内嵌内容及精确 AAR 字节相互绑定。
+- AAR 的 `META-INF/OCDECK/` 包含当前法律文本、许可证、精确 Java API 和 bridge/frp provenance，其中包括 schema 2 native module graph digest 与无本地路径证明。
+- 外部 checksum/API/provenance/native sidecar 与内嵌内容及精确 AAR 字节相互绑定；schema 2 native metadata 还证明固定 BuildInfo module identity/version/sum，以及四个 ABI 使用同一个 graph digest。
 - `SHA256SUMS` 只覆盖最终公开的三个 APK。
 
 Bridge 静态生成四个 GoMobile ABI，但公开应用发布只包含 `arm64-v8a`、`armeabi-v7a` 和 `x86_64` APK。

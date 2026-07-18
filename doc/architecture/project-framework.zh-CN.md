@@ -205,11 +205,16 @@ frpc-stcp-visitor/src/main/java/io/github/ycfeng/ocdeck/frpcstcpvisitor/
 
 frpc-stcp-visitor-go/
   bridge-versions.properties
+  cmd/checkaar/
   cmd/preparefrp/
+  cmd/preparemoduleproxy/
   cmd/normalizezip/
+  cmd/writebridgeprovenance/
   downstream/frp-v0.69.1-p1/
   go.mod
   internal/anetcompat/
+  internal/moduleproxy/
+  internal/reprobuild/
   types.go
   visitor.go
   build-aar.ps1
@@ -218,7 +223,11 @@ frpc-stcp-visitor-go/
 
 `frpc-stcp-visitor-go/` 保存真实 frp GoMobile wrapper 源码。`bridge-versions.properties` 固定 bridge、Go、x/mobile 和 Android API 版本；禁止在构建脚本中使用 `gomobile@latest`。基础 frp 固定为 `github.com/fatedier/frp@v0.69.1`，`cmd/preparefrp` 校验上游 module sum、zip SHA 和待修改文件 SHA 后应用 `downstream/frp-v0.69.1-p1/` 中的最小补丁，不直接修改 Go module cache。补丁修复动态 visitor 配置与 Control 安装的竞态、传播真实 listener bind 状态，并暴露 config revision、control epoch 和阻塞式 `WaitVisitorReady`。
 
-`build-aar.ps1` / `build-aar.sh` 使用固定工具链生成 AAR，经过 `cmd/normalizezip` 规范化 ZIP 顺序和时间戳后，输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.6-frp0.69.1-p1` 发布到本地 Maven 仓库 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖；制品同时生成 sources、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。AAR 的 `META-INF/OCDECK/` 内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance，外部 sidecar 用于 Gradle 与发布门禁复核。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表，`cmd/checkaar` 校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。App 打包会将 `libgojni.so` 排除在 Android Gradle Plugin 后续 strip transform 之外，使 Release APK 保留这些已验证的 AAR 字节；APK 门禁仍会重新校验 hash、ELF metadata、对齐和 stripped 状态。GoMobile 的 `-javapkg` 前缀对应反射入口 `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`。`internal/anetcompat` 用标准库网络接口函数替换 `github.com/wlynxg/anet`，并在主 module 显式继承 frp 的 yamux replacement。
+`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.7-frp0.69.1-p1` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
+
+`cmd/checkaar` 会读取四个 ABI library 的 Go BuildInfo，校验固定 Go identity 以及稳定的 module identity、version 与 sum，拒绝本地 module identity 和内嵌的仓库/cache 路径，并要求各 ABI 使用同一个 canonical module graph digest。Schema 2 内嵌 bridge provenance 与外部 native sidecar 会绑定 module graph digest 和无本地路径证明。AAR 的 `META-INF/OCDECK/` 还会内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表；`cmd/checkaar` 还会校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。
+
+Canonical `.github/scripts/verify-bridge-reproducibility.sh` 与 `.ps1` 门禁要求干净 checkout。它们会在同一主机平台分别构建当前 checkout 和位于不同绝对路径的 detached worktree，为两个构建隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，再逐字节比较 AAR、sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。临时 checkout 与 cache 会被删除，主构建输出会保留供 Gradle 门禁使用；CI 与 Release 使用 shell 版本。这不构成跨操作系统字节一致性声明。App 打包会将 `libgojni.so` 排除在 Android Gradle Plugin 后续 strip transform 之外，使 Release APK 保留这些已验证的 AAR 字节；APK 门禁仍会重新校验 hash、ELF metadata、对齐和 stripped 状态。GoMobile 的 `-javapkg` 前缀对应反射入口 `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`。`internal/anetcompat` 用标准库网络接口函数替换 `github.com/wlynxg/anet`，并在主 module 显式继承 frp 的 yamux replacement。
 
 未生成 AAR 时 Android Debug 仍可编译，STCP 连接运行时返回明确不可用错误；Release 的 `preReleaseBuild` 必须执行 `checkGoMobileBridgeAar`，逐字节校验 AAR checksum、固定 API signature、内外 bridge/frp provenance、法律文本、许可证、native metadata 和 AAR 内各 ABI `libgojni.so` 哈希。`-PrequireGoMobileBridge=true` 可将相同门禁应用到 Debug/CI 构建。静态门禁通过后，发布前仍必须在目标 ABI 和 16KB page-size 设备上完成真实 native load 与 STCP 闭环验证，不能只以 ELF/JVM 检查代替设备测试。
 
@@ -717,9 +726,9 @@ Existing session id
 - `./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug`
 - `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`
 - `go run ./cmd/preparefrp`、`go test -race -modfile=build/frp-patched.mod ./...`，以及在 patched frp module 中执行 `go test -race ./client/...`。
-- `build-aar.sh` 或 Windows 下的 `build-aar.ps1` 必须使用 `bridge-versions.properties` 的固定 Go/x-mobile/Android API/NDK 版本。
+- `.github/scripts/verify-bridge-reproducibility.sh` 或 Windows 下的 `.ps1` 必须使用 `bridge-versions.properties` 的固定 Go/x-mobile/Android API/NDK 版本；CI 与 Release 使用 shell 版本。
 - 仅修改 Kotlin bridge API 或失败处理时，即使生成 AAR 字节和 `BRIDGE_VERSION` 不变，也必须运行该完整门禁；native 或生成 AAR 字节发生任何变化时必须递增 `BRIDGE_VERSION`。
-- AAR 构建需验证同输入连续生成的 SHA-256 一致；Release APK 中每个 ABI 的 `libgojni.so` 必须与该 AAR 对应 entry 哈希一致，并重新检查 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态。
+- Bridge 门禁必须在同一主机平台使用干净的当前 checkout，以及位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar；Release APK 中每个 ABI 的 `libgojni.so` 必须与该 AAR 对应 entry 哈希一致，并重新检查 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态。
 - APK 必须逐字节包含当前 `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.txt`、`TRADEMARKS.md`、合并许可证全文和全部单独许可证；AAR 必须在 `META-INF/OCDECK/` 内嵌同源法律/API/provenance 元数据。
 - 后续增加 ktlint/detekt 时再纳入 CI；Android lint 应在修复现有错误后作为独立门禁接入。
 - `.github/workflows/ci.yml` 在 `main` push/PR 上执行无签名门禁；`.github/workflows/release.yml` 在稳定 tag 上重新执行全部门禁后构建签名制品。
@@ -761,7 +770,7 @@ Existing session id
 | SSE 断线或事件乱序 | UI 状态不一致 | 前台恢复和重连后刷新 REST 快照，Store reducer 保持幂等 |
 | STCP 配置提交早于 listener ready | 首次健康检查或项目快照误报失败 | patched frp 暴露真实 revision/epoch listener 状态，Repository 在统一连接边界执行 single-flight `/global/health` |
 | frps 重连或旧异步任务迟到 | 复用失效 listener、旧任务误关新隧道 | per-generation identity/CAS 清理；control epoch 变化后共享恢复，旧 epoch 结果不得发布 |
-| GoMobile 制品不可复现或 API 漂移 | Release 难以审计、回滚或运行时反射失败 | 固定 Go/x-mobile/frp/patch，使用不可变 Maven 坐标、规范化 ZIP、SHA/API/provenance 和 Release 强制门禁 |
+| GoMobile 制品不可复现或 API 漂移 | Release 难以审计、回滚或运行时反射失败 | 固定 Go/x-mobile/frp/patch，使用版本化本地 module graph 与不可变 Maven 坐标，校验无本地路径的 BuildInfo/module digest，并跨不同 checkout 路径逐字节比较隔离 cache 的构建 |
 | 路径格式混乱 | 项目重复、请求失败 | 强制 `PathNormalizer`，所有 Repository 入参统一规范化 |
 | 敏感信息泄露 | 安全事故 | Redactor、日志拦截器、Provider UI 禁止明文回显 |
 | Provider 管理 API/版本或 OAuth 拓扑不匹配 | 认证失败或留下结果不确定的 server-global 配置 | 容错安全投影、保留原 method index 与 scope、有界可取消 callback、loopback 警告、disabled 分阶段写入、类型化 partial/unknown outcome，以及真实版本/设备验证 |

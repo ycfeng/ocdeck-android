@@ -45,7 +45,7 @@ Normal CI pins Ubuntu 24.04, JDK 21, Go 1.26.4, Android SDK 36, Build Tools 36.0
 
 1. Audit community/documentation metadata, generate patched frp, and audit third-party/legal inventory, the union of dependencies for all four Android Go targets, resource hashes, and complete modified/added provenance.
 2. Run the outer Go race tests and separately run `client/...` race tests in the generated frp module.
-3. Generate and validate the GoMobile AAR, including embedded legal texts, licenses, exact API, bridge/frp provenance, and native metadata for four ABIs.
+3. Run the canonical shell reproducibility gate on the Ubuntu runner. It builds the clean candidate checkout and a detached checkout at a different absolute path with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`; validates legal/API/provenance/native metadata and the fixed, local-path-free Go BuildInfo module graph for four ABIs; and compares the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte.
 4. Run the bridge AAR gate, Debug unit tests for both Android modules, and the Debug APK build.
 
 CI does not possess a JKS, passwords, or repository write permission. Physical-device native loading, a 16KB page-size device, and a real STCP end-to-end loop remain mandatory manual release gates. Static build checks do not replace them.
@@ -135,7 +135,7 @@ The `publish` job downloads the release-notes artifact from the same workflow ru
 6. Create and push `vMAJOR.MINOR.PATCH` on the already validated commit.
 7. `preflight` validates source versions, the tag, the `origin/main` ancestry relationship, the highest-version rule, and historical `VERSION_CODE` monotonicity.
 8. `prepare-notes` builds and uploads the final `release-notes.md` without signing secrets. For a real tag, it appends GitHub-generated notes.
-9. After Environment approval, `build-release` reruns all tests, generates the GoMobile AAR twice with identical SHA-256, builds three signed APKs, and checks the fixed certificate fingerprint.
+9. After Environment approval, `build-release` reruns all tests and uses the shell reproducibility gate to build the clean candidate checkout plus a detached checkout at a different absolute path on the same Ubuntu runner with isolated Go caches. It requires the complete bridge artifact/sidecar set to match byte-for-byte, then builds three signed APKs and checks the fixed certificate fingerprint.
 10. `publish` downloads both verified artifact sets and uses `GITHUB_TOKEN` with `gh release create --verify-tag --notes-file`. It creates a prerelease for every `0.x` version and publishes a normal release beginning with `1.0.0`.
 
 ## 8. Artifact Checks
@@ -148,8 +148,8 @@ The release scripts also verify:
 - APK native libraries pass ELF machine, all-`PT_LOAD` 16KB alignment, and stripped-state checks.
 - App packaging preserves the already-stripped AAR `libgojni.so` bytes instead of applying Android Gradle Plugin's native strip transform a second time; the independent APK checks above prevent this exclusion from weakening native validation.
 - `assets/legal/` in each APK is byte-identical to the current LICENSE, NOTICE, third-party notices, trademark statement, merged license text, and every individual license.
-- `META-INF/OCDECK/` in the AAR contains the current legal texts, licenses, exact Java API, and bridge/frp provenance.
-- External checksum/API/provenance/native sidecars are bound to the embedded content and exact AAR bytes.
+- `META-INF/OCDECK/` in the AAR contains the current legal texts, licenses, exact Java API, and bridge/frp provenance, including the schema-2 native module-graph digest and local-path-free proof.
+- External checksum/API/provenance/native sidecars are bound to the embedded content and exact AAR bytes; schema-2 native metadata also proves fixed BuildInfo module identities, versions, and sums and one graph digest across all four ABIs.
 - `SHA256SUMS` covers only the final three public APKs.
 
 The bridge is statically produced for four GoMobile ABIs, while the public application release intentionally contains only `arm64-v8a`, `armeabi-v7a`, and `x86_64` APKs.

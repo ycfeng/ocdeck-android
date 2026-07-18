@@ -13,7 +13,7 @@ This directory is the manually maintained source and license inventory for OC De
 
 ## Audit Basis
 
-The current inventory was reviewed for OC Deck `0.1.3` and bridge `0.3.6-frp0.69.1-p1` on 2026-07-17 using:
+The current inventory was reviewed for OC Deck `0.1.3` and bridge `0.3.7-frp0.69.1-p1` on 2026-07-17 using:
 
 ```powershell
 .\gradlew.bat :app:dependencies --configuration releaseRuntimeClasspath --console=plain
@@ -23,11 +23,10 @@ Four Android Go dependency walks are performed for `android/arm64`, `android/arm
 
 ```powershell
 python .github/scripts/audit-third-party.py
-```
-
-```powershell
 Get-FileHash -Algorithm SHA256 -LiteralPath <path>
 ```
+
+The fixed `build/frp-patched.mod` dependency walks remain the inventory-audit and wrapper race-test basis. Formal AAR construction separately generates a stable, versioned local Go module proxy and module graph. `cmd/checkaar` reads each ABI's Go BuildInfo, verifies fixed module identities, versions, and sums, rejects local paths, and requires one module-graph digest across all four ABIs. Schema-2 bridge provenance and native metadata bind that proof.
 
 The AndroidX entry uses resolved artifact-family selectors rather than pretending that one Maven coordinate represents the whole Jetpack graph. The separately packaged DataStore external protobuf artifact is recorded under BSD-3-Clause rather than being folded into the usual AndroidX Apache-2.0 family. The Go entries list the union of modules reached by all four Android Go targets above. `github.com/wlynxg/anet` is not inventoried as distributed upstream code because the build replaces it with OC Deck's local `internal/anetcompat` implementation.
 

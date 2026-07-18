@@ -30,10 +30,10 @@ class FrpcStcpVisitorFixtureContractTest {
         val manifest = loadManifest()
 
         assertEquals(1, manifest.schemaVersion)
-        assertEquals("k0-go-oracle-v3", manifest.generatorVersion)
+        assertEquals("k0-go-oracle-v4", manifest.generatorVersion)
         assertEquals(
             Pins(
-                bridge = "0.3.5-frp0.69.1-p1",
+                bridge = "0.3.7-frp0.69.1-p1",
                 frp = "github.com/fatedier/frp@v0.69.1 (frp-v0.69.1-p1)",
                 golib = "github.com/fatedier/golib@v0.7.0",
                 yamux = "github.com/fatedier/yamux@v0.0.0-20250825093530-d0154be01cd6",
@@ -498,15 +498,30 @@ class FrpcStcpVisitorFixtureContractTest {
                 "control-v2-aead",
                 "decrypt=client-role; integrity=authenticated",
             ),
+            "wire-v1-login-response" to EntryMetadata(
+                "wire/v1/login-response.bin",
+                "wire-v1",
+                "decode-login-response; run-id=present; error=empty",
+            ),
             "wire-v1-login-token" to EntryMetadata(
                 "wire/v1/login-token.bin",
                 "wire-v1",
                 "decode-login; token-auth=valid",
             ),
+            "wire-v1-new-visitor-conn-response" to EntryMetadata(
+                "wire/v1/new-visitor-conn-response.bin",
+                "wire-v1",
+                "decode-new-visitor-conn-response; proxy=present; error=empty",
+            ),
             "wire-v1-new-visitor-stcp" to EntryMetadata(
                 "wire/v1/new-visitor-stcp.bin",
                 "wire-v1",
                 "decode-new-visitor; stcp-auth=valid",
+            ),
+            "wire-v1-start-work-conn" to EntryMetadata(
+                "wire/v1/start-work-conn.bin",
+                "wire-v1",
+                "decode-start-work-conn; proxy-addresses-ports=present; error=empty",
             ),
             "wire-v2-aes-256-gcm-client-bootstrap" to EntryMetadata(
                 "wire/v2/aes-256-gcm/client-bootstrap.bin",
@@ -518,10 +533,20 @@ class FrpcStcpVisitorFixtureContractTest {
                 "wire-v2-bootstrap",
                 "server-hello; login-response",
             ),
+            "wire-v2-new-visitor-conn-response" to EntryMetadata(
+                "wire/v2/new-visitor-conn-response.bin",
+                "wire-v2",
+                "decode-new-visitor-conn-response; proxy=present; error=empty",
+            ),
             "wire-v2-new-visitor-stcp" to EntryMetadata(
                 "wire/v2/new-visitor-stcp.bin",
                 "wire-v2",
                 "magic; decode-new-visitor; stcp-auth=valid",
+            ),
+            "wire-v2-start-work-conn" to EntryMetadata(
+                "wire/v2/start-work-conn.bin",
+                "wire-v2",
+                "decode-start-work-conn; proxy-addresses-ports=present; error=empty",
             ),
             "wire-v2-xchacha20-poly1305-client-bootstrap" to EntryMetadata(
                 "wire/v2/xchacha20-poly1305/client-bootstrap.bin",
