@@ -71,6 +71,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(libs.bcprov)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
