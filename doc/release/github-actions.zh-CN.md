@@ -20,6 +20,8 @@
 
 工作流不生成 universal APK、AAB 或 Play 上传制品。GitHub 侧载用户应下载与设备 ABI 对应的 APK。
 
+内部 `canary` 构建仅是验证 variant。它继承 Debug，使用 application ID suffix `.canary` 与 version name suffix `-canary`，并通过 `BuildConfig` 选择纯 Kotlin STCP backend。CI 与 Release 自动化会测试并 assemble Canary，但绝不应用 Release 签名，也不会暂存或发布 Canary APK；正式 `release` 继续默认使用 GoMobile。
+
 应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.1.3` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
 
 ## 2. 版本规则
@@ -46,9 +48,11 @@ VERSION_NAME=0.1.3
 1. 审计社区/文档 metadata，生成 patched frp，并审计第三方/法律清单、四个 Android Go 目标依赖并集、资源哈希和完整 modified/added provenance。
 2. 运行外层 Go race tests，并在生成的 frp module 中单独运行 `client/...` race tests。
 3. 在 Ubuntu runner 上运行 canonical shell 可复现门禁。它会构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；校验法律/API/provenance/native metadata 和四 ABI 固定且无本地路径的 Go BuildInfo module graph；并逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
-4. 执行 bridge AAR 门禁、两个 Android 模块的 Debug 单元测试和 Debug APK 构建。
+4. 执行 bridge AAR 门禁、App 的 Debug 与 Canary 单元测试、`:frpc-stcp-visitor` 单元测试，以及 Debug 与 Canary APK 构建。
 
-CI 不持有 JKS、密码或仓库写权限。目标真机 native load、16KB page-size 真机和真实 STCP 端到端闭环仍是正式发布前的强制人工门禁，静态构建检查不能替代这些验证。
+Debug factory 测试确认 GoMobile 默认选择，Canary factory 测试确认纯 Kotlin 选择。由于两种实现位于同一个 Android library，Canary 仍可能打包 Go native 字节；门禁验证的是 App 实际装配，而不是断言安装包不存在 native 字节。
+
+CI 不持有 JKS、密码或仓库写权限。Debug 与 Canary APK 仅作为验证输出。目标真机 native load、16KB page-size 真机和真实 STCP 端到端闭环仍是正式发布前的强制人工门禁，静态构建检查不能替代这些验证。
 
 ## 4. GitHub 仓库配置
 
@@ -135,14 +139,14 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 6. 在已经验证的 commit 上创建并推送 `vMAJOR.MINOR.PATCH` tag。
 7. `preflight` 校验源码版本、tag、`origin/main` 祖先关系、最高版本规则和历史 `VERSION_CODE` 单调递增。
 8. `prepare-notes` 在不读取签名 secret 的情况下生成并上传最终 `release-notes.md`。真实 tag 会追加 GitHub 自动说明。
-9. Environment 审批后，`build-release` 重新运行全部测试，并使用 shell 可复现门禁，在同一个 Ubuntu runner 上构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，同时隔离 Go cache。完整 bridge 制品/sidecar 集合必须逐字节一致，随后才构建三个签名 APK 并核对固定证书指纹。
+9. Environment 审批后，`build-release` 重新运行全部测试，包括 Debug/GoMobile 与 Canary/Kotlin App 验证，并使用 shell 可复现门禁，在同一个 Ubuntu runner 上构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，同时隔离 Go cache。完整 bridge 制品/sidecar 集合必须逐字节一致，随后单独运行 `assembleRelease`，仅对三个 GoMobile 默认的 Release APK 应用 Release 签名并核对固定证书指纹。
 10. `publish` 下载两组已验证 artifact，使用 `GITHUB_TOKEN` 和 `gh release create --verify-tag --notes-file`。所有 `0.x` 版本创建为 prerelease，从 `1.0.0` 开始创建普通 release。
 
 ## 8. 制品检查
 
-发布脚本还会校验：
+发布脚本只对 `release` 制品执行签名与发布校验；Debug 与 Canary 输出不会复制到发布 asset 集合。它还会校验：
 
-- APK metadata 的 application ID、Release variant、`versionName`、`versionCode`、目标 ABI 和文件名必须一致。
+- APK metadata 的 application ID `io.github.ycfeng.ocdeck`、Release variant、稳定 `versionName`、`versionCode`、目标 ABI 和文件名必须一致；公开 asset 集合会拒绝 `.canary` 身份与 `-canary` 版本。
 - 每个 APK 只有一个 signer，证书指纹与 `RELEASE_CERT_SHA256` 一致。
 - 每个 APK 通过 `apksigner` 和 16KB `zipalign`，只包含对应 ABI；其中 `libgojni.so` 的 SHA-256 与 AAR 对应 entry 完全一致。
 - APK native library 重新通过 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态检查。

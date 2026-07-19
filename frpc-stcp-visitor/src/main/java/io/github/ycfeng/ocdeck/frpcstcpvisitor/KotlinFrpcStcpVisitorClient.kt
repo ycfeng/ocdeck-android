@@ -13,6 +13,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpSessionContro
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelay
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.ProductionFrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.SocketFrpLocalListenerFactory
+import java.net.BindException
 import java.net.InetAddress
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
@@ -765,7 +766,7 @@ private class KotlinFrpcRuntimeSession(
             } catch (failure: Error) {
                 sendBindFatal(key, failure)
             } catch (_: Exception) {
-                sendBindFailure(key)
+                sendBindFailure(key, KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED)
             }
         }
         visitor.bindTask = RuntimeBindTask(key, job, AtomicReference())
@@ -796,22 +797,29 @@ private class KotlinFrpcRuntimeSession(
             command?.fail(failure)
             if (command != null) listener = null
             sendBindFatal(key, failure)
+        } catch (_: BindException) {
+            command?.fail(runtimeFailure(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT))
+            if (command != null) listener = null
+            sendBindFailure(key, KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT)
         } catch (_: Exception) {
             command?.fail(runtimeFailure(KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED))
             if (command != null) listener = null
-            sendBindFailure(key)
+            sendBindFailure(key, KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED)
         } finally {
             listener?.let(::closeListenerExpected)
         }
     }
 
-    private suspend fun sendBindFailure(key: RuntimeBindKey) {
+    private suspend fun sendBindFailure(
+        key: RuntimeBindKey,
+        failure: KotlinFrpcStcpVisitorFailure,
+    ) {
         try {
             mailbox.send(
                 BindCompletedCommand(
                     key = key,
                     listener = null,
-                    failure = KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED,
+                    failure = failure,
                     fatal = null,
                 ),
             )
