@@ -777,12 +777,16 @@ class FrpControlClientTest {
     @Test
     fun boundedWorkQueueTerminatesOnlyTheOverflowingSession() = runBlocking {
         val fixture = v1Fixture()
-        val requests = encryptV1ServerMessages(List(4) { ReqWorkConn() })
+        val request = ReqWorkConn()
+        val requests = encryptV1ServerMessages(List(3) { request })
+        val firstRequestEnd = 16 + FrpWireV1.encodeMessage(request).size
         val controlStream = ScriptedMuxStream(
-            FrpContractFixtures.bytes("wire-v1-login-response") + requests,
+            FrpContractFixtures.bytes("wire-v1-login-response") + requests.copyOf(firstRequestEnd),
         )
         val mux = FakeMuxConnection(listOf(controlStream))
         val delayer = ManualDelayer()
+        val workerBlocked = CompletableDeferred<Unit>()
+        val releaseWorker = CompletableDeferred<Unit>()
         val parentScope = newParentScope()
         val client = newClient(
             config = fixture.config.copy(
@@ -797,18 +801,32 @@ class FrpControlClientTest {
             unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
             delayer = delayer,
             secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                afterWorkPermitAcquired = {
+                    workerBlocked.complete(Unit)
+                    releaseWorker.await()
+                },
+            ),
         )
         try {
             client.start()
-            waitUntil { client.state.value is FrpControlState.Retrying }
+            waitUntil { client.state.value is FrpControlState.Open }
+            withTimeout(5_000L) { workerBlocked.await() }
+            controlStream.appendInput(requests.copyOfRange(firstRequestEnd, requests.size))
+            delayer.takeCall(100L)
+
             val state = client.state.value as FrpControlState.Retrying
             assertEquals(FrpControlFailure.QUEUE_OVERFLOW, state.failure)
             assertEquals(1, mux.closeCount.get())
             assertEquals(0, client.diagnostics().activeWorkConnections)
         } finally {
+            releaseWorker.complete(Unit)
             client.close()
-            withTimeout(5_000L) { client.awaitStopped() }
-            parentScope.cancel()
+            try {
+                withTimeout(5_000L) { client.awaitStopped() }
+            } finally {
+                parentScope.cancel()
+            }
         }
     }
 
