@@ -28,6 +28,7 @@ class ProjectPickerViewModel(
     private val _uiState = MutableStateFlow(ProjectPickerUiState())
     val uiState: StateFlow<ProjectPickerUiState> = _uiState.asStateFlow()
     private var suggestionJob: Job? = null
+    private var reorderJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -111,6 +112,26 @@ class ProjectPickerViewModel(
                         error = UiText.Resource(R.string.project_error_delete_recent_failed),
                     )
                 }
+            }
+        }
+    }
+
+    fun reorderRecentProjects(
+        projects: List<ProjectRef>,
+        onFailure: () -> Unit = {},
+    ) {
+        reorderJob?.cancel()
+        reorderJob = viewModelScope.launch {
+            _uiState.update { it.copy(error = null) }
+            try {
+                recentProjectRepository.reorder(serverId, projects)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Error) {
+                throw error
+            } catch (_: Exception) {
+                onFailure()
+                _uiState.update { it.copy(error = UiText.Resource(R.string.project_error_reorder_failed)) }
             }
         }
     }

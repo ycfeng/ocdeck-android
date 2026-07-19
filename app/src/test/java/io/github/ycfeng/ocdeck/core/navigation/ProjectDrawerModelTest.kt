@@ -3,6 +3,7 @@ package io.github.ycfeng.ocdeck.core.navigation
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.domain.model.ProjectRef
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ProjectDrawerModelTest {
@@ -52,6 +53,37 @@ class ProjectDrawerModelTest {
         )
 
         assertEquals("current", result.single().displayName)
+    }
+
+    @Test
+    fun currentProjectInsertionKeepsDrawerProjectListBounded() {
+        val current = project("/workspace/current", "Current")
+        val recents = (0 until 20).map { index ->
+            project("/workspace/project-$index", "Project $index")
+        }
+
+        val result = mergeProjectDrawerProjects(current, recents, pathNormalizer)
+
+        assertEquals(20, result.size)
+        assertEquals("/workspace/current", result.first().normalizedDirectory)
+        assertEquals("/workspace/project-18", result.last().normalizedDirectory)
+    }
+
+    @Test
+    fun reorderEnsuresOnlyAnActiveProjectMissingFromPersistentRecents() {
+        val currentProject = project("C:/Work/Alpha", "Alpha")
+
+        assertEquals(
+            currentProject,
+            projectToEnsureForDrawer(currentProject, emptyList(), pathNormalizer),
+        )
+        assertNull(
+            projectToEnsureForDrawer(
+                currentProject = currentProject,
+                recentProjects = listOf(project("c:\\work\\alpha\\", "Stored Alpha")),
+                pathNormalizer = pathNormalizer,
+            ),
+        )
     }
 
     @Test

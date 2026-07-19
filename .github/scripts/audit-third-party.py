@@ -30,6 +30,37 @@ FORBIDDEN_ANDROID_RESOURCE_TOKENS = (
     "openai_logo",
     "openai_mark",
 )
+EXPECTED_FRP_INTEROP_BASE_URL = "https://github.com/fatedier/frp/releases/download/v0.69.1/"
+EXPECTED_FRP_INTEROP_PURPOSE = (
+    "Pinned official binaries downloaded only by the explicit frpcInteropTest harness; "
+    "they are not App, APK, AAR, release, or repository-distributed assets."
+)
+EXPECTED_FRP_INTEROP_ASSETS = {
+    "linux_amd64": (
+        "frp_0.69.1_linux_amd64.tar.gz",
+        "7be257b72dbbc60bcb3e0e25a5afd1dfac7b63f897084864d3c956dd3d5674e1",
+    ),
+    "linux_arm64": (
+        "frp_0.69.1_linux_arm64.tar.gz",
+        "bbc0c75e896af3f292fb46ba09c844a04fa9b5ea3530c039c7af20637f836355",
+    ),
+    "windows_amd64": (
+        "frp_0.69.1_windows_amd64.zip",
+        "829ac915f8655d4d4e021b8db61b46c3445205ed80d32b04cda7fa89d87c46e0",
+    ),
+    "windows_arm64": (
+        "frp_0.69.1_windows_arm64.zip",
+        "9b88e6eefc5d9ea2a1d5869026287e269e3d1486ac5bb08f7b4d2b26bdd6166d",
+    ),
+    "darwin_amd64": (
+        "frp_0.69.1_darwin_amd64.tar.gz",
+        "2bc26d02100ef333f2712149ea5997dc530dc0eefac64f4be41cb0f49d032f40",
+    ),
+    "darwin_arm64": (
+        "frp_0.69.1_darwin_arm64.tar.gz",
+        "310012e2f1dcf3cdde2605d29b95340b686c94d1680a23711d58efeffc02f64e",
+    ),
+}
 
 
 class AuditError(RuntimeError):
@@ -408,7 +439,7 @@ def parse_patch_files(path: Path) -> tuple[set[str], set[str]]:
 
 def audit_frp(
     components: dict[str, dict[str, Any]], bridge_version: str
-) -> tuple[dict[str, Any], dict[str, Any], int]:
+) -> tuple[dict[str, Any], dict[str, Any], int, int]:
     component = components["frp-patched"]
     source_path = component_path(component["provenance_file"], "frp provenance_file")
     source = load_json(source_path)
@@ -520,7 +551,83 @@ def audit_frp(
     }
     for key, expected in generated_expected.items():
         require_equal(generated.get(key), expected, f"generated frp provenance {key}")
-    return source, manifest, len(all_patched)
+    return source, manifest, len(all_patched), audit_frp_interop_assets(source)
+
+
+def audit_frp_interop_assets(source: dict[str, Any]) -> int:
+    section = source.get("interopHarnessReleaseAssets")
+    require(isinstance(section, dict), "frp source omits interopHarnessReleaseAssets")
+    purpose = section.get("purpose")
+    require_equal(purpose, EXPECTED_FRP_INTEROP_PURPOSE, "frp interop asset purpose")
+    require_equal(section.get("version"), source.get("upstreamVersion"), "frp interop asset version")
+    require_equal(section.get("baseUrl"), EXPECTED_FRP_INTEROP_BASE_URL, "frp interop asset base URL")
+    assets = section.get("assets")
+    require(isinstance(assets, list), "frp interop assets must be an array")
+    actual: dict[str, tuple[str, str]] = {}
+    for entry in assets:
+        require(isinstance(entry, dict), "frp interop asset entry must be an object")
+        platform = entry.get("platform")
+        file_name = entry.get("file")
+        digest = entry.get("sha256")
+        require(isinstance(platform, str) and platform, "frp interop asset platform is invalid")
+        require(isinstance(file_name, str) and file_name, f"frp interop asset filename is invalid: {platform}")
+        require(
+            isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
+            f"frp interop asset SHA-256 is invalid: {platform}",
+        )
+        require(platform not in actual, f"duplicate frp interop asset platform: {platform}")
+        actual[platform] = (file_name, digest)
+    require_equal(actual, EXPECTED_FRP_INTEROP_ASSETS, "frp interop release asset pins")
+
+    provisioner = read_text(
+        ROOT
+        / "frpc-stcp-visitor/src/test/java/io/github/ycfeng/ocdeck/frpcstcpvisitor/interop/FrpReleaseProvisioner.kt"
+    )
+    base_url_match = re.search(r'const val BASE_URL = "([^"]+)"', provisioner)
+    require(base_url_match is not None, "frp provisioner base URL is missing")
+    require_equal(
+        base_url_match.group(1),
+        EXPECTED_FRP_INTEROP_BASE_URL,
+        "frp provisioner base URL",
+    )
+    assets_match = re.search(
+        r"private val assets = listOf\(\s*(.*?)\n\s*\)\s*\n\s*\n\s*fun current\(",
+        provisioner,
+        re.DOTALL,
+    )
+    require(assets_match is not None, "frp provisioner asset list is missing")
+    pin_pattern = re.compile(
+        r"""FrpAssetPin\(
+            \s*"([^"]+)"\s*,
+            \s*"([^"]+)"\s*,
+            \s*"([0-9a-f]{64})"\s*,
+            \s*FrpArchiveKind\.([A-Z_]+)\s*,
+            \s*"([^"]*)"\s*,?
+            \s*\)
+        """,
+        re.VERBOSE,
+    )
+    assets_body = assets_match.group(1)
+    parsed_pins: dict[str, tuple[str, str, str, str]] = {}
+    for match in pin_pattern.finditer(assets_body):
+        platform, file_name, digest, archive_kind, executable_suffix = match.groups()
+        require(platform not in parsed_pins, f"duplicate frp provisioner platform pin: {platform}")
+        parsed_pins[platform] = (file_name, digest, archive_kind, executable_suffix)
+    require(
+        re.fullmatch(r"[\s,]*", pin_pattern.sub("", assets_body)) is not None,
+        "frp provisioner asset list contains an unparsed entry",
+    )
+    expected_pins = {
+        platform: (
+            file_name,
+            digest,
+            "ZIP" if file_name.endswith(".zip") else "TAR_GZ",
+            ".exe" if platform.startswith("windows_") else "",
+        )
+        for platform, (file_name, digest) in EXPECTED_FRP_INTEROP_ASSETS.items()
+    }
+    require_equal(parsed_pins, expected_pins, "frp provisioner release asset pins")
+    return len(actual)
 
 
 def decode_json_stream(text: str, label: str) -> list[dict[str, Any]]:
@@ -917,7 +1024,7 @@ def main() -> None:
     audio, vectors, audio_count, vector_count = audit_assets(components)
     audit_forbidden_assets()
     audit_gradle_wrapper(components)
-    frp, frp_manifest, patched_file_count = audit_frp(components, bridge_version)
+    frp, frp_manifest, patched_file_count, interop_asset_count = audit_frp(components, bridge_version)
     go_union_count, listed_go_count = audit_go_modules(manifest, components, frp_manifest)
     audit_release_legal_files(
         manifest,
@@ -931,7 +1038,8 @@ def main() -> None:
     print(
         "Third-party audit passed: "
         f"{len(components)} components, {audio_count} audio assets, {vector_count} OpenCode-derived vectors, "
-        f"{patched_file_count} patched frp files, and {go_union_count} external Go modules "
+        f"{patched_file_count} patched frp files, {interop_asset_count} pinned test-only frp release assets, "
+        f"and {go_union_count} external Go modules "
         f"({listed_go_count} grouped in modules arrays) across {len(EXPECTED_GO_TARGETS)} Android targets."
     )
 

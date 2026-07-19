@@ -9,7 +9,7 @@ This English document is the public canonical release-process document. The Chin
 The repository uses two GitHub Actions workflows:
 
 - `.github/workflows/ci.yml` runs for pushes to `main`, pull requests targeting `main`, and manual dispatch. It does not read release-signing material.
-- `.github/workflows/release.yml` runs for stable version tags or a manual dry run. It prepares release notes without signing secrets, then uses the protected `release` Environment to build and verify signed artifacts. Only a tag-triggered run creates a GitHub Release.
+- `.github/workflows/release.yml` runs for stable version tags or a manual dry run. It prepares release notes and runs fixed-frp interoperability without signing secrets, then uses the protected `release` Environment to build and verify signed artifacts. Only a tag-triggered run creates a GitHub Release.
 
 The first public artifact set is fixed to:
 
@@ -22,15 +22,15 @@ The workflow does not create a universal APK, AAB, or Play upload artifact. GitH
 
 The internal `canary` build is a verification variant only. It inherits Debug, uses application ID suffix `.canary` and version-name suffix `-canary`, and selects the pure Kotlin STCP backend through `BuildConfig`. CI and Release automation test and assemble it, but never apply Release signing or stage or publish Canary APKs. Formal `release` remains GoMobile-default.
 
-The application ID is `io.github.ycfeng.ocdeck`, version `0.1.3` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
+The application ID is `io.github.ycfeng.ocdeck`, version `0.2.0` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
 
 ## 2. Version Rules
 
 The only source of the application version is root `gradle.properties`:
 
 ```properties
-VERSION_CODE=4
-VERSION_NAME=0.1.3
+VERSION_CODE=5
+VERSION_NAME=0.2.0
 ```
 
 Requirements:
@@ -43,16 +43,17 @@ Requirements:
 
 ## 3. CI Gates
 
-Normal CI pins Ubuntu 24.04, JDK 21, Go 1.26.4, Android SDK 36, Build Tools 36.0.0, and NDK 27.1.12297006. It performs these gates in order:
+Normal CI pins Ubuntu 24.04, JDK 21, Go 1.26.4, Android SDK 36, Build Tools 36.0.0, and NDK 27.1.12297006. It includes these gates:
 
 1. Audit community/documentation metadata, generate patched frp, and audit third-party/legal inventory, the union of dependencies for all four Android Go targets, resource hashes, and complete modified/added provenance.
-2. Run the outer Go race tests and separately run `client/...` race tests in the generated frp module.
-3. Run the canonical shell reproducibility gate on the Ubuntu runner. It builds the clean candidate checkout and a detached checkout at a different absolute path with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`; validates legal/API/provenance/native metadata and the fixed, local-path-free Go BuildInfo module graph for four ABIs; and compares the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte.
-4. Run the bridge AAR gate, App Debug and Canary unit tests, `:frpc-stcp-visitor` unit tests, and both Debug and Canary APK builds.
+2. In a dedicated read-only job, run `:frpc-stcp-visitor:frpcInteropTest`. It downloads only the host's repository-pinned and hash-verified official frp `v0.69.1` archive, safely extracts `frpc`/`frps`, and covers wire v1/v2, four payload modes, concurrent bidirectional larger-than-window traffic, REST plus live global/project SSE, typed negative cases, TLS, and restart/control-epoch recovery.
+3. Run the outer Go race tests and separately run `client/...` race tests in the generated frp module.
+4. Run the canonical shell reproducibility gate on the Ubuntu runner. It builds the clean candidate checkout and a detached checkout at a different absolute path with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`; validates legal/API/provenance/native metadata and the fixed, local-path-free Go BuildInfo module graph for four ABIs; and compares the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte.
+5. Run the bridge AAR gate, App Debug and Canary unit tests, `:frpc-stcp-visitor` unit tests, and both Debug and Canary APK builds.
 
 The Debug factory test confirms the GoMobile default and the Canary factory test confirms the pure Kotlin selection. Because both implementations live in the same Android library, Canary may still package Go native bytes; the gate validates actual App assembly rather than asserting native-byte absence.
 
-CI does not possess a JKS, passwords, or repository write permission. Debug and Canary APKs remain verification outputs only. Physical-device native loading, a 16KB page-size device, and a real STCP end-to-end loop remain mandatory manual release gates. Static build checks do not replace them.
+CI does not possess a JKS, passwords, or repository write permission. Debug and Canary APKs remain verification outputs only. The fixed-frp host job is an executable interoperability gate, but physical-device native loading, a 16KB page-size device, and an App/device STCP end-to-end loop remain mandatory manual release gates.
 
 ## 4. GitHub Repository Configuration
 
@@ -95,6 +96,7 @@ Recommended repository settings:
 - Use a tag ruleset to restrict creation, update, and deletion of `v*` tags.
 - Keep the workflow default `GITHUB_TOKEN` permission at `contents: read`.
 - Grant `prepare-notes` only `contents: write`, because GitHub's generate-notes REST endpoint requires that permission. This job does not enter the `release` Environment, receives no signing secrets, and does not create or modify a release or ref.
+- Keep `frpc-interop` at `contents: read` and outside the `release` Environment. It may download only the hash-pinned official frp test asset and must finish before the signing job starts.
 - Grant `publish` only `contents: write`. This job receives no signing secrets.
 - Keep `build-release` at `contents: read`. It receives signing inputs only after `release` Environment approval and cannot write repository contents.
 - Enable immutable releases so tags and assets cannot be replaced after publication.
@@ -139,8 +141,9 @@ The `publish` job downloads the release-notes artifact from the same workflow ru
 6. Create and push `vMAJOR.MINOR.PATCH` on the already validated commit.
 7. `preflight` validates source versions, the tag, the `origin/main` ancestry relationship, the highest-version rule, and historical `VERSION_CODE` monotonicity.
 8. `prepare-notes` builds and uploads the final `release-notes.md` without signing secrets. For a real tag, it appends GitHub-generated notes.
-9. After Environment approval, `build-release` reruns all tests, including Debug/GoMobile and Canary/Kotlin App verification, and uses the shell reproducibility gate to build the clean candidate checkout plus a detached checkout at a different absolute path on the same Ubuntu runner with isolated Go caches. It requires the complete bridge artifact/sidecar set to match byte-for-byte, then separately runs `assembleRelease`, applies Release signing only to the three GoMobile-default Release APKs, and checks the fixed certificate fingerprint.
-10. `publish` downloads both verified artifact sets and uses `GITHUB_TOKEN` with `gh release create --verify-tag --notes-file`. It creates a prerelease for every `0.x` version and publishes a normal release beginning with `1.0.0`.
+9. `frpc-interop` runs the fixed official-frp host matrix in a read-only job with no release Environment or signing material.
+10. After both `preflight` and `frpc-interop` pass and Environment approval is granted, `build-release` reruns all local tests, including Debug/GoMobile and Canary/Kotlin App verification, and uses the shell reproducibility gate to build the clean candidate checkout plus a detached checkout at a different absolute path on the same Ubuntu runner with isolated Go caches. It requires the complete bridge artifact/sidecar set to match byte-for-byte, then separately runs `assembleRelease`, applies Release signing only to the three GoMobile-default Release APKs, and checks the fixed certificate fingerprint.
+11. `publish` downloads both verified artifact sets and uses `GITHUB_TOKEN` with `gh release create --verify-tag --notes-file`. It creates a prerelease for every `0.x` version and publishes a normal release beginning with `1.0.0`.
 
 ## 8. Artifact Checks
 
@@ -163,6 +166,7 @@ The bridge is statically produced for four GoMobile ABIs, while the public appli
 - Version validation fails: compare the tag, `VERSION_NAME`, `VERSION_CODE`, stable tag ordering, checked-out commit, and `origin/main` ancestry.
 - Release-notes preparation fails: add the required `release-notes/v${VERSION_NAME}.md`, remove prohibited placeholders, verify the preamble substitutions, and confirm the real tag exists before generate-notes is called.
 - GoMobile build fails: confirm the runner has the exact Go and NDK versions, then inspect checksum, API signature, provenance, native metadata, or reproducibility failures.
+- Fixed-frp interoperability fails: inspect the typed scenario and redacted bounded log tail, verify the pinned asset inventory, and reproduce with `:frpc-stcp-visitor:frpcInteropTest`; do not move the task into the signing job or weaken its hash/process/input limits.
 - Signing fails: check the four Environment secrets, complete Base64 JKS content, alias, and passwords without printing any secret.
 - Certificate fingerprint fails: stop the release and verify that the Environment JKS is the established app-signing key. Do not change the expected fingerprint merely to bypass continuity protection.
 - APK native-byte binding fails after the AAR gate passes: confirm the App packaging exclusion for the already-stripped `libgojni.so`; do not accept transformed bytes, replace the AAR hash, or weaken the APK checks.

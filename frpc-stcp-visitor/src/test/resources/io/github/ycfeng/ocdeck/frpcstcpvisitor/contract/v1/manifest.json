@@ -1,16 +1,17 @@
 {
   "schemaVersion": 1,
-  "generatorVersion": "k0-go-oracle-v4",
+  "generatorVersion": "k0-go-oracle-v5",
   "pins": {
-    "bridge": "0.3.7-frp0.69.1-p1",
+    "bridge": "0.3.8-frp0.69.1-p1",
     "frp": "github.com/fatedier/frp@v0.69.1 (frp-v0.69.1-p1)",
     "golib": "github.com/fatedier/golib@v0.7.0",
+    "snappy": "github.com/golang/snappy@v0.0.4",
     "yamux": "github.com/fatedier/yamux@v0.0.0-20250825093530-d0154be01cd6"
   },
   "provenance": {
     "synthetic": true,
     "generator": "frpc-stcp-visitor-go/cmd/contractfixture",
-    "source": "Deterministic Go oracle over the bridge DTO contract, pinned frp/golib APIs, and traffic recorded from paired pinned yamux Client/Server sessions over in-memory connections; no captured external traffic.",
+    "source": "Deterministic Go oracle over the bridge DTO contract, pinned frp/golib/snappy APIs, and traffic recorded from paired pinned yamux Client/Server sessions over in-memory connections; no captured external traffic.",
     "license": "MIT",
     "containsCapturedTraffic": false,
     "containsRawSecrets": false
@@ -30,6 +31,46 @@
       "length": 2268,
       "sha256": "7838a89cfec3733af545183240b98c75390cffc61bbde706642f2ab3bb6d5e0c",
       "expected": "Go/Kotlin DTO decode and encode semantics match"
+    },
+    {
+      "id": "snappy-cfb-framed-compressed",
+      "path": "compression/snappy/cfb/compressed.bin",
+      "layer": "snappy-cfb-framed",
+      "length": 40,
+      "sha256": "5bfe88edd7d471295ef991c5468aad10a209fc02c5f4035258354134a9cb2ec8",
+      "expected": "wire=CFB(Snappy framed); decode-order=CFB-then-Snappy"
+    },
+    {
+      "id": "snappy-framed-boundary-65537",
+      "path": "compression/snappy/framed/boundary-65537.bin",
+      "layer": "snappy-framed",
+      "length": 3104,
+      "sha256": "b94fcdf16ae72c70bd1efd824475d3e6c5dbaf8ac956620f54a32fa2d82b6049",
+      "expected": "chunks=compressed,uncompressed; decode=repeat-byte(0x61,65537)"
+    },
+    {
+      "id": "snappy-framed-compressed",
+      "path": "compression/snappy/framed/compressed.bin",
+      "layer": "snappy-framed",
+      "length": 24,
+      "sha256": "969e8f5b4a5b1fb9cbee14d3e036d126af241d51d571e4bd439da256b40fb3c0",
+      "expected": "chunks=compressed; decode=repeat-byte(0x61,20)"
+    },
+    {
+      "id": "snappy-framed-uncompressed",
+      "path": "compression/snappy/framed/uncompressed.bin",
+      "layer": "snappy-framed",
+      "length": 274,
+      "sha256": "8d51f46c843a79aba4765b930b1a5a07b440a93b366c101b0e29ebd0ebcf17b4",
+      "expected": "chunks=uncompressed; decode=byte-sequence-mod-256(256)"
+    },
+    {
+      "id": "snappy-raw-compressed",
+      "path": "compression/snappy/raw/compressed.bin",
+      "layer": "snappy-raw",
+      "length": 6,
+      "sha256": "0ea0dc35bbe371aabe7b8c074784890d0e20c921efa62108fd1e8c1d5a89a01b",
+      "expected": "decode=repeat-byte(0x61,20)"
     },
     {
       "id": "control-v1-client-cfb",
@@ -267,6 +308,18 @@
         7
       ],
       "expected": "decrypt-success"
+    },
+    {
+      "id": "snappy-cfb-framed-splits",
+      "source": "compression/snappy/cfb/compressed.bin",
+      "sizes": [
+        1,
+        2,
+        3,
+        5,
+        8
+      ],
+      "expected": "decrypt-then-decompress-success"
     },
     {
       "id": "wire-v1-bytewise",

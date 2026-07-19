@@ -989,6 +989,8 @@ private class KotlinFrpcRuntimeSession(
                 serverUser = visitor.config.serverUser,
                 sessionUser = sessionConfig.user.orEmpty(),
                 secretKey = visitor.config.secretKey,
+                useEncryption = visitor.config.useEncryption,
+                useCompression = visitor.config.useCompression,
             ),
             local = command.connection,
             parentScope = scope,
@@ -1846,10 +1848,12 @@ private data class NormalizedVisitorConfig(
     val serverUser: String,
     val secretKey: String,
     val bindPort: Int,
+    val useEncryption: Boolean,
+    val useCompression: Boolean,
 ) {
     override fun toString(): String =
         "NormalizedVisitorConfig(serverUserPresent=${serverUser.isNotEmpty()}, secretKey=<redacted>, " +
-            "bindPort=$bindPort)"
+            "bindPort=$bindPort, useEncryption=$useEncryption, useCompression=$useCompression)"
 }
 
 private fun normalizeSessionConfig(config: FrpcSessionConfig): FrpcSessionConfig {
@@ -1876,9 +1880,6 @@ private fun normalizeSessionConfig(config: FrpcSessionConfig): FrpcSessionConfig
 }
 
 private fun normalizeVisitorConfig(config: FrpcStcpVisitorConfig): NormalizedVisitorConfig {
-    if (config.useEncryption || config.useCompression) {
-        throw runtimeFailure(KotlinFrpcStcpVisitorFailure.UNSUPPORTED_CONFIGURATION)
-    }
     val name = normalizeVisitorName(config.name)
     val serverName = config.serverName.trim()
     val serverUser = config.serverUser?.trim().orEmpty()
@@ -1896,6 +1897,8 @@ private fun normalizeVisitorConfig(config: FrpcStcpVisitorConfig): NormalizedVis
         serverUser = serverUser,
         secretKey = secretKey,
         bindPort = config.bindPort,
+        useEncryption = config.useEncryption,
+        useCompression = config.useCompression,
     )
 }
 

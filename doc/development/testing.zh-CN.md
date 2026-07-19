@@ -10,17 +10,17 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 
 | 层级 | 当前覆盖 |
 | --- | --- |
-| Kotlin/JVM 单元测试 | 路径与项目文件 URL、最近项目记录、会话窗口、通知/channel 策略、脱敏、Retrofit/direct encoded/decoded 与 identity-SSE 入站边界、类型化失败与本地化 UI 映射、STCP backend factory 选择、类型化 bind 重试、安全 value 摘要、DTO 容错、Store revision、prompt/项目上下文状态与恢复、Provider auth/OAuth 与分阶段 custom-config 事务、服务器凭据事务、SSH/STCP 协调及 Kotlin/GoMobile bridge 契约、对比度和 feature helper。 |
+| Kotlin/JVM 单元测试 | 路径与项目文件 URL、最近项目顺序/记录/重排回滚模型、会话窗口、通知/channel 策略、脱敏、Retrofit/direct encoded/decoded 与 identity-SSE 入站边界、类型化失败与本地化 UI 映射、STCP backend factory 选择、类型化 bind 重试、安全 value 摘要、DTO 容错、Store revision、prompt/项目上下文状态与恢复、Provider auth/OAuth 与分阶段 custom-config 事务、服务器凭据事务、SSH/STCP 协调及 Kotlin/GoMobile bridge 契约、对比度和 feature helper。 |
 | Go race tests | GoMobile wrapper、canonical STCP fixture oracle/check 与生成的 patched frp client 包。 |
 | 第三方与法律审计 | 固定版本、依赖清单、哈希、provenance、许可证和发布脚本引用。 |
 | Bridge 校验 | AAR 与必需的 sources JAR、checksum、Java API signature、bridge/frp provenance、四 ABI Go BuildInfo/module graph 证明、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态，以及完整制品/sidecar 集合在同一平台跨 checkout 的可复现性。 |
 | Android 构建 | App 的 Debug 与内部 Kotlin Canary 单元测试和 APK 构建，以及 `:frpc-stcp-visitor` 单元测试。 |
 | Android instrumentation 测试 | 覆盖 Popup 与 modal bottom sheet 独立 Compose 窗口根的本地化，包括 Popup 保持打开时的原地语言切换。 |
-| 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
+| 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目选择页与 Drawer 排序、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
 | Release 制品校验 | APK metadata、单 signer、预期证书指纹、ABI 隔离、`zipalign -P 16`、AAR native 字节绑定、内嵌法律文件、文件名和 checksum。 |
 | 真机验证 | 维护者已记录 `0.1.0` 发布门禁通过真机 native load/启动、16KB page-size native 运行，以及覆盖 `/global/health`、代表性 REST、全局/项目 SSE 和受控重连的真实 STCP 闭环。具体环境信息未公开；后续候选版本仍须重复执行这些门禁。 |
 
-`app/src/androidTest` 测试集目前覆盖独立窗口根的本地化，但 CI 尚无 emulator/instrumentation job。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
+`app/src/androidTest` 测试集目前覆盖独立窗口根的本地化，但 CI 尚无 emulator/instrumentation job。最近项目拖拽排序仍不在 instrumentation 覆盖范围内；其自动化覆盖主要来自下文列出的 JVM reducer、recorder、ViewModel 和 Drawer model 测试。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
 
 ## 聚焦测试清单
 
@@ -31,12 +31,13 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `FrpcStcpReadinessRetryClassifierTest` 与 `GoMobileFrpcStcpVisitorClientTest` 覆盖 readiness 瞬时/永久失败、入站策略失败、typed unavailable/API mismatch bridge 错误、安全 bridge 摘要、API v2 JSON、revision/control epoch、`WaitVisitorReady`，以及反射取消/JVM `Error` 传播。
 - `FrpcStcpVisitorClientFactoryTest` 在两个 App variant 中运行，验证 Debug `BuildConfig` 选择 `GoMobileFrpcStcpVisitorClient`、Canary 选择 `KotlinFrpcStcpVisitorClient`，且显式 factory 可构造任一 backend，不存在运行时 fallback。
 - `FrpcStcpVisitorManagerTest` 覆盖共享 generation/lease/readiness 行为，以及将 `BindException` 和类型化 Kotlin bind failure 转换为 `LocalPortInUse`、有界前序 generation bind 重试，并确认非 bind 类型即使 message 含有类似 bind 的文字也不会被误判。
-- `KotlinFrpcStcpVisitorClientTest` 及内部 control、crypto、protocol、transport、yamux 测试覆盖类型化 runtime failure、revision/control epoch readiness、listener 所有权与重绑、v1/v2 visitor handshake、有界 relay 生命周期、清理、取消和无 secret 诊断。
-- `FrpcStcpVisitorSerializationContractTest`、`FrpcStcpVisitorFixtureContractTest` 与 `FrpcStcpVisitorManagerContractTest` 覆盖可实现的 suspend bridge API，以及稳定的 DTO 默认值、字段名、`Long` 值、容错 JSON、Go/Kotlin 共享 bridge DTO JSON 和安全摘要；Kotlin 对带版本 canonical STCP manifest 及小型 wire/control/yamux 字节的加载与完整性校验，包括声明的分块方案和 mutation recipe metadata；以及 manager 对 native-ready 结果、session 身份、运行时与终态恢复、control epoch 回退、最终 ensure bind port、清理/替换和无 secret 诊断的校验。
+- `KotlinFrpcStcpVisitorClientTest` 及内部 control、crypto、protocol、transport、yamux、compression 测试覆盖类型化 runtime failure、revision/control epoch readiness、listener 所有权与重绑、v1/v2 visitor handshake、`useEncryption`/`useCompression` 四种组合、握手与 payload 合并读取、有界 relay 生命周期、Snappy framing 与损坏输入边界、清理、取消和无 secret 诊断。
+- `FrpcStcpVisitorClientDifferentialContractTest` 对脚本化 GoMobile Kotlin adapter seam 和可注入纯 Kotlin runtime fixture 执行相同六个公共操作，比较归一化的 phase/revision/epoch/listener/bind 语义、幂等、替换、类型化 bind conflict、取消身份和安全诊断。它是 host-JVM adapter/runtime 契约测试，不加载 native AAR，也不替代真实 frps/设备互操作测试。
+- `FrpcStcpVisitorSerializationContractTest`、`FrpcStcpVisitorFixtureContractTest` 与 `FrpcStcpVisitorManagerContractTest` 覆盖可实现的 suspend bridge API，以及稳定的 DTO 默认值、字段名、`Long` 值、容错 JSON、Go/Kotlin 共享 bridge DTO JSON 和安全摘要；Kotlin 对带版本 canonical STCP manifest 及小型 wire/control/yamux/payload 字节的加载与完整性校验，包括 Go Snappy raw/framed、AES-CFB 加 Snappy 跨语言向量以及声明的分块方案和 mutation recipe metadata；以及 manager 对 native-ready 结果、session 身份、运行时与终态恢复、control epoch 回退、最终 ensure bind port、清理/替换和无 secret 诊断的校验。
 - `SensitiveValueToStringTest` 验证 network、domain、Store、feature 和 UI value 摘要不暴露人工凭据、URL/endpoint、alias、路径、prompt、Base64、SSE payload 或 tool output，同时保持普通 value object 行为。
 - `OpenCodeContrastTest` 对浅色/深色主题执行 4.5:1 文字与 3:1 图形对比度门禁，覆盖主题文字、语义化 Diff/Markdown/语法/图表颜色、状态指示、附件遮罩、选择边框和 `ControlBorder`。
 - `SessionRunningIndicatorTest` 覆盖 4×4 四角遮罩、每个点独立的 1–2 秒节奏、有界相位偏移、满足无障碍要求的透明度与缩放范围、可见帧变化、差异化初始帧和公共循环的无缝连续性。
-- `ProjectDrawerModelTest`、`ProjectInitialTest`、`ProjectPickerViewModelTest`、`RecentProjectRecorderTest` 与 `RecentProjectStoreReducerTest` 覆盖当前项目补入、MRU 顺序保持、Windows 路径别名去重、不等待 DataStore 的导航、有序重试、本地失败分类、项目首页导航决策和 Unicode 项目首字。
+- `RecentProjectStoreReducerTest` 覆盖数值 `sortOrder`、旧数组顺序保留、连续重编号、新项目置顶、已有项目 metadata 更新时位置稳定、比较 key 去重、原子重排且只显式纳入当前项目、保留未提交/并发新增项目、不复活并发删除的陈旧记录、服务器间隔离和每服务器 20 项上限。`RecentProjectRecorderTest`、`ProjectPickerViewModelTest`、`ProjectDrawerModelTest`、`ProjectInitialTest` 与 `VerticalLazyListReorderTest` 覆盖已有项目不移动的串行/重试 best-effort 记录、不等待 DataStore 的导航、展示顺序持久化与失败回滚 callback、有界当前项目合并、项目首页导航决策、Unicode 项目首字和短视口边缘滚动方向。
 - `SessionListWindowCoordinatorTest`、`InMemoryOpenCodeStoreSessionWindowTest` 与 `OpenCodeRepositorySessionWindowTest` 覆盖共享 20 条目标、50 条请求余量、本地展开与网络加载、重试/末尾状态、有序前缀替换、快速点击合并、旧 generation/transport 拒绝、tombstone、项目/workspace 隔离和有界 metadata/父链补取。
 - `NotificationAlertPolicyTest`、`NotificationChannelMigrationPolicyTest`、`OpenCodeNotificationAudioAttributesTest` 与 `SessionVisibilityRegistryTest` 覆盖单事件唯一声音所有者、App/系统设置独立、系统显式声音/静音优先级、legacy 到 v2 迁移决策、notification audio usage 和前台 destination 可见性。
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest` 覆盖按服务端顺序过滤 Build/Plan 及回退、初始模型/Variant 校验与切换回退，以及只对新会话接受项目首页轻量 Composer 路由选择。
@@ -71,6 +72,22 @@ macOS/Linux：
 .\gradlew.bat :app:testDebugUnitTest --tests "io.github.ycfeng.ocdeck.core.security.RedactorTest"
 ```
 
+## 固定 frp STCP 互操作
+
+修改任一 STCP backend、共享协议/runtime 代码或其 CI 集成时，运行显式 host-JVM 互操作 harness：
+
+```powershell
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+```bash
+./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+该任务刻意与 `testDebugUnitTest` 分离：普通单元测试不会下载或执行外部程序。任务会为 Linux、Windows 或 macOS 的 amd64/arm64 选择仓库固定的官方 frp `v0.69.1` asset，每次解压前校验 SHA-256，执行有界且防路径穿越/link 的安全解压，校验 `frpc --version` 与 `frps --version`，并只在 Gradle user home 中缓存已校验的 archive 与 executable。这些测试专用二进制不会提交、打进 APK/AAR、暂存或发布。
+
+Harness 会启动仅监听 loopback 的官方 `frps`、官方 provider `frpc` 和有界合成 OpenCode HTTP/SSE server，并为每次运行生成一次性凭据与 TLS 材料。它覆盖 wire v1/v2 与 encryption/compression 四种组合；两条长期 SSE 与 REST、多条不可压缩且超过 yamux 初始窗口的上下行大流并发；错误 token、错误 STCP secret、bind 冲突；以及 frps 重启时既有 SSE 中断、control epoch 前进和并发 REST/SSE 恢复。日志、临时配置、进程生命周期、archive 输入、socket 与清理均有界且脱敏。该 host 门禁不能替代 Android 真机验证。
+
 连接 emulator 或设备后，运行 instrumentation 测试集：
 
 ```powershell
@@ -89,7 +106,7 @@ cd build/frp-v0.69.1-p1
 go test -race ./client/...
 ```
 
-第一组 Go race 范围从 `frpc-stcp-visitor-go/` 运行，通过 `frpc-stcp-visitor-go/internal/contractfixture/` 中的固定 oracle，自动对 `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` 执行 canonical fixture check。当前 `k0-go-oracle-v4` manifest 包含 29 个条目，其中新增 v1 `LoginResp`、v1/v2 `StartWorkConn` 和 v1/v2 `NewVisitorConnResp` golden。必须像上面所示先运行 `go run ./cmd/preparefrp`。现有根级 race-test 命令继续作为 CI 门禁；不要增加独立 fixture-check 命令。
+第一组 Go race 范围从 `frpc-stcp-visitor-go/` 运行，通过 `frpc-stcp-visitor-go/internal/contractfixture/` 中的固定 oracle，自动对 `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` 执行 canonical fixture check。当前 `k0-go-oracle-v5` manifest 包含 34 个条目，包括 v1 `LoginResp`、v1/v2 work/visitor 消息、Go Snappy raw/framed 输出、65,536/65,537 字节 framing 边界，以及 AES-CFB 加 Snappy payload 顺序向量。必须像上面所示先运行 `go run ./cmd/preparefrp`。现有根级 race-test 命令继续作为 CI 门禁；不要增加独立 fixture-check 命令。
 
 协议 fixture 不替代运行时生命周期测试。首登失败清理、重连时传递先前 RunID、断线后使旧 readiness 失效，以及 stop timeout 后重试，继续由上述两组 race-test 范围中的现有 Go wrapper 与 patched frp 测试覆盖。固定的 runtime tracker 还会忽略 epoch 不等于当前活动 control epoch 的 visitor callback；若修改这项 guard，必须新增聚焦的 downstream 回归测试。
 
@@ -98,6 +115,7 @@ go test -race ./client/...
 ```bash
 python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
+bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
 bash .github/scripts/verify-bridge-reproducibility.sh
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
@@ -126,6 +144,7 @@ Pop-Location
 
 Invoke-NativeChecked { python .github/scripts/audit-community.py }
 Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
+Invoke-NativeChecked { .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest }
 Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
 Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true }
 ```
@@ -134,7 +153,7 @@ Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :
 
 固定 Go、x/mobile、Android API 与 NDK 版本必须来自 `bridge-versions.properties`。
 
-修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行完整 bridge 门禁，不能只运行 Android 单元测试。该门禁会同时验证 Debug/GoMobile 与 Canary/Kotlin 的选择和装配。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行固定 frp 互操作任务与完整 bridge 门禁，不能只运行 Android 单元测试。Android 门禁会同时验证 Debug/GoMobile 与 Canary/Kotlin 的选择和装配。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
 
 ## 安全与边界测试
 
@@ -160,11 +179,11 @@ Fixture 规则见[测试夹具](test-fixtures.zh-CN.md)。
 | 环境 | 检查项 | 预期结果 |
 | --- | --- | --- |
 | 200% 字体的紧凑竖屏手机 | 二次确认 dialog、服务器状态、设置 sheet、内联建议、权限/问题 UI、Composer 附件和参数行 | 内容保持有界且可滚动；标题、字段和主操作可达，不因固定高度裁切 |
-| 包含 20 个最近项目的项目抽屉 | Rail 滚动、项目列表 75% 高度上限、当前项目选择、“打开项目”、“设置”、项目首页切换 | 项目按钮可滚动且不裁切；固定操作始终可达；仅一个项目被选中；切换会关闭抽屉且不堆叠重复项目首页 |
+| 项目选择页和最多 20 个最近项目的 Drawer | 长按纵向拖拽、边缘自动滚动、两个入口同步、普通项目点击、项目选择页删除图标、模拟持久化失败、当前项目不在持久列表、Drawer 列表 75% 高度上限、“打开项目”、“设置”、项目首页切换和抽屉水平手势 | 两个入口展示同一已保存顺序；新项目默认置顶；点击已有项目不重排；只有项目选择页卡片正文启动拖拽且删除保持独立；乐观移动失败后回滚；当前项目合入后仍最多 20 项且可通过重排持久化；固定操作始终可达且不移动；仅 rail 拖拽期间禁用水平抽屉手势；切换会关闭抽屉且不堆叠重复项目首页 |
 | 超过 20 条根会话的项目 | 项目主页和抽屉中的加载更多、共享状态、网络加载、重试、末尾状态、直接打开旧会话 route | 两个界面展示相同目标；失败时保留已有行；重试可达；末尾状态稳定；窗口外会话及有界父链可补取且窗口不缩小 |
 | API 26/29/30+/33+ fresh install 与旧通知升级 | 默认提醒、App 内“无”、系统显式声音、channel 显式静音/阻止/低 importance、权限拒绝、当前会话前后台 | 每个事件最多一个声音所有者；Android 系统选择优先；App 播放不绕过低打扰设置；后台会话不会误标已查看 |
 | IME 打开 | 固定底部 Composer、建议面板、model/agent/variant popup、附件条、系统返回 | Inset 保持 Composer 可见；浮层不被遮挡；系统返回先关闭聚焦浮层，再离开页面 |
-| TalkBack 启用 | 项目 Tab 与路径、可点击图标标签、Tab/RadioButton/Checkbox/Switch 状态、展开/折叠控件、未读/错误/权限/连接提示、服务器排序 | 项目 Tab 播报唯一完整标签和选中状态；其他 role 与状态正确播报；重要含义不只依赖颜色；服务器卡片提供本地化上移/下移自定义操作 |
+| TalkBack 启用 | 项目 Tab 与路径、可点击图标标签、Tab/RadioButton/Checkbox/Switch 状态、展开/折叠控件、未读/错误/权限/连接提示、服务器排序和两个入口的项目排序 | 项目 Tab 播报唯一完整名称/路径标签、选中状态和通知状态；其他 role 与状态正确播报；重要含义不只依赖颜色；服务器卡片以及项目选择页/Drawer 项目都提供本地化上移/下移自定义操作 |
 | 浅色和深色主题 | 正文/辅助文字、文本框和边框、选中/错误/状态指示、Diff/Markdown/代码、附件遮罩 | 文字达到 4.5:1 目标，必要非文本控件/指示达到 3:1；状态在两种主题下都可理解 |
 | Composer 模型与 Variant 选择器 | 选中视野外项目后重新打开、搜索、provider 分组、当前 check、连接 Provider、管理模型 | 重新打开时当前选择会自动滚入视野，并在滚动边界允许时居中；搜索和手动滚动仍由用户控制；行和图标操作保持 48dp 目标；管理操作关闭 picker 并导航到真实 Provider/模型设置路由 |
 | Provider 设置与认证 | 搜索和已加载/可连接分组；动态 text/select prompt；API key 键盘；OAuth 浏览器、code、auto callback 与取消；明文/loopback/断开确认 | 浮层关闭后 secret 消失；系统返回先关闭聚焦 sheet；IME 与 200% 字体下操作仍可达；已加载、disabled、pending、错误均有非颜色提示；取消不会静默重试 |

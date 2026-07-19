@@ -3,6 +3,8 @@ package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcSessionConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.compression.FrpSnappyFramedInputStream
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.compression.FrpSnappyFramedOutputStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpClientStreamLease
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlClient
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlConfig
@@ -11,6 +13,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpUnixTimeSource
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpWireProtocol
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpTimestampAuth
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpV1Cfb
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpWireV1
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpWireV2
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConn
@@ -303,10 +306,13 @@ internal data class FrpRelayVisitorConfig(
     val serverUser: String,
     val sessionUser: String,
     val secretKey: String,
+    val useEncryption: Boolean = false,
+    val useCompression: Boolean = false,
 ) {
     override fun toString(): String =
         "FrpRelayVisitorConfig(serverUserPresent=${serverUser.isNotEmpty()}, " +
-            "sessionUserPresent=${sessionUser.isNotEmpty()}, secretKey=<redacted>)"
+            "sessionUserPresent=${sessionUser.isNotEmpty()}, secretKey=<redacted>, " +
+            "useEncryption=$useEncryption, useCompression=$useCompression)"
 }
 
 internal class FrpVisitorRelay(
@@ -387,7 +393,7 @@ internal class FrpVisitorRelay(
             val io = YamuxStreamBlockingIo(opened.stream, scope, blockingIoGuard)
             handshakeIo = io
             performHandshake(opened, io)
-            relayBidirectionally(opened)
+            relayBidirectionally(opened, io)
         } catch (failure: CancellationException) {
             if (!closeStarted.get()) {
                 selectedFatal = failure
@@ -451,8 +457,8 @@ internal class FrpVisitorRelay(
                     proxyName = proxyName,
                     signKey = FrpTimestampAuth.key(visitor.secretKey, timestamp),
                     timestamp = timestamp,
-                    useEncryption = false,
-                    useCompression = false,
+                    useEncryption = visitor.useEncryption,
+                    useCompression = visitor.useCompression,
                 )
                 if (lease.wireProtocol == FrpWireProtocol.V2) FrpWireV2.writeMagic(io.output)
                 val encoded = when (lease.wireProtocol) {
@@ -502,11 +508,14 @@ internal class FrpVisitorRelay(
         }
     }
 
-    private suspend fun relayBidirectionally(lease: FrpClientStreamLease) = supervisorScope {
+    private suspend fun relayBidirectionally(
+        lease: FrpClientStreamLease,
+        io: YamuxStreamBlockingIo,
+    ) = supervisorScope {
         val outcomes = Channel<Throwable?>(capacity = 2)
         val pumps = listOf(
-            launchRelayPump(outcomes) { copyLocalToRemote(lease) },
-            launchRelayPump(outcomes) { copyRemoteToLocal(lease) },
+            launchRelayPump(outcomes) { copyLocalToRemote(lease, io.output) },
+            launchRelayPump(outcomes) { copyRemoteToLocal(io.input) },
         )
         var selectedFailure: Throwable? = null
         var abortStarted = false
@@ -597,38 +606,97 @@ internal class FrpVisitorRelay(
         return selectedFailure
     }
 
-    private suspend fun copyLocalToRemote(lease: FrpClientStreamLease) {
+    private suspend fun copyLocalToRemote(
+        lease: FrpClientStreamLease,
+        baseOutput: OutputStream,
+    ) {
         val buffer = ByteArray(RELAY_BUFFER_SIZE)
+        var remoteOutput: OutputStream? = null
+        var selectedFailure: Throwable? = null
         try {
+            remoteOutput = createRemoteOutput(baseOutput)
             while (true) {
                 val count = runInterruptible(ioDispatcher) { local.input.read(buffer) }
                 if (count < 0) break
                 if (count == 0) throw KotlinFrpcStcpVisitorException(
                     KotlinFrpcStcpVisitorFailure.RELAY_FAILED,
                 )
-                lease.stream.write(buffer, 0, count)
+                runInterruptible(blockingIoContext) { remoteOutput.write(buffer, 0, count) }
             }
-            lease.stream.closeWrite()
+        } catch (failure: CancellationException) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Error) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Exception) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
         } finally {
             buffer.fill(0)
+            remoteOutput?.let { output ->
+                try {
+                    runInterruptible(blockingIoContext) { output.close() }
+                } catch (failure: CancellationException) {
+                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                } catch (failure: Error) {
+                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                } catch (failure: Exception) {
+                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                }
+            }
         }
+        selectedFailure?.let { throw it }
+        lease.stream.closeWrite()
     }
 
-    private suspend fun copyRemoteToLocal(lease: FrpClientStreamLease) {
+    private suspend fun copyRemoteToLocal(baseInput: InputStream) {
         val buffer = ByteArray(RELAY_BUFFER_SIZE)
+        var remoteInput: InputStream? = null
+        var selectedFailure: Throwable? = null
         try {
+            remoteInput = createRemoteInput(baseInput)
             while (true) {
-                val count = lease.stream.read(buffer)
+                val count = runInterruptible(blockingIoContext) { remoteInput.read(buffer) }
                 if (count < 0) break
                 if (count == 0) throw KotlinFrpcStcpVisitorException(
                     KotlinFrpcStcpVisitorFailure.RELAY_FAILED,
                 )
                 runInterruptible(ioDispatcher) { local.output.write(buffer, 0, count) }
             }
-            runInterruptible(ioDispatcher) { local.shutdownOutput() }
+        } catch (failure: CancellationException) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Error) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Exception) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
         } finally {
             buffer.fill(0)
+            remoteInput?.let { input ->
+                try {
+                    runInterruptible(blockingIoContext) { input.close() }
+                } catch (failure: CancellationException) {
+                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                } catch (failure: Error) {
+                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                } catch (failure: Exception) {
+                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                }
+            }
         }
+        selectedFailure?.let { throw it }
+        runInterruptible(ioDispatcher) { local.shutdownOutput() }
+    }
+
+    private fun createRemoteOutput(baseOutput: OutputStream): OutputStream {
+        var output: OutputStream = NonClosingOutputStream(baseOutput)
+        if (visitor.useEncryption) output = FrpV1Cfb.encrypting(output, visitor.secretKey)
+        if (visitor.useCompression) output = FrpSnappyFramedOutputStream(output)
+        return output
+    }
+
+    private fun createRemoteInput(baseInput: InputStream): InputStream {
+        var input: InputStream = NonClosingInputStream(baseInput)
+        if (visitor.useEncryption) input = FrpV1Cfb.decrypting(input, visitor.secretKey)
+        if (visitor.useCompression) input = FrpSnappyFramedInputStream(input)
+        return input
     }
 
     private fun closeLocalExpected(): Throwable? =
@@ -683,6 +751,33 @@ private fun preferRelayFatal(current: Throwable?, candidate: Throwable): Throwab
     val secondary = if (selected === current) candidate else current
     if (selected !== secondary) selected.addSuppressed(secondary)
     return selected
+}
+
+private class NonClosingInputStream(
+    private val delegate: InputStream,
+) : InputStream() {
+    override fun read(): Int = delegate.read()
+
+    override fun read(destination: ByteArray, offset: Int, length: Int): Int =
+        delegate.read(destination, offset, length)
+
+    override fun close() = Unit
+
+    override fun toString(): String = "NonClosingFrpPayloadInputStream"
+}
+
+private class NonClosingOutputStream(
+    private val delegate: OutputStream,
+) : OutputStream() {
+    override fun write(value: Int) = delegate.write(value)
+
+    override fun write(source: ByteArray, offset: Int, length: Int) = delegate.write(source, offset, length)
+
+    override fun flush() = delegate.flush()
+
+    override fun close() = Unit
+
+    override fun toString(): String = "NonClosingFrpPayloadOutputStream"
 }
 
 private class FrpRelayClosedCancellation : CancellationException("frp visitor relay closed")

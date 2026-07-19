@@ -89,10 +89,11 @@ repository root: python3 .github/scripts/audit-community.py
 frpc-stcp-visitor-go: go test -race -modfile=build/frp-patched.mod ./...
 frpc-stcp-visitor-go/build/frp-v0.69.1-p1: go test -race ./client/...
 repository root: bash frpc-stcp-visitor-go/build-aar.sh
+repository root: ./gradlew :frpc-stcp-visitor:frpcInteropTest
 repository root: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
 
-On Windows, use `frpc-stcp-visitor-go/build-aar.ps1` and `gradlew.bat` as appropriate. The complete Android gate validates both Debug/GoMobile and Canary/Kotlin assembly; it does not make Canary a publication artifact. Bridge validation must continue to cover checksum, Java API signature, provenance, expected ABIs, ELF machine type, 16 KiB `PT_LOAD` alignment, stripped status, and reproducibility. A bridge byte change requires a new bridge version; never publish different bytes under the same Maven coordinate.
+On Windows, use `frpc-stcp-visitor-go/build-aar.ps1` and `gradlew.bat` as appropriate. `frpcInteropTest` explicitly downloads only the hash-pinned official frp release asset for the host, keeps it in the Gradle cache, and runs outside release-signing environments; ordinary unit tests do not launch it. The complete Android gate validates both Debug/GoMobile and Canary/Kotlin assembly; it does not make Canary a publication artifact. Bridge validation must continue to cover checksum, Java API signature, provenance, expected ABIs, ELF machine type, 16 KiB `PT_LOAD` alignment, stripped status, and reproducibility. A bridge byte change requires a new bridge version; never publish different bytes under the same Maven coordinate.
 
 ## Sensitive Data and Fixtures
 

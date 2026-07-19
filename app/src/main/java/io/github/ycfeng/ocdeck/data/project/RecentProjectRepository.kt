@@ -12,6 +12,12 @@ interface RecentProjectRepository {
 
     suspend fun upsert(serverId: String, project: ProjectRef): ProjectRef
 
+    suspend fun reorder(
+        serverId: String,
+        projects: List<ProjectRef>,
+        projectToEnsure: ProjectRef? = null,
+    )
+
     suspend fun remove(serverId: String, directory: String)
 }
 

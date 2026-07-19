@@ -46,7 +46,7 @@
 ## 架构边界
 
 - 业务实现保持在单一 `:app` 模块中，通过包结构划分职责。不要过早拆分 feature/data/domain 等业务 Gradle 模块。
-- `:frpc-stcp-visitor` 是 GoMobile AAR 稳定 Kotlin 接口的已批准 Android library 边界，`frpc-stcp-visitor-go` 是其固定版本 Go 构建工程。两者都不得承载 App feature/data/domain 业务代码，也不能作为业务多模块迁移的先例。
+- `:frpc-stcp-visitor` 是稳定 Kotlin client contract、共享 DTO、GoMobile adapter 与纯 Kotlin 实现的已批准 backend-neutral Android library 边界。保留 GoMobile backend 期间，`frpc-stcp-visitor-go` 继续作为其固定版本 Go 构建工程。两处都不得承载 App feature/data/domain 业务代码，也不能作为业务多模块迁移的先例。
 - 通过 `AppContainer` 手动装配依赖，对 ViewModel 使用构造函数注入和集中 Factory。不要在 feature 代码中临时创建 `OkHttpClient`、Retrofit、Repository 或应用级全局单例。
 - 使用 DataStore 保存轻量设置，Android Keystore 保存敏感凭据，内存 Store 保存运行态状态。
 - 未经用户基于明确需求批准，不得引入 Room、Hilt、KSP、kapt 或拆分业务模块。明确需求包括离线缓存/搜索、冷启动快速恢复或依赖图已经难以维护。
@@ -140,7 +140,7 @@
 
 Windows 使用 `gradlew.bat`。
 
-- 修改 `frpc-stcp-visitor-go/`、`:frpc-stcp-visitor`、frp patch、bridge API/依赖或 bridge 版本时，还必须执行 CI 等价门禁：`go run ./cmd/preparefrp`；wrapper 与 patched frp client 的 `go test -race`；`build-aar.sh` 或 `build-aar.ps1`；`:frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`；两个 Android 单元测试任务；以及 `:app:assembleDebug`。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节和 `BRIDGE_VERSION` 可以保持不变，但仍不能省略完整门禁；native/AAR 字节变化时必须递增 `BRIDGE_VERSION`。
+- 修改 `frpc-stcp-visitor-go/`、`:frpc-stcp-visitor`、frp patch、bridge API/依赖或 bridge 版本时，还必须执行 CI 等价门禁：`go run ./cmd/preparefrp`；wrapper 与 patched frp client 的 `go test -race`；`build-aar.sh` 或 `build-aar.ps1`；`:frpc-stcp-visitor:frpcInteropTest`；`:frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`；`:frpc-stcp-visitor:testDebugUnitTest`；`:app:testDebugUnitTest`；`:app:testCanaryUnitTest`；`:app:assembleDebug`；以及 `:app:assembleCanary`。互操作任务只下载仓库固定并经哈希校验的官方 frp 二进制，且必须在任何发布签名 environment 之外运行。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节和 `BRIDGE_VERSION` 可以保持不变，但仍不能省略完整门禁；native/AAR 字节变化时必须递增 `BRIDGE_VERSION`。
 - Bridge 门禁必须继续验证 checksum、Java API signature、bridge/frp provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和同输入可复现性。
 - 仅修改文档或社区治理文件时应运行 `python .github/scripts/audit-community.py`；只有改动影响代码、构建、发布或第三方校验时才增加更广泛测试。
 

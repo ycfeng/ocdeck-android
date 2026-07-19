@@ -65,6 +65,8 @@ import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
 import io.github.ycfeng.ocdeck.ui.text.UiText
 import io.github.ycfeng.ocdeck.ui.text.asString
 import io.github.ycfeng.ocdeck.ui.text.toErrorUiText
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 internal data class ActiveProjectDrawerRoute(
@@ -103,6 +105,9 @@ internal fun ProjectDrawerHost(
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val projectRouteKey = activeProject?.let { route ->
+        "${route.serverId}:${appContainer.pathNormalizer.normalize(route.directory)}"
+    }
     val routeKey = activeProject?.let { "${it.serverId}:${it.directory}:${it.sessionId.orEmpty()}" }
     var archiveSession by remember(routeKey) { mutableStateOf<OpenCodeSession?>(null) }
     var showEditProjectName by remember(routeKey) { mutableStateOf(false) }
@@ -112,9 +117,10 @@ internal fun ProjectDrawerHost(
     var isUpdatingProjectName by remember(routeKey) { mutableStateOf(false) }
     var isArchivingSession by remember(routeKey) { mutableStateOf(false) }
     var archiveError by remember(routeKey) { mutableStateOf<UiText?>(null) }
-    val fileProjectKey = activeProject?.let { route ->
-        "${route.serverId}:${appContainer.pathNormalizer.normalize(route.directory)}"
-    }
+    var projectReorderError by remember(projectRouteKey) { mutableStateOf<UiText?>(null) }
+    var isProjectRailDragging by remember(projectRouteKey) { mutableStateOf(false) }
+    val projectReorderJobs = remember { mutableMapOf<String, Job>() }
+    val fileProjectKey = projectRouteKey
     var isFilePanelOpen by remember(routeKey) { mutableStateOf(false) }
     var filePickerRequest by remember(routeKey) { mutableStateOf<ProjectFilePickerRequest?>(null) }
     val fileViewModelStore = remember(fileProjectKey) { ViewModelStore() }
@@ -155,7 +161,6 @@ internal fun ProjectDrawerHost(
     DisposableEffect(routeKey, fileViewModel) {
         onDispose { fileViewModel?.onPanelClosed() }
     }
-
     LaunchedEffect(activeProject == null) {
         if (activeProject == null && drawerState.isOpen) {
             drawerState.snapTo(DrawerValue.Closed)
@@ -163,6 +168,7 @@ internal fun ProjectDrawerHost(
         if (activeProject == null) {
             isFilePanelOpen = false
             filePickerRequest = null
+            isProjectRailDragging = false
         }
     }
 
@@ -174,7 +180,7 @@ internal fun ProjectDrawerHost(
             ModalNavigationDrawer(
                 modifier = if (isFilePanelOpen) Modifier.clearAndSetSemantics { } else Modifier,
                 drawerState = drawerState,
-                gesturesEnabled = activeProject != null && !isFilePanelOpen,
+                gesturesEnabled = activeProject != null && !isFilePanelOpen && !isProjectRailDragging,
                 drawerContent = {
                 val route = activeProject
                 if (route == null) {
@@ -220,6 +226,13 @@ internal fun ProjectDrawerHost(
                             pathNormalizer = appContainer.pathNormalizer,
                         )
                     }
+                    val projectToEnsure = remember(currentProject, recentProjects) {
+                        projectToEnsureForDrawer(
+                            currentProject = currentProject,
+                            recentProjects = recentProjects,
+                            pathNormalizer = appContainer.pathNormalizer,
+                        )
+                    }
                     ModalDrawerSheet(
                         modifier = Modifier
                             .fillMaxHeight()
@@ -230,6 +243,36 @@ internal fun ProjectDrawerHost(
                             state = projectState,
                             activeSessionId = route.sessionId,
                             projects = drawerProjects,
+                            projectReorderError = projectReorderError,
+                            onReorderProjects = { projects, onFailure ->
+                            projectReorderError = null
+                            projectReorderJobs[route.serverId]?.cancel()
+                            val reorderJob = scope.launch {
+                                try {
+                                    appContainer.recentProjectRepository.reorder(
+                                            serverId = route.serverId,
+                                            projects = projects,
+                                            projectToEnsure = projectToEnsure,
+                                        )
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (error: Error) {
+                                        throw error
+                                    } catch (_: Exception) {
+                                        onFailure()
+                                    projectReorderError = UiText.Resource(R.string.project_error_reorder_failed)
+                                }
+                            }
+                            projectReorderJobs[route.serverId] = reorderJob
+                            reorderJob.invokeOnCompletion {
+                                if (projectReorderJobs[route.serverId] === reorderJob) {
+                                    projectReorderJobs.remove(route.serverId)
+                                }
+                            }
+                        },
+                            onProjectDragStateChanged = { isDragging ->
+                                isProjectRailDragging = isDragging
+                            },
                             onSelectProject = { directory ->
                                 scope.launch {
                                     drawerState.close()

@@ -130,7 +130,7 @@ func generateFixtureSet(root string) (*generatedSet, error) {
 		Provenance: provenance{
 			Synthetic:               true,
 			Generator:               "frpc-stcp-visitor-go/cmd/contractfixture",
-			Source:                  "Deterministic Go oracle over the bridge DTO contract, pinned frp/golib APIs, and traffic recorded from paired pinned yamux Client/Server sessions over in-memory connections; no captured external traffic.",
+			Source:                  "Deterministic Go oracle over the bridge DTO contract, pinned frp/golib/snappy APIs, and traffic recorded from paired pinned yamux Client/Server sessions over in-memory connections; no captured external traffic.",
 			License:                 "MIT",
 			ContainsCapturedTraffic: false,
 			ContainsRawSecrets:      false,
@@ -145,6 +145,7 @@ func generateFixtureSet(root string) (*generatedSet, error) {
 		Entries: entries,
 		ChunkPlans: []chunkPlan{
 			{ID: "control-v2-aes-record-splits", Source: "control/v2/aes-256-gcm/client-to-server.bin", Sizes: []int{1, 3, 2, 7}, Expected: "decrypt-success"},
+			{ID: "snappy-cfb-framed-splits", Source: snappyCFBFramedCompressedPath, Sizes: []int{1, 2, 3, 5, 8}, Expected: "decrypt-then-decompress-success"},
 			{ID: "wire-v1-bytewise", Source: "wire/v1/login-token.bin", Sizes: []int{1}, Expected: "decode-success"},
 			{ID: "wire-v2-frame-splits", Source: "wire/v2/aes-256-gcm/client-bootstrap.bin", Sizes: []int{1, 2, 3, 5, 8}, Expected: "decode-success"},
 			{ID: "yamux-flow-control-splits", Source: yamuxFlowControlClientTracePath, Sizes: []int{1, 11, 4096, 3}, Expected: "parse-success"},
@@ -259,7 +260,7 @@ func buildOracleArtifacts() (*oracleSpec, map[string][]byte, []entry, error) {
 	spec.profiles[xChaChaProfile.name] = xChaChaProfile
 
 	files := make(map[string][]byte)
-	entries := make([]entry, 0, 29)
+	entries := make([]entry, 0, 34)
 	add := func(id, path, layer, expected string, data []byte) error {
 		if _, exists := files[path]; exists {
 			return fmt.Errorf("duplicate generated fixture path %s", path)
@@ -435,6 +436,16 @@ func buildOracleArtifacts() (*oracleSpec, map[string][]byte, []entry, error) {
 			plainPath: "control/v2/plain/server-to-client.bin", cipherPath: serverPath, protocol: wire.ProtocolV2,
 			algorithm: profile.algorithm, writeRole: netpkg.AEADCryptoRoleServer, readRole: netpkg.AEADCryptoRoleClient,
 			profile: profile, plain: v2ServerPlain, parts: v2ServerParts, messages: spec.serverMessages,
+		}
+	}
+
+	snappyArtifacts, err := buildSnappyArtifacts()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, artifact := range snappyArtifacts {
+		if err := add(artifact.id, artifact.path, artifact.layer, artifact.expected, artifact.data); err != nil {
+			return nil, nil, nil, err
 		}
 	}
 
@@ -768,6 +779,9 @@ func validateOracleSemantics(files map[string][]byte, spec *oracleSpec, manifest
 			return fmt.Errorf("validate decrypted control messages %s", path)
 		}
 	}
+	if err := validateSnappyArtifacts(files); err != nil {
+		return err
+	}
 
 	yamuxPaths := make([]string, 0, len(spec.yamuxTraces))
 	for path := range spec.yamuxTraces {
@@ -1067,6 +1081,8 @@ func validateChunkPlans(files map[string][]byte, spec *oracleSpec, plans []chunk
 			if err == nil && !bytes.Equal(plaintext, vector.plain) {
 				err = fmt.Errorf("chunked AEAD plaintext differs")
 			}
+		case "snappy-cfb-framed-splits":
+			err = validateSnappyCFBChunkPlan(reader)
 		case "yamux-flow-control-splits", "yamux-lifecycle-splits", "yamux-reset-splits":
 			var frames []yamuxFrame
 			frames, err = parseYamuxTrace(reader)

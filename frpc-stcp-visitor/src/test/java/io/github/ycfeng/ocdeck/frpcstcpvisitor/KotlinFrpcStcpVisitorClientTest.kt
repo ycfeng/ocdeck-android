@@ -1,5 +1,7 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor
 
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.compression.FrpSnappyFramedInputStream
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.compression.FrpSnappyFramedOutputStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpClientStreamLease
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlIdentity
@@ -7,6 +9,8 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpUnixTimeSource
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpWireProtocol
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpTimestampAuth
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpV1Cfb
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpV1CfbOutputStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpWireV1
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpWireV2
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConn
@@ -118,17 +122,20 @@ class KotlinFrpcStcpVisitorClientTest {
             assertEquals(1, listenerFactory.bindCount.get())
             assertEquals(2L, client.getState(sessionId).configRevision)
 
-            val unsupported = captureRuntimeFailure {
-                client.ensureVisitor(sessionId, firstConfig.copy(useEncryption = true))
-            }
-            assertEquals(KotlinFrpcStcpVisitorFailure.UNSUPPORTED_CONFIGURATION, unsupported.failure)
-            assertEquals(2L, client.getState(sessionId).configRevision)
+            val wrapped = client.ensureVisitor(
+                sessionId,
+                firstConfig.copy(useEncryption = true, useCompression = true),
+            )
+            assertEquals(3L, wrapped.desiredRevision)
+            val wrappedBinding = listenerFactory.takeBinding()
+            assertEquals(1, firstBinding.listener.closeCount.get())
+            assertEquals(3L, client.getState(sessionId).configRevision)
 
             val second = client.ensureVisitor(
                 sessionId,
                 visitorConfig(name = "second", bindPort = 50_001),
             )
-            assertEquals(3L, second.desiredRevision)
+            assertEquals(4L, second.desiredRevision)
             listenerFactory.takeBinding()
             val duplicate = captureRuntimeFailure {
                 client.ensureVisitor(
@@ -137,13 +144,13 @@ class KotlinFrpcStcpVisitorClientTest {
                 )
             }
             assertEquals(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT, duplicate.failure)
-            assertEquals(3L, client.getState(sessionId).configRevision)
+            assertEquals(4L, client.getState(sessionId).configRevision)
 
             client.stopVisitor(sessionId, "missing")
-            assertEquals(3L, client.getState(sessionId).configRevision)
-            client.stopVisitor(sessionId, "first")
             assertEquals(4L, client.getState(sessionId).configRevision)
-            assertEquals(1, firstBinding.listener.closeCount.get())
+            client.stopVisitor(sessionId, "first")
+            assertEquals(5L, client.getState(sessionId).configRevision)
+            assertEquals(1, wrappedBinding.listener.closeCount.get())
             assertFalse(client.getState(sessionId).visitors.containsKey("first"))
         } finally {
             control.releaseStop()
@@ -277,80 +284,96 @@ class KotlinFrpcStcpVisitorClientTest {
     }
 
     @Test
-    fun v1AndV2VisitorHandshakePreserveCoalescedPayloadAndRelayHalfCloses() = runBlocking {
+    fun v1AndV2VisitorPayloadModesPreserveCoalescedDataAndRelayHalfCloses() = runBlocking {
         listOf(FrpWireProtocol.V1, FrpWireProtocol.V2).forEach { protocol ->
-            val controlFactory = FakeControlFactory(protocol = protocol)
-            val listenerFactory = FakeListenerFactory()
-            val controlStates = Channel<FrpControlState>(Channel.UNLIMITED)
-            val parentScope = newParentScope()
-            val client = newClient(
-                parentScope,
-                controlFactory,
-                listenerFactory,
-                unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
-                hooks = KotlinFrpcRuntimeLifecycleHooks(
-                    afterControlState = { controlStates.send(it) },
-                ),
-            )
-            val sessionId = client.startSession(
-                sessionConfig(user = "session-user", wireProtocol = protocol.name.lowercase()),
-            )
-            val control = controlFactory.single()
-            try {
-                control.open(epoch = 1L, transport = 1L)
-                awaitControlState(controlStates) { it is FrpControlState.Open }
-                val ensured = client.ensureVisitor(
-                    sessionId,
-                    visitorConfig(
-                        serverName = "remote-service",
-                        serverUser = "server-user",
-                        secret = SYNTHETIC_SECRET,
-                        bindPort = 50_020,
-                    ),
-                )
-                val listener = listenerFactory.takeBinding().listener
-                client.waitVisitorReady(sessionId, "visitor", ensured.desiredRevision, 1_000L)
+            listOf(false, true).forEach { useEncryption ->
+                listOf(false, true).forEach { useCompression ->
+                    val controlFactory = FakeControlFactory(protocol = protocol)
+                    val listenerFactory = FakeListenerFactory()
+                    val controlStates = Channel<FrpControlState>(Channel.UNLIMITED)
+                    val parentScope = newParentScope()
+                    val client = newClient(
+                        parentScope,
+                        controlFactory,
+                        listenerFactory,
+                        unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+                        hooks = KotlinFrpcRuntimeLifecycleHooks(
+                            afterControlState = { controlStates.send(it) },
+                        ),
+                    )
+                    val sessionId = client.startSession(
+                        sessionConfig(user = "session-user", wireProtocol = protocol.name.lowercase()),
+                    )
+                    val control = controlFactory.single()
+                    try {
+                        control.open(epoch = 1L, transport = 1L)
+                        awaitControlState(controlStates) { it is FrpControlState.Open }
+                        val ensured = client.ensureVisitor(
+                            sessionId,
+                            visitorConfig(
+                                serverName = "remote-service",
+                                serverUser = "server-user",
+                                secret = SYNTHETIC_SECRET,
+                                bindPort = 50_020,
+                                useEncryption = useEncryption,
+                                useCompression = useCompression,
+                            ),
+                        )
+                        val listener = listenerFactory.takeBinding().listener
+                        client.waitVisitorReady(sessionId, "visitor", ensured.desiredRevision, 1_000L)
 
-                val proxyName = "server-user.remote-service"
-                val serverPayload = "server-payload-${protocol.name}".encodeToByteArray()
-                val response = when (protocol) {
-                    FrpWireProtocol.V1 -> FrpWireV1.encodeMessage(
-                        NewVisitorConnResp(proxyName = "mismatched-response-name"),
-                    )
-                    FrpWireProtocol.V2 -> FrpWireV2.encodeMessage(
-                        NewVisitorConnResp(proxyName = "mismatched-response-name"),
-                    )
+                        val proxyName = "server-user.remote-service"
+                        val mode = "${protocol.name}-$useEncryption-$useCompression"
+                        val serverPayload = "server-payload-$mode".repeat(32).encodeToByteArray()
+                        val response = when (protocol) {
+                            FrpWireProtocol.V1 -> FrpWireV1.encodeMessage(
+                                NewVisitorConnResp(proxyName = "mismatched-response-name"),
+                            )
+                            FrpWireProtocol.V2 -> FrpWireV2.encodeMessage(
+                                NewVisitorConnResp(proxyName = "mismatched-response-name"),
+                            )
+                        }
+                        val wrappedServerPayload = encodeVisitorPayload(
+                            serverPayload,
+                            useEncryption,
+                            useCompression,
+                        )
+                        val stream = ScriptedMuxStream(response + wrappedServerPayload)
+                        control.enqueueStream(stream)
+                        val localPayload = "local-payload-$mode".repeat(32).encodeToByteArray()
+                        val local = FakeLocalConnection(localPayload)
+                        listener.offer(local)
+                        withTimeout(5_000L) { stream.resetStarted.await() }
+
+                        val written = ByteArrayInputStream(stream.writtenBytes())
+                        if (protocol == FrpWireProtocol.V2) FrpWireV2.readMagic(written)
+                        val request = when (protocol) {
+                            FrpWireProtocol.V1 -> FrpWireV1.readMessage(written)
+                            FrpWireProtocol.V2 -> FrpWireV2.readMessage(written)
+                        } as NewVisitorConn
+                        assertEquals("run-fixture", request.runId)
+                        assertEquals(proxyName, request.proxyName)
+                        assertEquals(FIXED_TIMESTAMP, request.timestamp)
+                        assertEquals(FrpTimestampAuth.key(SYNTHETIC_SECRET, FIXED_TIMESTAMP), request.signKey)
+                        assertEquals(useEncryption, request.useEncryption)
+                        assertEquals(useCompression, request.useCompression)
+                        assertTrue(
+                            localPayload.contentEquals(
+                                decodeVisitorPayload(written, useEncryption, useCompression),
+                            ),
+                        )
+                        assertTrue(serverPayload.contentEquals(local.writtenBytes()))
+                        assertEquals(1, stream.closeWriteCount.get())
+                        assertEquals(1, local.shutdownOutputCount.get())
+                        assertEquals(1, stream.resetCount.get())
+                        assertEquals("ready", client.getState(sessionId).visitors.getValue("visitor").phase)
+                    } finally {
+                        control.releaseStop()
+                        client.stopSession(sessionId, 5_000L)
+                        client.close()
+                        parentScope.cancel()
+                    }
                 }
-                val stream = ScriptedMuxStream(response + serverPayload)
-                control.enqueueStream(stream)
-                val localPayload = "local-payload-${protocol.name}".encodeToByteArray()
-                val local = FakeLocalConnection(localPayload)
-                listener.offer(local)
-                withTimeout(5_000L) { stream.resetStarted.await() }
-
-                val written = ByteArrayInputStream(stream.writtenBytes())
-                if (protocol == FrpWireProtocol.V2) FrpWireV2.readMagic(written)
-                val request = when (protocol) {
-                    FrpWireProtocol.V1 -> FrpWireV1.readMessage(written)
-                    FrpWireProtocol.V2 -> FrpWireV2.readMessage(written)
-                } as NewVisitorConn
-                assertEquals("run-fixture", request.runId)
-                assertEquals(proxyName, request.proxyName)
-                assertEquals(FIXED_TIMESTAMP, request.timestamp)
-                assertEquals(FrpTimestampAuth.key(SYNTHETIC_SECRET, FIXED_TIMESTAMP), request.signKey)
-                assertFalse(request.useEncryption)
-                assertFalse(request.useCompression)
-                assertTrue(localPayload.contentEquals(written.readBytes()))
-                assertTrue(serverPayload.contentEquals(local.writtenBytes()))
-                assertEquals(1, stream.closeWriteCount.get())
-                assertEquals(1, local.shutdownOutputCount.get())
-                assertEquals(1, stream.resetCount.get())
-                assertEquals("ready", client.getState(sessionId).visitors.getValue("visitor").phase)
-            } finally {
-                control.releaseStop()
-                client.stopSession(sessionId, 5_000L)
-                client.close()
-                parentScope.cancel()
             }
         }
     }
@@ -1611,6 +1634,8 @@ class KotlinFrpcStcpVisitorClientTest {
         secret: String = SYNTHETIC_SECRET,
         bindAddr: String = "127.0.0.1",
         bindPort: Int,
+        useEncryption: Boolean = false,
+        useCompression: Boolean = false,
     ): FrpcStcpVisitorConfig = FrpcStcpVisitorConfig(
         name = name,
         serverName = serverName,
@@ -1618,7 +1643,53 @@ class KotlinFrpcStcpVisitorClientTest {
         secretKey = secret,
         bindAddr = bindAddr,
         bindPort = bindPort,
+        useEncryption = useEncryption,
+        useCompression = useCompression,
     )
+
+    private fun encodeVisitorPayload(
+        payload: ByteArray,
+        useEncryption: Boolean,
+        useCompression: Boolean,
+    ): ByteArray {
+        val encoded = ByteArrayOutputStream()
+        var output: OutputStream = encoded
+        if (useEncryption) {
+            output = FrpV1CfbOutputStream(
+                output,
+                SYNTHETIC_SECRET,
+                ByteArray(FrpV1Cfb.IV_SIZE) { index -> (0x40 + index).toByte() },
+            )
+        }
+        if (useCompression) output = FrpSnappyFramedOutputStream(output)
+        output.use { it.write(payload) }
+        return encoded.toByteArray()
+    }
+
+    private fun decodeVisitorPayload(
+        source: InputStream,
+        useEncryption: Boolean,
+        useCompression: Boolean,
+    ): ByteArray {
+        var input = source
+        if (useEncryption) input = FrpV1Cfb.decrypting(input, SYNTHETIC_SECRET)
+        if (useCompression) input = FrpSnappyFramedInputStream(input)
+        val output = ByteArrayOutputStream()
+        input.use {
+            val buffer = ByteArray(257)
+            try {
+                while (true) {
+                    val count = it.read(buffer)
+                    if (count < 0) break
+                    assertTrue(count > 0)
+                    output.write(buffer, 0, count)
+                }
+            } finally {
+                buffer.fill(0)
+            }
+        }
+        return output.toByteArray()
+    }
 
     private suspend fun awaitControlState(
         states: Channel<FrpControlState>,

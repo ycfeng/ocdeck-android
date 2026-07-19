@@ -65,6 +65,20 @@ Canary 使用 application ID `io.github.ycfeng.ocdeck.canary` 与 version name `
 
 Canary 是内部验证身份，不是接受 Release 签名或公开发布的渠道。两种 backend 实现都位于 `:frpc-stcp-visitor`，因此 AAR 存在时 Canary APK 仍可能包含 Go native library。Build type 契约保证的是 `AppContainer` 选择的 client 实例，而不是安装包中没有 Go native 字节。
 
+## 固定 frp 互操作 Harness
+
+显式 Kotlin STCP 互操作任务与普通单元测试分离：
+
+```powershell
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+```bash
+./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+任务只会下载 `third_party/sources/frp.json` 以 URL 与 SHA-256 固定的当前主机官方 frp `v0.69.1` archive，校验后仅安全解压 `frpc`/`frps`，并把已验证的测试专用文件保存在 Gradle user cache。任务会启动 loopback 子进程并使用合成凭据；它不是 App runtime 路径，不会向 APK/AAR/Release 增加任何内容，且必须在受保护的发布签名 Environment 之外运行。
+
 ## 构建固定 GoMobile Bridge
 
 Bridge 脚本会准备固定并打过补丁的 frp 源码，并安装固定 x/mobile 工具。在执行 `gomobile bind` 前，`cmd/preparemoduleproxy` 会创建稳定、版本化的本地 `GOPROXY` 与 bind module graph，使正式 AAR 不记录 checkout 路径 replacement。Bind 必须同时生成 AAR 及配套 sources JAR；缺少任一制品都会使构建失败。两个 archive 都会先规范化，再将 AAR、sources JAR、POM、checksum、API、provenance 与 native metadata 写入本地 Maven 仓库。
@@ -115,15 +129,15 @@ macOS/Linux：
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
 
-当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.7-frp0.69.1-p1`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
+当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.8-frp0.69.1-p1`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
 
 ## Release 构建
 
 应用版本只来自根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=4
-VERSION_NAME=0.1.3
+VERSION_CODE=5
+VERSION_NAME=0.2.0
 ```
 
 本地 Release 构建要求先生成并校验 bridge，同时提供发布签名输入。使用 `signing.properties.example` 记录的配置键或等价环境变量。Keystore、密码、alias、证书材料和本机路径不得进入 Git、日志、shell 历史、截图或 artifact。Release 仍默认使用 GoMobile；CI 与 Release 自动化只把 Canary 构建为不使用 Release 签名的验证 variant，只有 `assembleRelease` 输出接受 Release 签名、被暂存并具备发布资格。App 打包配置会保留 GoMobile AAR 中已经 stripped 且通过校验的 `libgojni.so` 原始字节；APK 发布门禁仍会独立复核 native 字节绑定、ELF metadata、16KB 对齐和 stripped 状态。

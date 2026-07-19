@@ -30,12 +30,13 @@ class FrpcStcpVisitorFixtureContractTest {
         val manifest = loadManifest()
 
         assertEquals(1, manifest.schemaVersion)
-        assertEquals("k0-go-oracle-v4", manifest.generatorVersion)
+        assertEquals("k0-go-oracle-v5", manifest.generatorVersion)
         assertEquals(
             Pins(
-                bridge = "0.3.7-frp0.69.1-p1",
+                bridge = "0.3.8-frp0.69.1-p1",
                 frp = "github.com/fatedier/frp@v0.69.1 (frp-v0.69.1-p1)",
                 golib = "github.com/fatedier/golib@v0.7.0",
+                snappy = "github.com/golang/snappy@v0.0.4",
                 yamux = "github.com/fatedier/yamux@v0.0.0-20250825093530-d0154be01cd6",
             ),
             manifest.pins,
@@ -45,7 +46,7 @@ class FrpcStcpVisitorFixtureContractTest {
                 synthetic = true,
                 generator = "frpc-stcp-visitor-go/cmd/contractfixture",
                 source =
-                    "Deterministic Go oracle over the bridge DTO contract, pinned frp/golib " +
+                    "Deterministic Go oracle over the bridge DTO contract, pinned frp/golib/snappy " +
                         "APIs, and traffic recorded " +
                         "from paired pinned yamux Client/Server sessions over in-memory " +
                         "connections; no captured external traffic.",
@@ -361,6 +362,7 @@ class FrpcStcpVisitorFixtureContractTest {
         val bridge: String,
         val frp: String,
         val golib: String,
+        val snappy: String,
         val yamux: String,
     )
 
@@ -447,6 +449,31 @@ class FrpcStcpVisitorFixtureContractTest {
                 "bridge/dto-contract.json",
                 "bridge-json",
                 "Go/Kotlin DTO decode and encode semantics match",
+            ),
+            "snappy-cfb-framed-compressed" to EntryMetadata(
+                "compression/snappy/cfb/compressed.bin",
+                "snappy-cfb-framed",
+                "wire=CFB(Snappy framed); decode-order=CFB-then-Snappy",
+            ),
+            "snappy-framed-boundary-65537" to EntryMetadata(
+                "compression/snappy/framed/boundary-65537.bin",
+                "snappy-framed",
+                "chunks=compressed,uncompressed; decode=repeat-byte(0x61,65537)",
+            ),
+            "snappy-framed-compressed" to EntryMetadata(
+                "compression/snappy/framed/compressed.bin",
+                "snappy-framed",
+                "chunks=compressed; decode=repeat-byte(0x61,20)",
+            ),
+            "snappy-framed-uncompressed" to EntryMetadata(
+                "compression/snappy/framed/uncompressed.bin",
+                "snappy-framed",
+                "chunks=uncompressed; decode=byte-sequence-mod-256(256)",
+            ),
+            "snappy-raw-compressed" to EntryMetadata(
+                "compression/snappy/raw/compressed.bin",
+                "snappy-raw",
+                "decode=repeat-byte(0x61,20)",
             ),
             "control-v1-client-cfb" to EntryMetadata(
                 "control/v1/cfb/client-to-server.bin",
@@ -595,6 +622,12 @@ class FrpcStcpVisitorFixtureContractTest {
                 "control/v2/aes-256-gcm/client-to-server.bin",
                 listOf(1, 3, 2, 7),
                 "decrypt-success",
+            ),
+            ChunkPlan(
+                "snappy-cfb-framed-splits",
+                "compression/snappy/cfb/compressed.bin",
+                listOf(1, 2, 3, 5, 8),
+                "decrypt-then-decompress-success",
             ),
             ChunkPlan("wire-v1-bytewise", "wire/v1/login-token.bin", listOf(1), "decode-success"),
             ChunkPlan(

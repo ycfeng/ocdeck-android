@@ -15,14 +15,33 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ### Changed / 变更
 
-- Incremented the immutable GoMobile bridge coordinate to `0.3.7-frp0.69.1-p1` because the formal AAR now uses a stable, versioned local Go module proxy and module graph; native/AAR bytes changed, while the Go, x/mobile, frp, Android API, and NDK pins remain unchanged. / 正式 AAR 现改用稳定、版本化的本地 Go module proxy 与 module graph，因此将不可变 GoMobile bridge 坐标提升为 `0.3.7-frp0.69.1-p1`；native/AAR 字节已变化，Go、x/mobile、frp、Android API 和 NDK 固定版本保持不变。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.8-frp0.69.1-p1` because the post-`0.2.0` AAR combines the `0.2.0` legal inventory with a stable, versioned local Go module proxy and module graph; native/AAR bytes changed, while the Go, x/mobile, frp, Android API, and NDK pins remain unchanged. / `0.2.0` 之后的 AAR 同时纳入 `0.2.0` 法律清单及稳定、版本化的本地 Go module proxy 与 module graph，因此将不可变 GoMobile bridge 坐标提升为 `0.3.8-frp0.69.1-p1`；native/AAR 字节已变化，Go、x/mobile、frp、Android API 和 NDK 固定版本保持不变。
 - CI and Release bridge reproducibility now build a clean candidate checkout and a detached checkout at a different absolute path on the same platform with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`, then compare the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. / CI 与 Release 的 bridge 可复现门禁现在会在同一平台分别构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，再逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
 - Added an internal `canary` App variant that selects the pure Kotlin STCP backend at build time with no user setting or runtime fallback, while `debug`/`release` remain GoMobile-default; CI and Release validate both variants, but only Release APKs receive Release signing and are published. / 新增内部 `canary` App variant，在构建时选择纯 Kotlin STCP backend，不提供用户设置或运行时 fallback；`debug`/`release` 继续默认使用 GoMobile，CI 与 Release 会验证两个 variant，但只有 Release APK 接受 Release 签名并被发布。
-- Regenerated the canonical K0 contract fixtures with `k0-go-oracle-v4`: 29 entries now include v1 `LoginResp`, v1/v2 `StartWorkConn`, and v1/v2 `NewVisitorConnResp` goldens. / 使用 `k0-go-oracle-v4` 重新生成 canonical K0 契约 fixture：当前 29 个条目包含 v1 `LoginResp`、v1/v2 `StartWorkConn` 和 v1/v2 `NewVisitorConnResp` golden。
+- Regenerated the canonical K0 contract fixtures with `k0-go-oracle-v5`: 34 entries now also pin Go Snappy raw/framed output, the 65,536/65,537-byte framing boundary, and AES-CFB plus Snappy payload order for cross-language verification. / 使用 `k0-go-oracle-v5` 重新生成 canonical K0 契约 fixture：当前 34 个条目进一步固定 Go Snappy raw/framed 输出、65,536/65,537 字节 framing 边界，以及 AES-CFB 与 Snappy payload 顺序，用于跨语言校验。
+- The pure Kotlin STCP backend now implements the public `useEncryption` and `useCompression` contract in all four combinations after a successful visitor handshake, using frp-compatible AES-128-CFB and a bounded pure Kotlin Snappy framed codec; App configuration continues to use the default-disabled values. / 纯 Kotlin STCP backend 现在会在 visitor 握手成功后完整实现公共 `useEncryption` 与 `useCompression` 契约的四种组合，使用兼容 frp 的 AES-128-CFB 和有界纯 Kotlin Snappy framed codec；App 配置路径继续使用默认关闭值。
+- Added a host-JVM differential contract suite that runs the same six public client operations against the GoMobile Kotlin adapter seam and the pure Kotlin runtime fixture, normalizing nondeterministic state without claiming native GoMobile execution or real-frps interoperability. / 新增 host-JVM 差分契约测试，对 GoMobile Kotlin adapter seam 与纯 Kotlin runtime fixture 执行相同六个公共 client 操作并归一化非确定状态；该测试不声称执行了 native GoMobile，也不替代真实 frps 互操作。
+- Added an explicit fixed official-frp v0.69.1 Kotlin STCP interoperability gate with hash-pinned multi-platform provisioning, bounded safe extraction/process/log cleanup, wire v1/v2 and four payload modes, concurrent bidirectional larger-than-window traffic with live global/project SSE, typed negative cases, TLS, and frps restart/control-epoch recovery; CI and Release run it in a read-only job outside the signing Environment. / 新增显式固定官方 frp v0.69.1 的 Kotlin STCP 互操作门禁，包含多平台哈希固定 provisioning、有界安全解压与进程/日志清理、wire v1/v2 与四种 payload 模式、长期 global/project SSE 下并发双向超窗口流、类型化负例、TLS 及 frps 重启/control epoch 恢复；CI 与 Release 会在签名 Environment 外的只读 job 中运行。
 
 ### Fixed / 修复
 
 - Removed checkout absolute paths from `libgojni.so` Go BuildInfo. `cmd/checkaar` now validates the four ABI BuildInfo graphs, fixed module identities, versions, and sums, local-path absence, and one consistent module-graph digest, with schema-2 provenance/native metadata binding the proof. / 消除 `libgojni.so` Go BuildInfo 中的 checkout 绝对路径；`cmd/checkaar` 现在校验四个 ABI 的 BuildInfo graph、固定 module identity/version/sum、无本地路径及一致的 module graph digest，并由 schema 2 provenance/native metadata 绑定该证明。
+
+## [0.2.0] - 2026-07-19
+
+### Added / 新增
+
+- Added shared per-server recent-project ordering across the Project Picker and project drawer, with long-press drag reordering, edge auto-scroll, and TalkBack move-up/move-down actions. / 新增 Project Picker 与项目抽屉共享的按服务器最近项目顺序，支持长按拖动排序、边缘自动滚动和 TalkBack 上移/下移操作。
+- Added session message jump controls for the first currently rendered user message and the latest message or active thinking state, while staying clear of the Composer and IME. / 新增会话消息跳转控件，可跳到当前已渲染的首条用户消息，以及最新消息或活跃思考状态，并避让 Composer 与 IME。
+
+### Changed / 变更
+
+- Recent-project records now use a stable numeric order per server. Legacy records preserve their existing array order and receive consecutive order values on the next related write; optimistic reordering rolls back on persistence failure without discarding concurrent additions. / 最近项目记录现在按服务器使用稳定的数字顺序。旧记录会保留现有数组顺序，并在下一次相关写入时补全连续顺序值；乐观排序在持久化失败时回滚，同时不会丢失并发新增项目。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.7-frp0.69.1-p1` because the AAR embeds the `0.2.0` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.0` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.7-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- The Activity now resizes for the soft keyboard so the bottom Composer and screen-constrained overlays remain usable while the IME is visible. / Activity 现在会随软键盘调整尺寸，使底部 Composer 和受屏幕约束的浮层在 IME 显示时仍可使用。
 
 ## [0.1.3] - 2026-07-17
 

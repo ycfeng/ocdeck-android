@@ -4,7 +4,7 @@ import "testing"
 
 func TestBridgeGoModuleVersion(t *testing.T) {
 	versions := Versions{
-		BridgeVersion:  "0.3.7-frp0.69.1-p1",
+		BridgeVersion:  "0.3.8-frp0.69.1-p1",
 		GoVersion:      "go1.26.4",
 		XMobileVersion: "v0.0.0-20260611195102-4dd8f1dbf5d2",
 		AndroidAPI:     26,
@@ -14,13 +14,13 @@ func TestBridgeGoModuleVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "v0.3.7" {
-		t.Fatalf("version = %q, want v0.3.7", got)
+	if got != "v0.3.8" {
+		t.Fatalf("version = %q, want v0.3.8", got)
 	}
 }
 
 func TestBridgeGoModuleVersionRejectsMismatchedPatch(t *testing.T) {
-	versions := Versions{BridgeVersion: "0.3.7-frp0.69.1"}
+	versions := Versions{BridgeVersion: "0.3.8-frp0.69.1"}
 	if _, err := versions.BridgeGoModuleVersion(); err == nil {
 		t.Fatal("expected mismatched frp suffix to fail")
 	}

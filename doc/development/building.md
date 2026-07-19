@@ -65,6 +65,20 @@ Canary uses application ID `io.github.ycfeng.ocdeck.canary` and version name `<V
 
 Canary is an internal verification identity, not a release-signed or published channel. Both backend implementations live in `:frpc-stcp-visitor`, so a Canary APK may still contain Go native libraries when the AAR is present. The build-type contract guarantees the client instance selected by `AppContainer`, not the absence of Go native bytes from the package.
 
+## Fixed-frp Interoperability Harness
+
+The explicit Kotlin STCP interoperability task is separate from ordinary unit tests:
+
+```powershell
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+```bash
+./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+It downloads only the current host's official frp `v0.69.1` archive pinned by URL and SHA-256 in `third_party/sources/frp.json`, verifies and safely extracts only `frpc`/`frps`, and stores the verified test-only files under the Gradle user cache. The task starts loopback subprocesses and synthetic credentials; it is not an App runtime path, adds nothing to APK/AAR/Release contents, and must run outside the protected release-signing Environment.
+
 ## Build the Fixed GoMobile Bridge
 
 The bridge scripts prepare the pinned and patched frp source and install the pinned x/mobile tools. Before `gomobile bind`, `cmd/preparemoduleproxy` creates a stable, versioned local `GOPROXY` and bind module graph so the formal AAR does not record checkout-path replacements. The bind must produce both the AAR and its companion sources JAR; either one missing is a build failure. Both archives are normalized before the AAR, sources JAR, POM, checksum, API, provenance, and native metadata are written to the local Maven repository.
@@ -115,15 +129,15 @@ macOS/Linux:
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
 
-The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.7-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.8-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
 
 ## Release Builds
 
 Application versions come only from root `gradle.properties`:
 
 ```properties
-VERSION_CODE=4
-VERSION_NAME=0.1.3
+VERSION_CODE=5
+VERSION_NAME=0.2.0
 ```
 
 Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts. Release remains GoMobile-default. CI and Release automation build Canary only as a verification variant without Release signing; only `assembleRelease` outputs receive Release signing, are staged, and are eligible for publication. The App packaging configuration preserves the already-stripped `libgojni.so` bytes verified in the GoMobile AAR; APK release checks independently revalidate native-byte binding, ELF metadata, 16KB alignment, and stripped state.

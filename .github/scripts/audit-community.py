@@ -271,24 +271,31 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(workflow, dict), "release workflow must be an object")
     jobs = workflow.get("jobs")
     require(isinstance(jobs, dict), "release workflow has no jobs")
-    expected_jobs = {"preflight", "prepare-notes", "build-release", "publish"}
+    expected_jobs = {"preflight", "prepare-notes", "frpc-interop", "build-release", "publish"}
     require(expected_jobs <= set(jobs), "release workflow omits required jobs")
 
     preflight_job = jobs["preflight"]
     prepare_job = jobs["prepare-notes"]
+    interop_job = jobs["frpc-interop"]
     build_job = jobs["build-release"]
     publish_job = jobs["publish"]
     require(isinstance(preflight_job, dict), "preflight job must be an object")
     require(isinstance(prepare_job, dict), "prepare-notes job must be an object")
+    require(isinstance(interop_job, dict), "frpc-interop job must be an object")
     require(isinstance(build_job, dict), "build-release job must be an object")
     require(isinstance(publish_job, dict), "publish job must be an object")
     require(prepare_job.get("needs") == "preflight", "prepare-notes must depend on preflight")
-    require(build_job.get("needs") == "preflight", "build-release must depend on preflight")
+    require(interop_job.get("needs") == "preflight", "frpc-interop must depend on preflight")
+    build_needs = build_job.get("needs")
+    require(isinstance(build_needs, list), "build-release needs must be a list")
+    require(set(build_needs) == {"preflight", "frpc-interop"}, "build-release has unexpected dependencies")
     publish_needs = publish_job.get("needs")
     require(isinstance(publish_needs, list), "publish needs must be a list")
     require(set(publish_needs) == {"preflight", "prepare-notes", "build-release"}, "publish has unexpected dependencies")
     require("environment" not in prepare_job, "prepare-notes must not access the release environment")
+    require("environment" not in interop_job, "frpc-interop must not access the release environment")
     require(prepare_job.get("permissions", {}).get("contents") == "write", "prepare-notes needs scoped contents: write")
+    require(interop_job.get("permissions", {}).get("contents") == "read", "frpc-interop must remain read-only")
     require(build_job.get("permissions", {}).get("contents") == "read", "build-release must remain read-only")
     require(publish_job.get("permissions", {}).get("contents") == "write", "publish needs scoped contents: write")
 
@@ -320,7 +327,10 @@ def audit_release_metadata(version_name: str) -> None:
     ci_jobs = ci_workflow.get("jobs")
     require(isinstance(ci_jobs, dict), "CI workflow has no jobs")
     ci_verify_job = ci_jobs.get("verify")
+    ci_interop_job = ci_jobs.get("frpc-interop")
     require(isinstance(ci_verify_job, dict), "CI workflow has no verify job")
+    require(isinstance(ci_interop_job, dict), "CI workflow has no frpc-interop job")
+    require("environment" not in ci_interop_job, "CI frpc-interop must not access an environment")
     ci_reproducibility_steps = [
         step
         for step in ci_verify_job.get("steps", [])
@@ -333,6 +343,21 @@ def audit_release_metadata(version_name: str) -> None:
         ci_reproducibility_run.strip() == "bash .github/scripts/verify-bridge-reproducibility.sh",
         "CI workflow does not use the canonical cross-checkout bridge reproducibility gate",
     )
+    release_interop_run = step_named(interop_job, "Run fixed-frp interoperability tests").get("run")
+    ci_interop_steps = [
+        step
+        for step in ci_interop_job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == "Run fixed-frp interoperability tests"
+    ]
+    require(len(ci_interop_steps) == 1, "CI workflow must contain exactly one fixed-frp interop gate")
+    ci_interop_run = ci_interop_steps[0].get("run")
+    expected_interop_run = "bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest"
+    require(release_interop_run == expected_interop_run, "Release frpc-interop does not use the canonical task")
+    require(ci_interop_run == expected_interop_run, "CI frpc-interop does not use the canonical task")
+    build_step_text = "\n".join(
+        str(step.get("run", "")) for step in build_job.get("steps", []) if isinstance(step, dict)
+    )
+    require("frpcInteropTest" not in build_step_text, "signed build-release must not launch downloaded frp binaries")
 
     assemble = step_named(prepare_job, "Assemble release notes")
     assemble_run = assemble.get("run")

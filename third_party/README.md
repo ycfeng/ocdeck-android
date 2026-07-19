@@ -5,7 +5,7 @@ This directory is the manually maintained source and license inventory for OC De
 - `components.toml` records shipped Android/JVM families, build tooling relevant to redistribution, native Go modules compiled into the GoMobile bridge, and bundled assets.
 - `sources/opencode-audio.json` maps every bundled AAC file to the fixed OpenCode source commit and records local SHA-256 values.
 - `sources/opencode-ui-assets.json` maps verified OpenCode-derived Android vectors to fixed upstream source symbols and records local SHA-256 values.
-- `sources/frp.json` records the fixed frp upstream commit, module hashes, downstream patch hash, and all modified or added files.
+- `sources/frp.json` records the fixed frp upstream commit, module hashes, downstream patch hash, all modified or added files, and the six hash-pinned official release archives used only by the explicit interoperability test harness.
 - `sources/gradle-wrapper.json` records the Gradle distribution and wrapper JAR hashes.
 - `licenses/` contains the license texts needed by the inventoried components, including licenses for code embedded inside a dependency JAR.
 - The human-readable distribution notice is `../THIRD_PARTY_NOTICES.txt`.
@@ -13,7 +13,7 @@ This directory is the manually maintained source and license inventory for OC De
 
 ## Audit Basis
 
-The current inventory was reviewed for OC Deck `0.1.3` and bridge `0.3.7-frp0.69.1-p1` on 2026-07-17 using:
+The current inventory was reviewed for OC Deck `0.2.0` and bridge `0.3.8-frp0.69.1-p1` on 2026-07-19 using:
 
 ```powershell
 .\gradlew.bat :app:dependencies --configuration releaseRuntimeClasspath --console=plain

@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicReference
 @OptIn(ExperimentalCoroutinesApi::class)
 class RecentProjectRecorderTest {
     @Test
-    fun recordsAThenBInOrderAndLeavesBAtMruFront() = runTest {
+    fun recordsAThenBInOrderAndLeavesNewestAddedProjectFirst() = runTest {
         val repository = FakeRecentProjectRepository()
         val recorder = recorder(repository, backgroundScope)
 
@@ -38,7 +38,7 @@ class RecentProjectRecorderTest {
     }
 
     @Test
-    fun retriesAOnceBeforeBAndStillLeavesBAtMruFront() = runTest {
+    fun retriesAOnceBeforeBAndStillLeavesNewestAddedProjectFirst() = runTest {
         val repository = FakeRecentProjectRepository { attempt, attemptNumber ->
             if (attempt.directory == DIRECTORY_A && attemptNumber == 1) throw IOException("synthetic I/O failure")
         }
@@ -52,6 +52,22 @@ class RecentProjectRecorderTest {
         assertEquals(listOf(DIRECTORY_A, DIRECTORY_A, DIRECTORY_B), repository.attempts.map { it.directory })
         assertEquals(listOf(DIRECTORY_B, DIRECTORY_A), repository.projects(SERVER_ID).map { it.normalizedDirectory })
         assertTrue(failures.isEmpty())
+    }
+
+    @Test
+    fun recordingExistingProjectAgainDoesNotChangeItsPosition() = runTest {
+        val repository = FakeRecentProjectRepository()
+        val recorder = recorder(repository, backgroundScope)
+
+        recorder.recordAdd(SERVER_ID, DIRECTORY_A)
+        recorder.recordAdd(SERVER_ID, DIRECTORY_B)
+        recorder.recordAdd(SERVER_ID, DIRECTORY_A)
+        runCurrent()
+
+        assertEquals(
+            listOf(DIRECTORY_B, DIRECTORY_A),
+            repository.projects(SERVER_ID).map { it.normalizedDirectory },
+        )
     }
 
     @Test
@@ -214,14 +230,26 @@ class RecentProjectRecorderTest {
             return project
         }
 
+        override suspend fun reorder(
+            serverId: String,
+            projects: List<ProjectRef>,
+            projectToEnsure: ProjectRef?,
+        ) = Unit
+
         override suspend fun remove(serverId: String, directory: String) = Unit
 
         fun projects(serverId: String): List<ProjectRef> = projectsByServer[serverId].orEmpty()
 
         private fun save(serverId: String, project: ProjectRef) {
             val projects = projectsByServer.getOrPut(serverId) { mutableListOf() }
-            projects.removeAll { PathNormalizer().areSame(it.normalizedDirectory, project.normalizedDirectory) }
-            projects.add(0, project)
+            val existingIndex = projects.indexOfFirst {
+                PathNormalizer().areSame(it.normalizedDirectory, project.normalizedDirectory)
+            }
+            if (existingIndex >= 0) {
+                projects[existingIndex] = project
+            } else {
+                projects.add(0, project)
+            }
         }
     }
 

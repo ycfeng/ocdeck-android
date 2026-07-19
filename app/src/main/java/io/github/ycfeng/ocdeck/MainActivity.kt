@@ -3,6 +3,7 @@ package io.github.ycfeng.ocdeck
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.ActionMode
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.compose.setContent
@@ -18,11 +19,14 @@ import io.github.ycfeng.ocdeck.core.notification.OpenCodeNotificationTarget
 import io.github.ycfeng.ocdeck.data.settings.AppColorSchemePreference
 import io.github.ycfeng.ocdeck.data.settings.AppLanguagePreference
 import io.github.ycfeng.ocdeck.data.settings.localized
+import io.github.ycfeng.ocdeck.ui.component.ActiveSourceTracker
+import io.github.ycfeng.ocdeck.ui.component.LocalPlatformActionModeActive
 import io.github.ycfeng.ocdeck.ui.theme.OpenCodeTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
     private val notificationTarget = MutableStateFlow<OpenCodeNotificationTarget?>(null)
+    private val actionModeTracker = ActiveSourceTracker<ActionMode>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setTheme(R.style.Theme_OpenCode)
@@ -37,6 +41,7 @@ class MainActivity : ComponentActivity() {
             val languagePreference by appContainer.appSettingsStore.languagePreference
                 .collectAsStateWithLifecycle(AppLanguagePreference.System)
             val currentNotificationTarget by notificationTarget.collectAsStateWithLifecycle()
+            val isActionModeActive by actionModeTracker.isActive.collectAsStateWithLifecycle()
             val baseContext = LocalContext.current
             val localizedContext = remember(baseContext, languagePreference) {
                 baseContext.localized(languagePreference)
@@ -45,6 +50,7 @@ class MainActivity : ComponentActivity() {
                 LocalContext provides localizedContext,
                 LocalConfiguration provides localizedContext.resources.configuration,
                 LocalActivityResultRegistryOwner provides this@MainActivity,
+                LocalPlatformActionModeActive provides isActionModeActive,
             ) {
                 OpenCodeTheme(colorSchemePreference = colorSchemePreference) {
                     OpenCodeApp(
@@ -61,6 +67,16 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         notificationTarget.value = intent.openCodeNotificationTarget()
+    }
+
+    override fun onActionModeStarted(mode: ActionMode) {
+        super.onActionModeStarted(mode)
+        actionModeTracker.begin(mode)
+    }
+
+    override fun onActionModeFinished(mode: ActionMode) {
+        actionModeTracker.end(mode)
+        super.onActionModeFinished(mode)
     }
 
     override fun onStart() {

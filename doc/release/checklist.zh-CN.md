@@ -29,6 +29,7 @@
 - [ ] 使用固定输入完成 `go run ./cmd/preparefrp`。
 - [ ] 外层 wrapper 与生成的 patched frp `client/...` race tests 已通过。
 - [ ] 社区/文档与第三方/法律清单审计均已通过。
+- [ ] 精确候选版本的 `:frpc-stcp-visitor:frpcInteropTest` 已使用固定官方 frp asset 通过，包括 wire v1/v2、四种 payload 模式、并发双向超窗口流、长期 global/project SSE、负例和重启/control epoch 恢复。
 - [ ] Bridge 可复现门禁已在同一主机平台构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，并隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 逐字节一致。
 - [ ] AAR checksum、精确 Java API、bridge/frp provenance、四 ABI BuildInfo module identity/version/sum、无本地路径与跨 ABI graph digest 证明、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
 - [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/GoMobile 与 Canary/Kotlin 选择。
@@ -70,7 +71,7 @@
 ## Tag 发布
 
 - [ ] 只有全部阻断门禁通过后才创建并推送精确的 `v${VERSION_NAME}`。
-- [ ] Tag 触发的 `preflight`、`prepare-notes` 和 `build-release` 均已成功。
+- [ ] Tag 触发的 `preflight`、`prepare-notes`、`frpc-interop` 和 `build-release` 均已成功，且互操作 job 始终位于受保护的签名 Environment 之外。
 - [ ] 发布说明 artifact 按顺序包含双语前言、版本策划文件和 GitHub 自动说明，并且没有重复 `## Changes` 标题。
 - [ ] `publish` 下载准备好的说明与已验证制品，没有重新生成任一内容。
 - [ ] `0.x` 版本标记为 prerelease；`1.0.0` 及以后遵循普通 release 规则。

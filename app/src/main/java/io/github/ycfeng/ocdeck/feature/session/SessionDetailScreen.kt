@@ -5,6 +5,10 @@ import android.content.ClipData
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -17,6 +21,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -80,6 +85,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -128,6 +134,7 @@ import io.github.ycfeng.ocdeck.domain.prompt.PromptSendAction
 import io.github.ycfeng.ocdeck.domain.prompt.ProjectFileContext
 import io.github.ycfeng.ocdeck.ui.component.LocalizedModalBottomSheet
 import io.github.ycfeng.ocdeck.ui.component.LocalizedPopup
+import io.github.ycfeng.ocdeck.ui.component.LocalPlatformActionModeActive
 import io.github.ycfeng.ocdeck.feature.composer.AgentPickerPopup
 import io.github.ycfeng.ocdeck.feature.composer.ComposerParameterButton
 import io.github.ycfeng.ocdeck.feature.composer.ModelPickerPopup
@@ -218,7 +225,15 @@ fun SessionDetailScreen(
         !isNewSessionEmpty &&
         visibleMessages.lastOrNull()?.role?.equals("assistant", ignoreCase = true) != true
     val messageListState = rememberLazyListState()
+    val isTextSelectionActive = LocalPlatformActionModeActive.current
     val latestVisibleMessageId = visibleMessages.lastOrNull()?.id
+    val firstUserMessageIndex = remember(visibleMessages) {
+        findFirstUserMessageIndex(visibleMessages)
+    }
+    val latestMessageItemIndex = resolveLatestMessageItemIndex(
+        messageCount = visibleMessages.size,
+        showAssistantThinking = showAssistantThinking,
+    )
     val activeAssistantMessageId = if (state.isWorking) {
         visibleMessages.lastOrNull()?.takeIf { it.role.equals("assistant", ignoreCase = true) }?.id
     } else {
@@ -237,14 +252,13 @@ fun SessionDetailScreen(
     var renameTitle by remember { mutableStateOf("") }
 
     LaunchedEffect(state.currentSessionId, latestVisibleMessageId, showAssistantThinking) {
-        val targetIndex = when {
-            showAssistantThinking -> visibleMessages.size
-            visibleMessages.isNotEmpty() -> visibleMessages.lastIndex
-            else -> null
+        if (!isTextSelectionActive && latestMessageItemIndex != null) {
+            messageListState.animateScrollToItem(latestMessageItemIndex)
         }
-        if (targetIndex != null) {
-            messageListState.animateScrollToItem(targetIndex)
-        }
+    }
+
+    LaunchedEffect(isTextSelectionActive) {
+        if (isTextSelectionActive) messageListState.stopScroll()
     }
 
     Scaffold(
@@ -432,28 +446,66 @@ fun SessionDetailScreen(
                     }
                 }
                 state.error?.let { Text(it.asString(), color = MaterialTheme.colorScheme.error) }
-                LazyColumn(
-                    state = messageListState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
                 ) {
-                    items(visibleMessages, key = { it.id }) { message ->
-                        SessionMessageCard(
-                            message = message,
-                            sessions = state.project.sessions,
-                            models = state.models,
-                            turnDurationMillis = assistantTurnDurationMillis[message.id],
-                            isActiveAssistantMessage = message.id == activeAssistantMessageId,
-                            resetEnabled = resetMessagesEnabled,
-                            onResetToMessage = viewModel::resetToMessage,
-                            onOpenSession = onOpenSession,
-                        )
-                    }
-                    if (showAssistantThinking) {
-                        item(key = "assistant-thinking") {
-                            AssistantThinkingCard()
+                    LazyColumn(
+                        state = messageListState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 124.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        items(visibleMessages, key = { it.id }) { message ->
+                            SessionMessageCard(
+                                message = message,
+                                sessions = state.project.sessions,
+                                models = state.models,
+                                turnDurationMillis = assistantTurnDurationMillis[message.id],
+                                isActiveAssistantMessage = message.id == activeAssistantMessageId,
+                                resetEnabled = resetMessagesEnabled,
+                                onResetToMessage = viewModel::resetToMessage,
+                                onOpenSession = onOpenSession,
+                            )
                         }
+                        if (showAssistantThinking) {
+                            item(key = "assistant-thinking") {
+                                AssistantThinkingCard()
+                            }
+                        }
+                    }
+                    val jumpControlsEnabled = latestMessageItemIndex != null && !isTextSelectionActive
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = jumpControlsEnabled,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 3.dp, bottom = 3.dp),
+                        enter = fadeIn(animationSpec = tween(160)) + scaleIn(
+                            animationSpec = tween(160),
+                            initialScale = 0.92f,
+                            transformOrigin = TransformOrigin(1f, 1f),
+                        ),
+                        exit = fadeOut(animationSpec = tween(140)) + scaleOut(
+                            animationSpec = tween(140),
+                            targetScale = 0.92f,
+                            transformOrigin = TransformOrigin(1f, 1f),
+                        ),
+                    ) {
+                        SessionMessageJumpControls(
+                            firstUserEnabled = jumpControlsEnabled && firstUserMessageIndex != null,
+                            latestEnabled = jumpControlsEnabled,
+                            onJumpToFirstUser = {
+                                firstUserMessageIndex?.let { targetIndex ->
+                                    screenScope.launch { messageListState.animateScrollToItem(targetIndex) }
+                                }
+                            },
+                            onJumpToLatest = {
+                                latestMessageItemIndex?.let { targetIndex ->
+                                    screenScope.launch { messageListState.animateScrollToItem(targetIndex) }
+                                }
+                            },
+                        )
                     }
                 }
             }
@@ -494,6 +546,63 @@ fun SessionDetailScreen(
             },
         )
         null -> Unit
+    }
+}
+
+@Composable
+private fun SessionMessageJumpControls(
+    firstUserEnabled: Boolean,
+    latestEnabled: Boolean,
+    onJumpToFirstUser: () -> Unit,
+    onJumpToLatest: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SessionMessageJumpButton(
+            contentDescription = stringResource(R.string.a11y_jump_to_first_user_message),
+            enabled = firstUserEnabled,
+            rotation = 180f,
+            onClick = onJumpToFirstUser,
+        )
+        SessionMessageJumpButton(
+            contentDescription = stringResource(R.string.a11y_jump_to_latest_message),
+            enabled = latestEnabled,
+            rotation = 0f,
+            onClick = onJumpToLatest,
+        )
+    }
+}
+
+@Composable
+private fun SessionMessageJumpButton(
+    contentDescription: String,
+    enabled: Boolean,
+    rotation: Float,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .size(48.dp)
+            .semantics {
+                this.contentDescription = contentDescription
+                role = Role.Button
+            }
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = OpenCodePalette.Panel,
+        border = BorderStroke(1.dp, OpenCodePalette.Border),
+        tonalElevation = 0.dp,
+        shadowElevation = 4.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(R.drawable.ic_opencode_chevron_down),
+                contentDescription = null,
+                tint = if (enabled) OpenCodePalette.IconMuted else OpenCodePalette.IconMuted.copy(alpha = 0.38f),
+                modifier = Modifier
+                    .size(20.dp)
+                    .rotate(rotation),
+            )
+        }
     }
 }
 
@@ -4647,6 +4756,18 @@ private fun formatContextDateTime(timestamp: Long?): String = timestamp
 
 private fun formatClockTime(timestamp: Long?): String? = timestamp?.let {
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it))
+}
+
+internal fun findFirstUserMessageIndex(messages: List<OpenCodeMessage>): Int? =
+    messages.indexOfFirst { it.role.equals("user", ignoreCase = true) }.takeIf { it >= 0 }
+
+internal fun resolveLatestMessageItemIndex(
+    messageCount: Int,
+    showAssistantThinking: Boolean,
+): Int? = when {
+    showAssistantThinking -> messageCount
+    messageCount > 0 -> messageCount - 1
+    else -> null
 }
 
 internal fun assistantTurnDurationMillisByMessageId(messages: List<OpenCodeMessage>): Map<String, Long> {

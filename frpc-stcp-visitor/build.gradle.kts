@@ -3,6 +3,8 @@ import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Properties
 import java.util.zip.ZipFile
+import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     alias(libs.plugins.android.library)
@@ -81,6 +83,27 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+}
+
+val frpcInteropTest = tasks.register<JavaExec>("frpcInteropTest") {
+    group = "verification"
+    description = "Runs the pinned official-frp interoperability harness for the Kotlin STCP visitor."
+    dependsOn(
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcInteropHarness")
+    workingDir(rootProject.projectDir)
+    systemProperty(
+        "ocdeck.frp.interop.cacheDir",
+        gradle.gradleUserHomeDir.resolve("caches/ocdeck/frp-interop/v0.69.1").absolutePath,
+    )
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "512m"
+    doFirst {
+        classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+    }
 }
 
 tasks.register("checkGoMobileBridgeAar") {

@@ -47,7 +47,7 @@ class RecentProjectStore(
             val current = preferences[recentProjectsKey]
                 ?.let { json.decodeFromString<List<RecentProjectRecord>>(it) }
                 .orEmpty()
-            val currentForServer = current.filter { it.serverId == serverId }
+            val currentForServer = orderedDistinctRecentProjectRecords(current, serverId, pathNormalizer)
             project = currentForServer
                 .firstOrNull { pathNormalizer.comparisonKey(it.normalizedDirectory) == targetKey }
                 ?.toProjectRef(pathNormalizer)
@@ -74,16 +74,35 @@ class RecentProjectStore(
         return savedProject
     }
 
+    override suspend fun reorder(
+        serverId: String,
+        projects: List<ProjectRef>,
+        projectToEnsure: ProjectRef?,
+    ) {
+        dataStore.edit { preferences ->
+            val current = preferences[recentProjectsKey]
+                ?.let { json.decodeFromString<List<RecentProjectRecord>>(it) }
+                .orEmpty()
+            val next = reorderRecentProjectRecords(
+                records = current,
+                serverId = serverId,
+                projects = projects,
+                projectToEnsure = projectToEnsure,
+                pathNormalizer = pathNormalizer,
+            )
+            preferences[recentProjectsKey] = json.encodeToString(next)
+        }
+    }
+
     override suspend fun remove(serverId: String, directory: String) {
         val targetKey = pathNormalizer.comparisonKey(pathNormalizer.normalize(directory))
         dataStore.edit { preferences ->
             val current = preferences[recentProjectsKey]
                 ?.let { json.decodeFromString<List<RecentProjectRecord>>(it) }
                 .orEmpty()
-            val next = current.filterNot { record ->
-                record.serverId == serverId &&
-                    pathNormalizer.comparisonKey(record.normalizedDirectory) == targetKey
-            }
+            val nextForServer = orderedDistinctRecentProjectRecords(current, serverId, pathNormalizer)
+                .filterNot { pathNormalizer.comparisonKey(it.normalizedDirectory) == targetKey }
+            val next = replaceRecentProjectRecordsForServer(current, serverId, nextForServer)
             preferences[recentProjectsKey] = json.encodeToString(next)
         }
     }
@@ -108,11 +127,12 @@ internal data class RecentProjectRecord(
     val projectId: String? = null,
     val displayName: String,
     val vcs: String? = null,
+    val sortOrder: Int? = null,
 ) {
     override fun toString(): String =
         "RecentProjectRecord(serverId=<redacted>, normalizedDirectory=<redacted>, " +
             "projectId=${if (projectId == null) "null" else "<redacted>"}, " +
-            "displayName=<redacted>, vcsPresent=${vcs != null})"
+            "displayName=<redacted>, vcsPresent=${vcs != null}, sortOrder=$sortOrder)"
 }
 
 internal fun recentProjectsForServer(
@@ -120,20 +140,8 @@ internal fun recentProjectsForServer(
     serverId: String,
     pathNormalizer: PathNormalizer,
 ): List<ProjectRef> {
-    val seen = linkedSetOf<String>()
-    return records.asSequence()
-        .filter { it.serverId == serverId }
-        .map { record ->
-            val normalized = pathNormalizer.normalize(record.normalizedDirectory)
-            ProjectRef(
-                normalizedDirectory = normalized,
-                projectId = record.projectId,
-                displayName = record.displayName.ifBlank { normalized.substringAfterLast('/').ifBlank { normalized } },
-                vcs = record.vcs,
-                icon = null,
-            )
-        }
-        .filter { project -> seen.add(pathNormalizer.comparisonKey(project.normalizedDirectory)) }
+    return orderedDistinctRecentProjectRecords(records, serverId, pathNormalizer).asSequence()
+        .map { it.toProjectRef(pathNormalizer) }
         .take(MAX_RECENT_PROJECTS)
         .toList()
 }
@@ -144,19 +152,102 @@ internal fun upsertRecentProjectRecord(
     project: ProjectRef,
     pathNormalizer: PathNormalizer,
 ): List<RecentProjectRecord> {
-    val normalized = pathNormalizer.normalize(project.normalizedDirectory)
-    val savedProject = project.copy(
-        normalizedDirectory = normalized,
-        displayName = project.displayName.ifBlank { normalized.substringAfterLast('/').ifBlank { normalized } },
-    )
-    val seen = linkedSetOf<String>()
-    val currentForServer = records.filter { it.serverId == serverId }
-    val nextForServer = (sequenceOf(savedProject.toRecentProjectRecord(serverId)) + currentForServer.asSequence())
-        .filter { record -> seen.add(pathNormalizer.comparisonKey(record.normalizedDirectory)) }
-        .take(MAX_RECENT_PROJECTS)
-        .toList()
-    return records.filterNot { it.serverId == serverId } + nextForServer
+    val savedProject = project.normalized(pathNormalizer)
+    val targetKey = pathNormalizer.comparisonKey(savedProject.normalizedDirectory)
+    val nextForServer = orderedDistinctRecentProjectRecords(records, serverId, pathNormalizer).toMutableList()
+    val existingIndex = nextForServer.indexOfFirst {
+        pathNormalizer.comparisonKey(it.normalizedDirectory) == targetKey
+    }
+    val savedRecord = savedProject.toRecentProjectRecord(serverId)
+    if (existingIndex >= 0) {
+        nextForServer[existingIndex] = savedRecord
+    } else {
+        nextForServer.add(0, savedRecord)
+    }
+    return replaceRecentProjectRecordsForServer(records, serverId, nextForServer)
 }
+
+internal fun reorderRecentProjectRecords(
+    records: List<RecentProjectRecord>,
+    serverId: String,
+    projects: List<ProjectRef>,
+    projectToEnsure: ProjectRef? = null,
+    pathNormalizer: PathNormalizer,
+): List<RecentProjectRecord> {
+    val currentForServer = orderedDistinctRecentProjectRecords(records, serverId, pathNormalizer)
+        .take(MAX_RECENT_PROJECTS)
+    val currentByKey = currentForServer.associateBy {
+        pathNormalizer.comparisonKey(it.normalizedDirectory)
+    }
+    val ensuredProject = projectToEnsure?.normalized(pathNormalizer)
+    val ensuredKey = ensuredProject?.let { pathNormalizer.comparisonKey(it.normalizedDirectory) }
+    val submittedKeys = linkedSetOf<String>()
+    val reordered = projects.map { it.normalized(pathNormalizer) }
+        .filter { submittedKeys.add(pathNormalizer.comparisonKey(it.normalizedDirectory)) }
+        .mapNotNull { project ->
+            val key = pathNormalizer.comparisonKey(project.normalizedDirectory)
+            currentByKey[key] ?: ensuredProject
+                ?.takeIf { key == ensuredKey }
+                ?.toRecentProjectRecord(serverId)
+        }
+        .toMutableList()
+    val submittedCurrentKeys = submittedKeys.filterTo(mutableSetOf()) { it in currentByKey }
+    currentForServer.forEachIndexed { currentIndex, record ->
+        val key = pathNormalizer.comparisonKey(record.normalizedDirectory)
+        if (key in submittedKeys) return@forEachIndexed
+        val nextSubmittedKey = currentForServer.asSequence()
+            .drop(currentIndex + 1)
+            .map { pathNormalizer.comparisonKey(it.normalizedDirectory) }
+            .firstOrNull { it in submittedCurrentKeys }
+        val insertionIndex = nextSubmittedKey
+            ?.let { nextKey ->
+                reordered.indexOfFirst {
+                    pathNormalizer.comparisonKey(it.normalizedDirectory) == nextKey
+                }.takeIf { it >= 0 }
+            }
+            ?: reordered.size
+        reordered.add(insertionIndex, record)
+    }
+    if (ensuredKey != null && ensuredKey !in currentByKey) {
+        while (reordered.size > MAX_RECENT_PROJECTS) {
+            val removalIndex = reordered.indexOfLast {
+                pathNormalizer.comparisonKey(it.normalizedDirectory) != ensuredKey
+            }
+            if (removalIndex < 0) break
+            reordered.removeAt(removalIndex)
+        }
+    }
+    return replaceRecentProjectRecordsForServer(records, serverId, reordered)
+}
+
+private fun orderedDistinctRecentProjectRecords(
+    records: List<RecentProjectRecord>,
+    serverId: String,
+    pathNormalizer: PathNormalizer,
+): List<RecentProjectRecord> {
+    val seen = linkedSetOf<String>()
+    return records.withIndex().asSequence()
+        .filter { it.value.serverId == serverId }
+        .sortedWith(
+            compareBy<IndexedValue<RecentProjectRecord>>(
+                { if (it.value.sortOrder == null) 1 else 0 },
+                { it.value.sortOrder ?: 0 },
+                { it.index },
+            ),
+        )
+        .map { it.value.normalized(pathNormalizer) }
+        .filter { seen.add(pathNormalizer.comparisonKey(it.normalizedDirectory)) }
+        .toList()
+}
+
+private fun replaceRecentProjectRecordsForServer(
+    records: List<RecentProjectRecord>,
+    serverId: String,
+    nextForServer: List<RecentProjectRecord>,
+): List<RecentProjectRecord> = records.filterNot { it.serverId == serverId } +
+    nextForServer.take(MAX_RECENT_PROJECTS).mapIndexed { index, record ->
+        record.copy(serverId = serverId, sortOrder = index)
+    }
 
 internal fun handleRecentProjectReadFailure(
     throwable: Throwable,
@@ -170,6 +261,14 @@ internal fun handleRecentProjectReadFailure(
         is IOException -> failureReporter.reportSafely(RecentProjectFailure.ReadIo)
         else -> failureReporter.reportSafely(RecentProjectFailure.ReadUnexpected)
     }
+}
+
+private fun ProjectRef.normalized(pathNormalizer: PathNormalizer): ProjectRef {
+    val normalized = pathNormalizer.normalize(normalizedDirectory)
+    return copy(
+        normalizedDirectory = normalized,
+        displayName = displayName.ifBlank { normalized.substringAfterLast('/').ifBlank { normalized } },
+    )
 }
 
 private fun ProjectRef.toRecentProjectRecord(serverId: String): RecentProjectRecord = RecentProjectRecord(
@@ -188,6 +287,14 @@ private fun RecentProjectRecord.toProjectRef(pathNormalizer: PathNormalizer): Pr
         displayName = displayName.ifBlank { normalized.substringAfterLast('/').ifBlank { normalized } },
         vcs = vcs,
         icon = null,
+    )
+}
+
+private fun RecentProjectRecord.normalized(pathNormalizer: PathNormalizer): RecentProjectRecord {
+    val normalized = pathNormalizer.normalize(normalizedDirectory)
+    return copy(
+        normalizedDirectory = normalized,
+        displayName = displayName.ifBlank { normalized.substringAfterLast('/').ifBlank { normalized } },
     )
 }
 

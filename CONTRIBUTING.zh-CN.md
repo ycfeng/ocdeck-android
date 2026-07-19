@@ -91,10 +91,11 @@ frpc-stcp-visitor-go: go run ./cmd/preparefrp
 frpc-stcp-visitor-go: go test -race -modfile=build/frp-patched.mod ./...
 frpc-stcp-visitor-go/build/frp-v0.69.1-p1: go test -race ./client/...
 仓库根目录: bash frpc-stcp-visitor-go/build-aar.sh
+仓库根目录: ./gradlew :frpc-stcp-visitor:frpcInteropTest
 仓库根目录: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
 
-Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。完整 Android 门禁会同时验证 Debug/GoMobile 与 Canary/Kotlin 装配，但 Canary 不因此成为发布制品。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。bridge 字节发生变化时必须递增 bridge 版本；不得在同一 Maven 坐标下发布不同字节。
+Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。`frpcInteropTest` 只会显式下载当前主机对应、经哈希固定的官方 frp release asset，保存在 Gradle cache 中，并在发布签名 environment 之外运行；普通单元测试不会启动它。完整 Android 门禁会同时验证 Debug/GoMobile 与 Canary/Kotlin 装配，但 Canary 不因此成为发布制品。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。bridge 字节发生变化时必须递增 bridge 版本；不得在同一 Maven 坐标下发布不同字节。
 
 ## 敏感信息与测试 Fixture
 

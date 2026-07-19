@@ -17,13 +17,14 @@ import (
 
 	frpmsg "github.com/fatedier/frp/pkg/msg"
 	libcrypto "github.com/fatedier/golib/crypto"
+	gosnappy "github.com/golang/snappy"
 	fmux "github.com/hashicorp/yamux"
 	"golang.org/x/mod/modfile"
 )
 
 const (
 	schemaVersion          = 1
-	generatorVersion       = "k0-go-oracle-v4"
+	generatorVersion       = "k0-go-oracle-v5"
 	manifestFileName       = "manifest.json"
 	maxCanonicalFileSize   = 1 << 20
 	maxCanonicalFileCount  = 128
@@ -54,6 +55,7 @@ type pins struct {
 	Bridge string `json:"bridge"`
 	FRP    string `json:"frp"`
 	GoLib  string `json:"golib"`
+	Snappy string `json:"snappy"`
 	Yamux  string `json:"yamux"`
 }
 
@@ -262,8 +264,9 @@ func readPins(root string) (pins, error) {
 	}
 	frpVersion := requiredVersion(parsed, "github.com/fatedier/frp")
 	goLibVersion := requiredVersion(parsed, "github.com/fatedier/golib")
-	if frpVersion == "" || goLibVersion == "" {
-		return pins{}, fmt.Errorf("required frp or golib pin is missing")
+	snappyVersion := requiredVersion(parsed, "github.com/golang/snappy")
+	if frpVersion == "" || goLibVersion == "" || snappyVersion == "" {
+		return pins{}, fmt.Errorf("required frp, golib, or snappy pin is missing")
 	}
 
 	var yamuxModule, yamuxVersion string
@@ -315,12 +318,13 @@ func readPins(root string) (pins, error) {
 		downstreamName,
 		frpVersion,
 		goLibVersion,
+		snappyVersion,
 		yamuxModule,
 		yamuxVersion,
 	); err != nil {
 		return pins{}, err
 	}
-	if err := validateActiveImplementations(root, downstreamName, goLibVersion, yamuxModule, yamuxVersion); err != nil {
+	if err := validateActiveImplementations(root, downstreamName, goLibVersion, snappyVersion, yamuxModule, yamuxVersion); err != nil {
 		return pins{}, err
 	}
 
@@ -328,6 +332,7 @@ func readPins(root string) (pins, error) {
 		Bridge: bridgeVersion,
 		FRP:    fmt.Sprintf("github.com/fatedier/frp@%s (%s)", frpVersion, downstreamName),
 		GoLib:  "github.com/fatedier/golib@" + goLibVersion,
+		Snappy: "github.com/golang/snappy@" + snappyVersion,
 		Yamux:  yamuxModule + "@" + yamuxVersion,
 	}, nil
 }
@@ -338,6 +343,7 @@ func validatePreparedModuleGraph(
 	downstreamName string,
 	frpVersion string,
 	goLibVersion string,
+	snappyVersion string,
 	yamuxModule string,
 	yamuxVersion string,
 ) error {
@@ -353,6 +359,7 @@ func validatePreparedModuleGraph(
 	if prepared.Module == nil || base.Module == nil || prepared.Module.Mod.Path != base.Module.Mod.Path ||
 		requiredVersion(prepared, "github.com/fatedier/frp") != frpVersion ||
 		requiredVersion(prepared, "github.com/fatedier/golib") != goLibVersion ||
+		requiredVersion(prepared, "github.com/golang/snappy") != snappyVersion ||
 		requiredVersion(prepared, "github.com/hashicorp/yamux") != requiredVersion(base, "github.com/hashicorp/yamux") {
 		return fmt.Errorf("contract fixture oracle requires the prepared build/frp-patched.mod module graph")
 	}
@@ -391,13 +398,16 @@ func replacementFor(file *modfile.File, module string) (*modfile.Replace, bool) 
 	return found, found != nil
 }
 
-func validateActiveImplementations(root, downstreamName, goLibVersion, yamuxModule, yamuxVersion string) error {
+func validateActiveImplementations(root, downstreamName, goLibVersion, snappyVersion, yamuxModule, yamuxVersion string) error {
 	expected := filepath.Join(root, "frpc-stcp-visitor-go", "build", downstreamName)
 	if !linkedFunctionIsWithin(frpmsg.WriteMsg, expected) {
 		return fmt.Errorf("contract fixture oracle requires the prepared build/frp-patched.mod module graph")
 	}
 	if !linkedFunctionHasModuleVersion(libcrypto.NewReader, "github.com/fatedier/golib", goLibVersion) {
 		return fmt.Errorf("contract fixture oracle requires the pinned golib module graph")
+	}
+	if !linkedFunctionHasModuleVersion(gosnappy.NewWriter, "github.com/golang/snappy", snappyVersion) {
+		return fmt.Errorf("contract fixture oracle requires the pinned snappy module graph")
 	}
 	if !linkedFunctionHasModuleVersion(fmux.DefaultConfig, yamuxModule, yamuxVersion) {
 		return fmt.Errorf("contract fixture oracle requires the pinned yamux module graph")
