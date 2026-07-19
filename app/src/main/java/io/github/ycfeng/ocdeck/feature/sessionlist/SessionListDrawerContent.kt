@@ -3,6 +3,8 @@ package io.github.ycfeng.ocdeck.feature.sessionlist
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.selection.selectable
@@ -23,6 +25,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -30,18 +34,30 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -51,6 +67,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.zIndex
 import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.core.store.NotificationDotKind
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
@@ -61,9 +78,16 @@ import io.github.ycfeng.ocdeck.ui.component.OpenCodeNotificationDot
 import io.github.ycfeng.ocdeck.ui.component.OpenCodePrimaryButton
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeSectionLabel
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeSessionRunningIndicator
+import io.github.ycfeng.ocdeck.ui.component.calculateVerticalReorderAutoScroll
+import io.github.ycfeng.ocdeck.ui.component.draggedOffsetAfterVerticalMove
+import io.github.ycfeng.ocdeck.ui.component.findVerticalReorderTarget
+import io.github.ycfeng.ocdeck.ui.component.findVisibleReorderItem
 import io.github.ycfeng.ocdeck.ui.component.isOpenCodeWorkingSessionStatus
+import io.github.ycfeng.ocdeck.ui.component.moveItem
 import io.github.ycfeng.ocdeck.ui.component.notificationStateDescription
 import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
+import io.github.ycfeng.ocdeck.ui.text.UiText
+import io.github.ycfeng.ocdeck.ui.text.asString
 import java.text.BreakIterator
 import java.util.Locale
 
@@ -72,6 +96,9 @@ internal fun SessionListDrawerContent(
     state: OpenCodeProjectState,
     activeSessionId: String?,
     projects: List<ProjectRef>,
+    projectReorderError: UiText?,
+    onReorderProjects: (List<ProjectRef>, onFailure: () -> Unit) -> Unit,
+    onProjectDragStateChanged: (Boolean) -> Unit,
     onSelectProject: (String) -> Unit,
     onOpenProjectPicker: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -102,14 +129,18 @@ internal fun SessionListDrawerContent(
             .fillMaxSize()
             .background(OpenCodePalette.Panel),
     ) {
-        DrawerRail(
-            projects = projects,
-            activeProjectDirectory = state.normalizedDirectory,
-            notificationDotKind = state.projectNotificationDotKind(),
-            onSelectProject = onSelectProject,
-            onOpenProjectPicker = onOpenProjectPicker,
-            onOpenSettings = onOpenSettings,
-        )
+        key(state.serverId) {
+            DrawerRail(
+                projects = projects,
+                activeProjectDirectory = state.normalizedDirectory,
+                notificationDotKind = state.projectNotificationDotKind(),
+                onReorderProjects = onReorderProjects,
+                onProjectDragStateChanged = onProjectDragStateChanged,
+                onSelectProject = onSelectProject,
+                onOpenProjectPicker = onOpenProjectPicker,
+                onOpenSettings = onOpenSettings,
+            )
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -132,6 +163,13 @@ internal fun SessionListDrawerContent(
                     onEditProject = onEditProject,
                     onClearNotifications = onClearNotifications,
                     onCloseProject = onCloseProject,
+                )
+            }
+            projectReorderError?.let { error ->
+                Text(
+                    text = error.asString(),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
             OpenCodePrimaryButton(text = stringResource(R.string.session_new), onClick = onNewSession, modifier = Modifier.fillMaxWidth())
@@ -430,10 +468,89 @@ private fun DrawerRail(
     projects: List<ProjectRef>,
     activeProjectDirectory: String,
     notificationDotKind: NotificationDotKind,
+    onReorderProjects: (List<ProjectRef>, onFailure: () -> Unit) -> Unit,
+    onProjectDragStateChanged: (Boolean) -> Unit,
     onSelectProject: (String) -> Unit,
     onOpenProjectPicker: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
+    val hapticFeedback = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val listState = rememberLazyListState()
+    val autoScrollThresholdPx = with(density) { ProjectRailDragAutoScrollThreshold.toPx() }
+    val autoScrollStepPx = with(density) { ProjectRailDragAutoScrollStep.toPx() }
+    val moveProjectUpLabel = stringResource(R.string.a11y_move_project_up)
+    val moveProjectDownLabel = stringResource(R.string.a11y_move_project_down)
+    val currentProjects by rememberUpdatedState(projects)
+    val currentOnProjectDragStateChanged by rememberUpdatedState(onProjectDragStateChanged)
+    var displayedProjects by remember { mutableStateOf(projects) }
+    var dragState by remember { mutableStateOf<ProjectRailDragState?>(null) }
+    var autoScrollDelta by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(projects) {
+        if (dragState == null) displayedProjects = projects
+    }
+
+    fun moveDraggedProjectToVisibleTarget() {
+        val activeDragState = dragState ?: return
+        val draggedItem = listState.findVisibleReorderItem(activeDragState.directory) ?: return
+        val draggedTop = draggedItem.offset.toFloat() + activeDragState.offsetY
+        val draggedBottom = draggedTop + draggedItem.size.toFloat()
+        val targetItem = listState.findVerticalReorderTarget(
+            draggedKey = activeDragState.directory,
+            draggedTop = draggedTop,
+            draggedBottom = draggedBottom,
+            reorderableKeys = displayedProjects.mapTo(mutableSetOf<Any>()) { it.normalizedDirectory },
+        ) ?: return
+        val fromIndex = displayedProjects.indexOfFirst {
+            it.normalizedDirectory == activeDragState.directory
+        }
+        val toIndex = displayedProjects.indexOfFirst {
+            it.normalizedDirectory == targetItem.key
+        }
+        if (fromIndex < 0 || toIndex < 0 || fromIndex == toIndex) return
+        val newDraggedOffset = targetItem.draggedOffsetAfterVerticalMove(
+            draggedItem = draggedItem,
+            movingDown = fromIndex < toIndex,
+        )
+        displayedProjects = displayedProjects.moveItem(fromIndex, toIndex)
+        dragState = activeDragState.copy(
+            offsetY = activeDragState.offsetY + draggedItem.offset.toFloat() - newDraggedOffset,
+        )
+    }
+
+    fun updateAutoScrollDelta() {
+        val activeDragState = dragState
+        val draggedItem = activeDragState?.let { listState.findVisibleReorderItem(it.directory) }
+        autoScrollDelta = if (activeDragState == null || draggedItem == null) {
+            0f
+        } else {
+            val draggedTop = draggedItem.offset.toFloat() + activeDragState.offsetY
+            listState.calculateVerticalReorderAutoScroll(
+                draggedTop = draggedTop,
+                draggedBottom = draggedTop + draggedItem.size.toFloat(),
+                thresholdPx = autoScrollThresholdPx,
+                stepPx = autoScrollStepPx,
+            )
+        }
+    }
+
+    LaunchedEffect(dragState?.directory, autoScrollDelta) {
+        while (dragState != null && autoScrollDelta != 0f) {
+            withFrameNanos { }
+            val consumed = listState.scrollBy(autoScrollDelta)
+            if (consumed == 0f) {
+                autoScrollDelta = 0f
+                break
+            }
+            dragState = dragState?.let { it.copy(offsetY = it.offsetY + consumed) }
+            moveDraggedProjectToVisibleTarget()
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { currentOnProjectDragStateChanged(false) }
+    }
+
     BoxWithConstraints(
         modifier = Modifier
             .width(64.dp)
@@ -441,8 +558,8 @@ private fun DrawerRail(
             .background(OpenCodePalette.PanelMuted)
             .padding(top = 12.dp, bottom = 12.dp),
     ) {
-        val projectContentHeight = RailButtonSize * projects.size.toFloat() +
-            RailItemSpacing * (projects.size - 1).coerceAtLeast(0).toFloat()
+        val projectContentHeight = RailButtonSize * displayedProjects.size.toFloat() +
+            RailItemSpacing * (displayedProjects.size - 1).coerceAtLeast(0).toFloat()
         val availableProjectHeight = (maxHeight - RailFixedContentHeight).coerceAtLeast(0.dp)
         val projectListHeight = minOf(
             projectContentHeight,
@@ -456,18 +573,55 @@ private fun DrawerRail(
         ) {
             if (projectListHeight > 0.dp) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .height(projectListHeight)
                         .selectableGroup(),
                     verticalArrangement = Arrangement.spacedBy(RailItemSpacing),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    items(
-                        items = projects,
-                        key = { project -> project.normalizedDirectory },
-                    ) { project ->
+                    itemsIndexed(
+                        items = displayedProjects,
+                        key = { _, project -> project.normalizedDirectory },
+                    ) { index, project ->
                         val selected = project.normalizedDirectory == activeProjectDirectory
+                        val currentDragState = dragState
+                        val isDragging = currentDragState?.directory == project.normalizedDirectory
+                        val accessibilityReorderActions = buildList {
+                            if (index > 0) {
+                                add(CustomAccessibilityAction(moveProjectUpLabel) {
+                                    val currentIndex = displayedProjects.indexOfFirst {
+                                        it.normalizedDirectory == project.normalizedDirectory
+                                    }
+                                    if (currentIndex <= 0) return@CustomAccessibilityAction false
+                                    val reorderedProjects = displayedProjects.moveItem(currentIndex, currentIndex - 1)
+                                    displayedProjects = reorderedProjects
+                                    onReorderProjects(reorderedProjects) { displayedProjects = currentProjects }
+                                    true
+                                })
+                            }
+                            if (index < displayedProjects.lastIndex) {
+                                add(CustomAccessibilityAction(moveProjectDownLabel) {
+                                    val currentIndex = displayedProjects.indexOfFirst {
+                                        it.normalizedDirectory == project.normalizedDirectory
+                                    }
+                                    if (currentIndex !in 0 until displayedProjects.lastIndex) {
+                                        return@CustomAccessibilityAction false
+                                    }
+                                    val reorderedProjects = displayedProjects.moveItem(currentIndex, currentIndex + 1)
+                                    displayedProjects = reorderedProjects
+                                    onReorderProjects(reorderedProjects) { displayedProjects = currentProjects }
+                                    true
+                                })
+                            }
+                        }
                         RailButton(
+                            modifier = Modifier
+                                .then(if (isDragging) Modifier else Modifier.animateItem())
+                                .zIndex(if (isDragging) 1f else 0f)
+                                .graphicsLayer {
+                                    translationY = currentDragState?.offsetY?.takeIf { isDragging } ?: 0f
+                                },
                             text = projectInitial(project.displayName),
                             accessibilityLabel = stringResource(
                                 R.string.a11y_open_project_named,
@@ -477,6 +631,54 @@ private fun DrawerRail(
                             selected = selected,
                             selectionRole = Role.Tab,
                             notificationDotKind = if (selected) notificationDotKind else NotificationDotKind.None,
+                            isDragging = isDragging,
+                            accessibilityReorderActions = accessibilityReorderActions,
+                            dragHandleModifier = if (displayedProjects.size > 1) {
+                                Modifier.pointerInput(project.normalizedDirectory) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = {
+                                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            dragState = ProjectRailDragState(project.normalizedDirectory)
+                                            autoScrollDelta = 0f
+                                            currentOnProjectDragStateChanged(true)
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            val activeDragState = dragState
+                                            val draggedItem = activeDragState?.let {
+                                                listState.findVisibleReorderItem(it.directory)
+                                            }
+                                            if (activeDragState != null && draggedItem != null) {
+                                                dragState = activeDragState.copy(
+                                                    offsetY = activeDragState.offsetY + dragAmount.y,
+                                                )
+                                                moveDraggedProjectToVisibleTarget()
+                                                updateAutoScrollDelta()
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            dragState = null
+                                            autoScrollDelta = 0f
+                                            currentOnProjectDragStateChanged(false)
+                                            if (displayedProjects.map { it.normalizedDirectory } !=
+                                                currentProjects.map { it.normalizedDirectory }
+                                            ) {
+                                                onReorderProjects(displayedProjects) {
+                                                    displayedProjects = currentProjects
+                                                }
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            dragState = null
+                                            autoScrollDelta = 0f
+                                            displayedProjects = currentProjects
+                                            currentOnProjectDragStateChanged(false)
+                                        },
+                                    )
+                                }
+                            } else {
+                                Modifier
+                            },
                             onClick = { onSelectProject(project.normalizedDirectory) },
                         )
                     }
@@ -502,6 +704,7 @@ private fun DrawerRail(
 
 @Composable
 private fun RailButton(
+    modifier: Modifier = Modifier,
     text: String? = null,
     iconRes: Int? = null,
     accessibilityLabel: String? = text,
@@ -509,6 +712,9 @@ private fun RailButton(
     selected: Boolean = false,
     selectionRole: Role? = null,
     notificationDotKind: NotificationDotKind = NotificationDotKind.None,
+    isDragging: Boolean = false,
+    accessibilityReorderActions: List<CustomAccessibilityAction> = emptyList(),
+    dragHandleModifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val notificationStateDescription = notificationDotKind.notificationStateDescription()
@@ -525,13 +731,15 @@ private fun RailButton(
         )
     }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(RailButtonSize)
             .semantics(mergeDescendants = true) {
                 accessibilityLabel?.let { contentDescription = it }
                 notificationStateDescription?.let { stateDescription = it }
+                customActions = accessibilityReorderActions
             }
-            .then(interactionModifier),
+            .then(interactionModifier)
+            .then(dragHandleModifier),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
@@ -539,7 +747,7 @@ private fun RailButton(
                 .width(40.dp)
                 .height(40.dp),
             shape = RoundedCornerShape(10.dp),
-            color = OpenCodePalette.Panel,
+            color = if (isDragging) OpenCodePalette.Canvas else OpenCodePalette.Panel,
             border = BorderStroke(
                 width = if (selected) 2.dp else 1.dp,
                 color = if (selected) OpenCodePalette.SelectionBorder else OpenCodePalette.Border,
@@ -574,6 +782,13 @@ private fun RailButton(
     }
 }
 
+private data class ProjectRailDragState(
+    val directory: String,
+    val offsetY: Float = 0f,
+) {
+    override fun toString(): String = "ProjectRailDragState(directory=<redacted>, offsetY=$offsetY)"
+}
+
 internal fun projectInitial(displayName: String): String {
     val value = displayName.trim().ifBlank { return "O" }
     val iterator = BreakIterator.getCharacterInstance(Locale.ROOT)
@@ -590,4 +805,6 @@ private fun String.displayName(): String = trimEnd('/', '\\')
 private val RailButtonSize = 48.dp
 private val RailItemSpacing = 12.dp
 private val RailFixedContentHeight = RailItemSpacing + RailButtonSize + RailButtonSize
+private val ProjectRailDragAutoScrollThreshold = 28.dp
+private val ProjectRailDragAutoScrollStep = 16.dp
 private const val ProjectRailMaxHeightFraction = 0.75f

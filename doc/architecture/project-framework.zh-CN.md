@@ -292,7 +292,7 @@ OC Deck 是服务端驱动应用：项目、会话、消息、权限、问题、
 
 当前使用：
 
-- DataStore Preferences：保存服务器列表、当前服务器、最近项目和 UI 偏好（配色方案、应用语言等）；最近项目写入属于辅助状态，由应用级有序 `RecentProjectRecorder` 在导航后 best-effort 执行，本地持久化失败不能阻止进入项目。当前没有独立的上次打开项目字段，也没有按项目保存最近 session。
+- DataStore Preferences：保存服务器列表、当前服务器、最近项目和 UI 偏好（配色方案、应用语言等）。每条最近项目记录都有数值 `sortOrder`，每个服务器最多按升序展示 20 条；旧记录缺少该字段时保留数组顺序，后续写入会把该服务器保留的记录从零开始连续重编号。首次新增插入顶部，确保已有记录或更新 metadata 时保留原位置。导航触发的 add/upsert 属于辅助写入，由应用级有序 `RecentProjectRecorder` 在导航后 best-effort 执行，本地持久化失败不能阻止进入项目。当前没有独立的上次打开项目字段，也没有按项目保存最近 session。
 - Android Keystore：保存 OpenCode Basic 密码、SSH 密码/私钥/passphrase/host fingerprint，以及 frp/STCP secret。Provider API key 与 OAuth 凭据写入 OpenCode Server auth store，Android 不持久化。
 - 内存 Store：保存当前运行期间的项目、会话、消息、权限、问题、SSE 状态。
 
@@ -524,8 +524,9 @@ Store 建议拆分：
 页面适配要求：
 
 - 项目壳层使用 Compose `ModalNavigationDrawer`，避免 Web offscreen DOM 指针拦截问题。
-- 左侧 rail 将活动项目与当前服务器规范化后的 MRU 最近项目合并。项目按钮使用最多占抽屉安全内容高度 75% 的有界列表，“打开项目”和“设置”保持固定；选择项目进入其项目首页，并尽量复用返回栈中已有的匹配目的地，最近项目记录不恢复最近 session。
-- 项目/会话导航成功后向应用级 `RecentProjectRecorder` 提交打开记录；DataStore 失败只做安全报告，绝不回滚导航或已经成功的项目改名。
+- 项目选择页和左侧 rail 共享当前服务器持久化的最近项目顺序。路径继续按 server 加比较 key 规范化去重。活动项目缺失时，rail 将其合入顶部并保持最多 20 项；重排 API 只能在同一次原子持久化中纳入这个被显式标识的项目。重排以提交时的当前记录为准，保留陈旧界面快照遗漏的并发新增记录，也不会重新创建已删除的陈旧提交记录。项目按钮使用最多占抽屉安全内容高度 75% 的有界列表，“打开项目”和“设置”保持固定且不参与排序；选择项目进入其项目首页，并尽量复用返回栈中已有的匹配目的地，最近项目记录不恢复最近 session。
+- 两处都支持长按纵向拖拽、边缘自动滚动、乐观排序、持久化和失败回滚。项目选择页仅卡片正文启动拖拽，因此删除按钮保持独立；Drawer rail 重排期间禁用外层水平抽屉手势。
+- 项目/会话导航成功后向应用级 `RecentProjectRecorder` 提交打开记录，但已有记录保持原位置。返回项目首页、直接打开已有会话和项目重命名只确保记录或更新 metadata。DataStore 失败只做安全报告，绝不回滚导航或已经成功的项目改名。
 - 只有 App 在前台且会话 destination lifecycle 至少为 `STARTED` 时才持有可见性 lease；通知已查看状态不得根据 ViewModel 存活推断。
 - 项目文件由壳层提供带浏览/选择模式的右侧覆盖面板：手机占满宽度，大屏最大 420dp；遮罩只覆盖面板外区域，面板打开时隐藏底层语义，系统返回先从预览回到文件树再关闭。选择模式通过绑定 route/session 的请求确认最多 10 个完整文件，取消不修改草稿；不采用压缩会话内容的桌面双栏。
 - 所有全屏页面之间的 `NavHost` 路由跳转统一使用滑入滑出动画：前进右进左出，返回左进右出。
@@ -549,7 +550,7 @@ Store 建议拆分：
 - Variant picker：根据当前模型 `variants` 动态展示 `默认` + 模型支持项，模型无 variants 时不展示入口；动态项展示文案首字母大写，并使用“推理强度/Reasoning”避免误解。
 - `ProjectFilePanel`：项目文件懒加载树、搜索、树/内容单页切换、文本/图片/二进制状态，以及带 Checkbox 语义、独立预览和固定确认栏的显式多选模式。
 - `OpenCodeCodeViewer`：复用 Markdown 的 Prism4j 高亮配置，提供行号、文本选择和纵向虚拟列表；文件预览限制 500,000 字符、20,000 行和单行 20,000 字符。
-- `SessionListDrawerContent`：带完整 TalkBack Tab 标签的同服务器有界项目 rail、项目标题/路径、更多菜单、新会话和 Store 共享会话窗口；加载更多每次增加 20 条根会话目标，需要网络时带 50 条余量重取，并展示加载、重试和末尾状态。
+- `SessionListDrawerContent`：共享持久顺序、支持长按拖拽与边缘自动滚动、乐观失败回滚、本地化 TalkBack“上移项目/下移项目”操作，并保留完整 Tab/selected/名称/路径/通知语义的同服务器有界项目 rail，以及项目标题/路径、更多菜单、新会话和 Store 共享会话窗口；“打开项目”和“设置”固定在重排列表外。加载更多每次增加 20 条根会话目标，需要网络时带 50 条余量重取，并展示加载、重试和末尾状态。
 - `SessionMessageCard`：消息内容、引用评论卡片、独立项目文件上下文行、agent/助手 Markdown 渲染、Compose 代码块高亮、复制、reset/revert、错误状态。引用评论由用户消息 synthetic text part 的顶层 `metadata.opencodeComment` 提取，REST 与 SSE 使用同一 typed 模型，并以固定 synthetic 文本解析作为兼容 fallback；`file://` 评论配对 part 从独立上下文行排除，也不按手机本地附件展示。
 - `SessionRevertDock`：位于普通 Composer 上方，默认折叠，展示回滚数量和首条预览，支持逐步恢复、全部恢复与新分支提交提示；不覆盖 `PermissionDock`、问题交互或子会话只读 Dock。
 - 上下文用量：token、使用率和成本等摘要，当前适合使用 anchored popup。
@@ -564,7 +565,7 @@ Store 建议拆分：
 - 底部 composer 固定在屏幕底部，并正确处理 IME inset。
 - 小屏下设置项和服务器列表不得依赖横向空间。
 - Tab、单选、多选和 Switch 通过匹配的 role 暴露 selected/checked 语义；可展开控件提供本地化的展开/折叠状态说明。
-- 未读、错误、权限、连接和选择状态通过文字、图标、边框或状态说明配合颜色表达。可排序服务器卡片除拖拽手势外，还提供本地化的 TalkBack 上移/下移自定义操作。
+- 未读、错误、权限、连接和选择状态通过文字、图标、边框或状态说明配合颜色表达。可排序服务器卡片和项目除拖拽手势外，还提供本地化的 TalkBack 上移/下移自定义操作；Drawer 项目目标继续保留 `Role.Tab`、selected 状态、完整名称/路径和通知语义。
 - 浅色和深色主题下，正文/辅助文字目标至少 4.5:1，必要非文本状态指示和控件边界目标至少 3:1。真实文本框使用 `ControlBorder`；`OpenCodeContrastTest` 覆盖文字、语义化 Diff/Markdown/语法颜色、状态指示和控件边界。
 - Dialog、服务器状态、设置 sheet、建议面板和 Composer 附件使用自然测量与有界滚动，确保紧凑屏幕、200% 字体和 IME 打开时关键操作仍可到达；附件行使用横向滚动，不依赖固定宽度挤压内容。
 
@@ -668,7 +669,7 @@ Existing session id
 当前测试重点：
 
 - `PathNormalizerTest`：Windows 路径、根路径、尾斜杠、大小写、重复项目去重。
-- `ProjectDrawerModelTest`、`ProjectInitialTest`、`ProjectPickerViewModelTest`、`RecentProjectRecorderTest` 与 `RecentProjectStoreReducerTest`：活动/最近项目合并、Windows 路径别名去重、非阻塞导航、有序/重试 best-effort 持久化、项目首页导航决策和 Unicode 项目首字。
+- `ProjectDrawerModelTest`、`ProjectInitialTest`、`ProjectPickerViewModelTest`、`RecentProjectRecorderTest`、`RecentProjectStoreReducerTest` 与 `VerticalLazyListReorderTest`：数值与旧记录顺序、连续重编号和每服务器 20 项上限、新项目置顶且已有项目不移动、原子重排/显式纳入当前项目、并发新增保留、陈旧删除不复活、Windows 路径别名去重、乐观重排持久化与回滚 callback、短视口边缘滚动方向、非阻塞导航、有序/重试 best-effort 记录、有界 Drawer 合并、项目首页导航决策和 Unicode 项目首字。
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest`：Build/Plan 过滤和回退、初始模型/Variant 校验与切换，以及仅对新会话解码项目首页的轻量 Composer 选择。
 - `ProjectFilePathNormalizerTest` 与 `ProjectFileUrlBuilderTest`：平台差异、NUL、绝对路径、`..`、直接子项校验、POSIX/盘符/UNC URL 构造、百分号编码、往返和项目根包含关系。
 - `RedactorTest`：key/token/password/header/env/config 脱敏。
@@ -698,9 +699,9 @@ Existing session id
 - SSE 生命周期测试：关闭竞态、generation/lease、快照失败不阻断重连、每次恢复一次校准和前台恢复。
 - SSH/外部输入测试：host key 认证前校验、Server URL 结构约束、data URL header/payload、URI/网络响应/Base64/native 返回值和私钥的流式上限。
 
-当前没有 `app/src/androidTest` 测试集，CI 也没有 emulator/instrumentation job。在门禁建立前，需要在紧凑手机屏幕、浅色/深色主题、IME 打开、200% 字体和 TalkBack 启用条件下人工验证以下交互：
+现有 `app/src/androidTest` 只覆盖本地化独立窗口根，CI 仍没有 emulator/instrumentation job。在扩大设备自动化前，需要在紧凑手机屏幕、浅色/深色主题、IME 打开、200% 字体和 TalkBack 启用条件下人工验证以下交互：
 
-- 项目选择。
+- 项目选择页与 Drawer 排序：长按纵向拖拽、边缘自动滚动、两个入口同步、普通点击不重排、项目选择页删除保持独立、乐观失败回滚、当前项目合入后最多 20 项、Drawer 固定操作，以及水平抽屉手势协调。
 - 会话列表打开详情。
 - Composer 输入和发送按钮状态。
 - 项目文件 picker 的树/搜索、最多 10 个选择、独立预览、确认/取消、预览返回文件树、route/session 切换、上下文 chip，以及纯上下文发送/reset。
@@ -708,7 +709,7 @@ Existing session id
 - Provider 搜索与已加载/可连接状态、动态 API/OAuth prompt、浏览器/code/取消路径、loopback 与明文警告、断开，以及多模型/Header 的 Custom Provider 创建/编辑/停用流程。
 - 权限 Dock、问题 sheet。
 - 在代表性的 API 26、29、30+、33+ 设备验证 fresh install 与旧通知 channel 升级：默认单次播放、App 内“无”、系统显式声音、channel 显式静音/阻止/低 importance、通知权限拒绝以及当前会话前后台行为。
-- selected/checked/expanded 语义、非颜色状态提示，以及服务器卡片上移/下移自定义操作。
+- selected/checked/expanded 语义、非颜色状态提示、服务器/项目上移/下移自定义操作，以及 Drawer 项目的 Tab/selected/完整名称路径/通知语义。
 
 构建门禁：
 
@@ -730,11 +731,11 @@ Existing session id
 ### 15.1 已具备或主体已具备
 
 - Android 工程、手动 DI、DataStore/Keystore/内存 Store、带客户端说明空态的服务器列表、新增/健康检查和直连/SSH/STCP 三种互斥连接模式；不自动创建 localhost 服务器。
-- 路径规范化、最近项目 best-effort 有序持久化、项目选择与壳层、支持网络加载更多的 Store 共享会话窗口、会话 drawer/详情、懒创建 session、普通 prompt、全局/项目 SSE、provider/model/agent 基础数据；session messages 具备独立 64 MiB encoded 与 decoded 上限。
+- 路径规范化、按服务器 `sortOrder` 持久化且新项目置顶并由项目选择页/Drawer 共享重排的最近项目、项目选择与壳层、支持网络加载更多的 Store 共享会话窗口、会话 drawer/详情、懒创建 session、普通 prompt、全局/项目 SSE、provider/model/agent 基础数据；session messages 具备独立 64 MiB encoded 与 decoded 上限。
 - 所有普通 `OpenCodeApi` Retrofit 方法都具备显式且独立的 16 MiB encoded/decoded 边界或 empty-success 策略；非 2xx 与 Unit body 不读取即丢弃，`/file/content` 保留 reader 层 decoded 边界。
 - Slash command 与 `@` mention UI、agent/model/variant picker、手机本地附件、项目文件树/搜索/只读预览及完整文件 Composer 上下文、permission/question、会话内 Changes/diff 和 context usage。
 - Repository/SSE/快照类型化失败映射为本地化 UI 资源，不解析异常 message；敏感与大型 value object 使用经过测试的结构化摘要。
-- 移动控件已覆盖 48dp 目标、选择 role、展开/折叠说明、非颜色状态提示、TalkBack 服务器排序、对比度测试过的浅色/深色 palette，以及面向小屏、200% 字体和 IME 遮挡的受约束滚动。
+- 移动控件已覆盖 48dp 目标、选择 role、展开/折叠说明、非颜色状态提示、TalkBack 服务器/项目排序、对比度测试过的浅色/深色 palette，以及面向小屏、200% 字体和 IME 遮挡的受约束滚动。
 - Session rename/archive/delete/revert/unrevert、项目名称编辑、语言/配色/通知/音效/后台设置、三个默认静音 v2 notification channel 与单一声音所有者仲裁、前台 route 可见性、本机模型隐藏偏好和 MCP/LSP/plugin 状态展示。
 - Provider 管理已具备安全 catalog/config 投影、搜索、动态 API/OAuth 认证、断开、有界且可取消的 OAuth callback、活动项目 capability 刷新，以及多模型/Header 的分阶段 Custom Provider 持久化。
 - Store 权威 prompt capability 校验、附件/项目上下文 sender 终检、条件乐观回滚、send/abort/revert 共享 operation gate、纯附件/纯上下文 reset 与历史可恢复内容完整性失败提示。

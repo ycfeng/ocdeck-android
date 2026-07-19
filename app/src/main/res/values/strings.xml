@@ -53,6 +53,8 @@
     <string name="a11y_jump_to_latest_message">跳到最新消息</string>
     <string name="a11y_menu">菜单</string>
     <string name="a11y_more_options">更多选项</string>
+    <string name="a11y_move_project_down">下移项目</string>
+    <string name="a11y_move_project_up">上移项目</string>
     <string name="a11y_move_server_down">下移服务器</string>
     <string name="a11y_move_server_up">上移服务器</string>
     <string name="a11y_notification_error">有错误通知</string>
@@ -211,6 +213,7 @@
     <string name="project_file_context_invalid">项目文件路径无效，请重新选择</string>
     <string name="project_error_open_navigation_failed">无法打开项目，请重试</string>
     <string name="project_error_delete_recent_failed">删除最近项目失败</string>
+    <string name="project_error_reorder_failed">调整项目顺序失败</string>
     <string name="project_error_load_candidates_failed">无法加载候选路径</string>
     <string name="project_build_anything">构建任何东西</string>
     <string name="project_recent_sessions">最近会话</string>

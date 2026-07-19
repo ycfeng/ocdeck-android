@@ -292,7 +292,7 @@ OC Deck is server driven: projects, sessions, messages, permissions, questions, 
 
 Current storage:
 
-- DataStore Preferences: server list, current server, recent projects, and UI preferences such as color scheme and app language. Recent-project writes are auxiliary: an application-scope ordered `RecentProjectRecorder` performs them best-effort after navigation, so local persistence failure cannot block project entry. There is no separate last-opened-project or per-project last-session field.
+- DataStore Preferences: server list, current server, recent projects, and UI preferences such as color scheme and app language. Each recent-project record has a numeric `sortOrder`; each server exposes at most 20 records in ascending order. Legacy records without that field keep their array order, and the next write continuously renumbers the retained server records from zero. A first add inserts at the top, while ensuring an existing record or updating its metadata preserves its position. Navigation-triggered add/upsert writes are auxiliary: an application-scope ordered `RecentProjectRecorder` performs them best-effort after navigation, so local persistence failure cannot block project entry. There is no separate last-opened-project or per-project last-session field.
 - Android Keystore: OpenCode Basic passwords, SSH passwords/private keys/passphrases/host fingerprints, and frp/STCP secrets. Provider API keys and OAuth credentials are written to OpenCode Server's auth store and are not persisted by Android.
 - In-memory Store: projects, sessions, messages, permissions, questions, and SSE state for the current process.
 
@@ -524,8 +524,9 @@ Current child routes and placeholder capabilities:
 Page adaptation requirements:
 
 - The project shell uses Compose `ModalNavigationDrawer` to avoid off-screen DOM pointer interception.
-- Its left rail merges the active project with the current server's normalized MRU recent projects. Project buttons use a bounded list capped at 75% of the safe drawer content height, while Open Project and Settings remain fixed. Selecting a project enters its project home and reuses an existing matching back-stack destination when possible; recent-project records do not restore a last session.
-- Project/session navigation submits successful opens to the application-scope `RecentProjectRecorder`; DataStore failure is reported safely but never rolls back navigation or a successful project rename.
+- The project picker and left rail share the current server's persistent recent-project order. Paths remain normalized and deduplicated by server plus comparison key. If the active project is absent, the rail merges it at the top while keeping at most 20 projects; the reorder API can atomically incorporate only that explicitly identified project. Reorder uses the records current at commit time, retains concurrently added records omitted by a stale UI snapshot, and does not recreate stale submitted records that were deleted. Project buttons use a bounded list capped at 75% of the safe drawer content height, while Open Project and Settings remain fixed and excluded from ordering. Selecting a project enters its project home and reuses an existing matching back-stack destination when possible; recent-project records do not restore a last session.
+- Both surfaces support long-press vertical drag, edge auto-scroll, optimistic ordering, persistence, and failure rollback. Only the project-picker card body starts dragging, so its delete button remains independent. While the drawer rail is being reordered, disable the outer horizontal drawer gesture.
+- Project/session navigation submits successful opens to the application-scope `RecentProjectRecorder`, but an existing record stays in place. Returning to project home, opening an existing session directly, and project rename only ensure the record or update metadata. DataStore failure is reported safely but never rolls back navigation or a successful project rename.
 - Session destinations hold a visibility lease only while the app is foreground and the destination lifecycle is at least `STARTED`; notification viewed state must not be inferred from ViewModel lifetime.
 - The shell provides project files through a right-side overlay with Browse and Pick modes: full phone width, maximum 420 dp on large screens. The scrim covers only outside the panel, underlying semantics are hidden while open, and system Back returns from preview before closing. Pick mode confirms at most 10 whole files through a route/session-bound request; cancellation changes no draft state. Do not use a desktop two-column layout that compresses session content.
 - Every full-screen `NavHost` route uses slide transitions: forward is right-in/left-out and Back is left-in/right-out.
@@ -549,7 +550,7 @@ Core capabilities and components:
 - Variant picker: dynamically show Default plus current-model `variants`; hide when the model has none. Capitalize dynamic labels and call the concept Reasoning Strength/Reasoning.
 - `ProjectFilePanel`: lazy project tree, search, single-page tree/content navigation, text/image/binary states, and an explicit multi-select Pick mode with checkbox semantics, independent preview, and fixed confirmation.
 - `OpenCodeCodeViewer`: shared Prism4j configuration with Markdown rendering, line numbers, text selection, and vertical virtualization. File preview limits are 500,000 characters, 20,000 lines, and 20,000 characters per line.
-- `SessionListDrawerContent`: bounded same-server project rail with full TalkBack tab labels, project title/path, overflow menu, new session, and the shared Store-backed session window. Load More raises the root target by 20, refetches with 50 entries of headroom when needed, and exposes loading, retry, and end states.
+- `SessionListDrawerContent`: bounded same-server project rail with shared persistent ordering, long-press drag and edge auto-scroll, optimistic rollback, localized TalkBack Move Project Up/Down actions, full tab/selected/name/path/notification semantics, project title/path, overflow menu, new session, and the shared Store-backed session window. Open Project and Settings stay fixed outside the reorder list. Load More raises the root target by 20, refetches with 50 entries of headroom when needed, and exposes loading, retry, and end states.
 - `SessionMessageCard`: message content, quoted-comment cards, standalone project-file context rows, agent/assistant Markdown, Compose highlighted code blocks, copy, reset/revert, and error states. Extract quoted comments from top-level `metadata.opencodeComment` on synthetic user-message text parts. REST and SSE use the same typed model, with fixed synthetic-text parsing as compatibility fallback. Paired `file://` comment parts are excluded from standalone context rows and never render as local-device attachments.
 - `SessionRevertDock`: above the ordinary Composer, collapsed by default, showing reverted count and first preview with incremental restore, Restore All, and new-branch submission hints. It must not cover `PermissionDock`, question interaction, or a child-session read-only Dock.
 - Context usage: token, usage, and cost summary, currently suited to an anchored popup.
@@ -564,7 +565,7 @@ Touch requirements:
 - The bottom composer is fixed to the bottom and handles IME insets correctly.
 - Settings rows and server cards must not depend on horizontal space on small screens.
 - Tabs, radio choices, checkboxes, and switches expose the matching selected/checked role semantics. Expandable controls expose localized expanded/collapsed state descriptions.
-- Unread, error, permission, connection, and selection states pair color with text, icons, borders, or state descriptions. Reorderable server cards expose localized TalkBack Move Up and Move Down custom actions in addition to drag gestures.
+- Unread, error, permission, connection, and selection states pair color with text, icons, borders, or state descriptions. Reorderable server cards and projects expose localized TalkBack Move Up and Move Down custom actions in addition to drag gestures; drawer project targets retain `Role.Tab`, selected state, full name/path, and notification semantics.
 - Light and dark palettes target at least 4.5:1 contrast for body/supporting text and 3:1 for required non-text state indicators and control boundaries. Real text fields use `ControlBorder`; `OpenCodeContrastTest` covers text, semantic Diff/Markdown/syntax colors, indicators, and control borders.
 - Dialogs, server status, settings sheets, suggestion panels, and Composer attachments use natural measurement plus bounded scrolling so actions remain reachable on compact screens, at 200% font scale, and with the IME open. Attachment rows scroll horizontally instead of forcing fixed-width compression.
 
@@ -668,7 +669,7 @@ Policy:
 Current test priorities:
 
 - `PathNormalizerTest`: Windows paths, roots, trailing slash, case, and duplicate-project deduplication.
-- `ProjectDrawerModelTest`, `ProjectInitialTest`, `ProjectPickerViewModelTest`, `RecentProjectRecorderTest`, and `RecentProjectStoreReducerTest`: active/recent project merging, Windows path-alias deduplication, non-blocking navigation, ordered/retried best-effort persistence, project-home navigation decisions, and Unicode project initials.
+- `ProjectDrawerModelTest`, `ProjectInitialTest`, `ProjectPickerViewModelTest`, `RecentProjectRecorderTest`, `RecentProjectStoreReducerTest`, and `VerticalLazyListReorderTest`: numeric and legacy ordering, continuous renumbering and the 20-project cap, new-project top insertion without existing-project movement, atomic reorder/explicit current-project incorporation, concurrent-add retention, stale-delete non-revival, Windows path-alias deduplication, optimistic reorder persistence and rollback callbacks, short-viewport edge-scroll direction, non-blocking navigation, ordered/retried best-effort recording, bounded drawer merging, project-home navigation decisions, and Unicode project initials.
 - `SessionComposerAgentResolverTest`, `SessionModelPreferenceResolverTest`, and `SessionComposerRouteSelectionTest`: Build/Plan filtering and fallback, initial model/Variant validation and switching, and new-session-only decoding of lightweight project-home Composer selections.
 - `ProjectFilePathNormalizerTest` and `ProjectFileUrlBuilderTest`: platform differences, NUL, absolute paths, `..`, direct-child validation, POSIX/drive/UNC URL construction, percent encoding, round trips, and project-root containment.
 - `RedactorTest`: key/token/password/header/env/config redaction.
@@ -698,9 +699,9 @@ Current test priorities:
 - SSE lifecycle tests: close races, generation/lease, snapshot failure not blocking reconnect, one calibration per recovery, and foreground resume.
 - SSH/external-input tests: pre-authentication host-key validation, server-URL structural constraints, data URL header/payload, and streaming limits for URI/network response/Base64/native returns/private keys.
 
-There is currently no `app/src/androidTest` suite and no emulator/instrumentation job in CI. Until that gate exists, manually validate these interaction paths on compact phone screens in both themes, with the IME open, at 200% font scale, and with TalkBack enabled:
+The existing `app/src/androidTest` suite covers localized independent-window roots only, and CI has no emulator/instrumentation job. Until broader device automation exists, manually validate these interaction paths on compact phone screens in both themes, with the IME open, at 200% font scale, and with TalkBack enabled:
 
-- Project selection.
+- Project-picker and drawer ordering: long-press vertical drag, edge auto-scroll, cross-entry synchronization, ordinary click without reordering, independent picker deletion, optimistic failure rollback, current-project merge capped at 20, fixed drawer actions, and horizontal drawer-gesture coordination.
 - Open session details from the session list.
 - Composer input and send-button state.
 - Project-file picker tree/search, up-to-10 selection, independent preview, confirm/cancel, preview-to-tree Back, route/session switching, context chips, and context-only send/reset.
@@ -708,7 +709,7 @@ There is currently no `app/src/androidTest` suite and no emulator/instrumentatio
 - Provider search and loaded/available states, dynamic API/OAuth prompts, browser/code/cancel paths, loopback and cleartext warnings, disconnect, and multi-model/header Custom Provider create/edit/disable flows.
 - Permission Dock and question sheet.
 - Fresh install and legacy notification-channel migration on representative API 26, 29, 30+, and 33+ devices; verify default single playback, app None, explicit system sound, explicit channel mute/block/low importance, notification permission denial, and foreground/background current-session behavior.
-- Selected/checked/expanded semantics, non-color status cues, and server-card Move Up/Move Down custom actions.
+- Selected/checked/expanded semantics, non-color status cues, server/project Move Up/Move Down custom actions, and drawer project tab/selected/full-name-path/notification semantics.
 
 Build gates:
 
@@ -730,11 +731,11 @@ Build gates:
 ### 15.1 Available or Substantially Available
 
 - Android project, manual DI, DataStore/Keystore/in-memory Store, server list with client-explanation empty state, add/health-check, and mutually exclusive Direct/SSH/STCP modes; no localhost server is auto-created.
-- Path normalization, best-effort ordered recent-project persistence, project picker/shell, shared Store-backed session window with network Load More, session drawer/details, lazy session creation, ordinary prompt, global/project SSE, and provider/model/agent base data. Session messages use a specialized transport with separate 64 MiB encoded and decoded limits.
+- Path normalization, per-server `sortOrder` recent-project persistence with new-project top insertion and shared picker/drawer reordering, project picker/shell, shared Store-backed session window with network Load More, session drawer/details, lazy session creation, ordinary prompt, global/project SSE, and provider/model/agent base data. Session messages use a specialized transport with separate 64 MiB encoded and decoded limits.
 - Every ordinary `OpenCodeApi` Retrofit method has explicit separate 16 MiB encoded and decoded boundaries or an empty-success policy; non-2xx and Unit bodies are discarded without reading, and `/file/content` retains a reader-level decoded boundary.
 - Slash commands, `@` mentions, agent/model/variant pickers, phone-local attachments, project file tree/search/read-only preview and whole-file Composer contexts, permission/question, session Changes/diff, and context usage.
 - Typed Repository/SSE/snapshot failures map to localized UI resources without parsing exception messages, while sensitive and large value objects use tested structural summaries.
-- Mobile controls include 48 dp targets, selection roles, expanded/collapsed descriptions, non-color state cues, TalkBack server reordering, contrast-tested light/dark palettes, and screen-constrained scrolling for small screens, 200% text, and IME overlap.
+- Mobile controls include 48 dp targets, selection roles, expanded/collapsed descriptions, non-color state cues, TalkBack server/project reordering, contrast-tested light/dark palettes, and screen-constrained scrolling for small screens, 200% text, and IME overlap.
 - Session rename/archive/delete/revert/unrevert, project-name edit, language/color/notification/sound/background settings, three default-silent v2 notification channels with single-owner sound arbitration, foreground route visibility, local model-hidden preference, and MCP/LSP/plugin status.
 - Provider management with safe catalog/config projection, search, dynamic API/OAuth authentication, disconnect, bounded/cancellable OAuth callback, active-project capability refresh, and staged multi-model/header Custom Provider persistence.
 - Authoritative Store prompt-capability validation, sender final attachment/project-context checks, conditional optimistic rollback, shared send/abort/revert operation gate, attachment-only/context-only reset, and historical recoverable-content integrity errors.

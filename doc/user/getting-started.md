@@ -48,7 +48,7 @@ The picker normalizes the path, but a manually entered path is normally validate
 
 When the project opens, OC Deck loads REST snapshots and starts global and project SSE synchronization. Temporary SSE connection states do not erase already loaded UI data.
 
-From a project home or session detail, open the navigation drawer to switch among recent projects on the same server. Project buttons enter the selected project home; a longer list scrolls while Open Project and Settings remain fixed.
+The project picker and navigation drawer share one saved project order per server. A newly added project starts at the top, while clicking an existing project to enter it does not change its position. Long-press a project-card body in the picker or a project button in the drawer to drag it vertically; edge scrolling helps with longer lists, and Open Project and Settings remain fixed. TalkBack users can use the Move Project Up and Move Project Down custom actions.
 
 ## 5. Start a New Session
 

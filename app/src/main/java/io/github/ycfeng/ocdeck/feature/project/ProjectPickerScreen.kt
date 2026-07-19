@@ -1,6 +1,8 @@
 package io.github.ycfeng.ocdeck.feature.project
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,7 +11,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -19,17 +22,29 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -44,6 +59,11 @@ import io.github.ycfeng.ocdeck.ui.component.OpenCodePlainTextField
 import io.github.ycfeng.ocdeck.ui.component.OpenCodePrimaryButton
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeSectionLabel
 import io.github.ycfeng.ocdeck.ui.component.OpenCodeTopBar
+import io.github.ycfeng.ocdeck.ui.component.calculateVerticalReorderAutoScroll
+import io.github.ycfeng.ocdeck.ui.component.draggedOffsetAfterVerticalMove
+import io.github.ycfeng.ocdeck.ui.component.findVerticalReorderTarget
+import io.github.ycfeng.ocdeck.ui.component.findVisibleReorderItem
+import io.github.ycfeng.ocdeck.ui.component.moveItem
 import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
 import io.github.ycfeng.ocdeck.ui.text.UiText
 import io.github.ycfeng.ocdeck.ui.text.asString
@@ -57,7 +77,16 @@ fun ProjectPickerScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val hapticFeedback = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val recentProjectListState = rememberLazyListState()
+    val autoScrollThresholdPx = with(density) { ProjectDragAutoScrollThreshold.toPx() }
+    val autoScrollStepPx = with(density) { ProjectDragAutoScrollStep.toPx() }
+    val currentRecentProjects by rememberUpdatedState(state.recentProjects)
     var pendingDeleteProject by remember { mutableStateOf<ProjectRef?>(null) }
+    var displayedProjects by remember { mutableStateOf(state.recentProjects) }
+    var dragState by remember { mutableStateOf<ProjectDragState?>(null) }
+    var autoScrollDelta by remember { mutableFloatStateOf(0f) }
     var directoryFieldValue by remember {
         mutableStateOf(TextFieldValue(state.directory, selection = TextRange(state.directory.length)))
     }
@@ -68,6 +97,69 @@ fun ProjectPickerScreen(
                 text = state.directory,
                 selection = TextRange(state.directory.length),
             )
+        }
+    }
+
+    LaunchedEffect(state.recentProjects) {
+        if (dragState == null) displayedProjects = state.recentProjects
+    }
+
+    fun moveDraggedProjectToVisibleTarget() {
+        val activeDragState = dragState ?: return
+        val draggedItem = recentProjectListState.findVisibleReorderItem(activeDragState.directory) ?: return
+        val draggedTop = draggedItem.offset.toFloat() + activeDragState.offsetY
+        val draggedBottom = draggedTop + draggedItem.size.toFloat()
+        val targetItem = recentProjectListState.findVerticalReorderTarget(
+            draggedKey = activeDragState.directory,
+            draggedTop = draggedTop,
+            draggedBottom = draggedBottom,
+            reorderableKeys = displayedProjects.mapTo(mutableSetOf<Any>()) { it.normalizedDirectory },
+        ) ?: return
+        val fromIndex = displayedProjects.indexOfFirst {
+            it.normalizedDirectory == activeDragState.directory
+        }
+        val toIndex = displayedProjects.indexOfFirst {
+            it.normalizedDirectory == targetItem.key
+        }
+        if (fromIndex < 0 || toIndex < 0 || fromIndex == toIndex) return
+        val newDraggedOffset = targetItem.draggedOffsetAfterVerticalMove(
+            draggedItem = draggedItem,
+            movingDown = fromIndex < toIndex,
+        )
+        displayedProjects = displayedProjects.moveItem(fromIndex, toIndex)
+        dragState = activeDragState.copy(
+            offsetY = activeDragState.offsetY + draggedItem.offset.toFloat() - newDraggedOffset,
+        )
+    }
+
+    fun updateAutoScrollDelta() {
+        val activeDragState = dragState
+        val draggedItem = activeDragState?.let {
+            recentProjectListState.findVisibleReorderItem(it.directory)
+        }
+        autoScrollDelta = if (activeDragState == null || draggedItem == null) {
+            0f
+        } else {
+            val draggedTop = draggedItem.offset.toFloat() + activeDragState.offsetY
+            recentProjectListState.calculateVerticalReorderAutoScroll(
+                draggedTop = draggedTop,
+                draggedBottom = draggedTop + draggedItem.size.toFloat(),
+                thresholdPx = autoScrollThresholdPx,
+                stepPx = autoScrollStepPx,
+            )
+        }
+    }
+
+    LaunchedEffect(dragState?.directory, autoScrollDelta) {
+        while (dragState != null && autoScrollDelta != 0f) {
+            withFrameNanos { }
+            val consumed = recentProjectListState.scrollBy(autoScrollDelta)
+            if (consumed == 0f) {
+                autoScrollDelta = 0f
+                break
+            }
+            dragState = dragState?.let { it.copy(offsetY = it.offsetY + consumed) }
+            moveDraggedProjectToVisibleTarget()
         }
     }
 
@@ -156,12 +248,107 @@ fun ProjectPickerScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             OpenCodeSectionLabel(stringResource(R.string.project_recent_section))
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(state.recentProjects, key = { it.normalizedDirectory }) { project ->
+            val moveProjectUpLabel = stringResource(R.string.a11y_move_project_up)
+            val moveProjectDownLabel = stringResource(R.string.a11y_move_project_down)
+            LazyColumn(
+                state = recentProjectListState,
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                itemsIndexed(
+                    items = displayedProjects,
+                    key = { _, project -> project.normalizedDirectory },
+                ) { index, project ->
+                    val currentDragState = dragState
+                    val isDragging = currentDragState?.directory == project.normalizedDirectory
+                    val accessibilityReorderActions = buildList {
+                        if (index > 0) {
+                            add(CustomAccessibilityAction(moveProjectUpLabel) {
+                                val currentIndex = displayedProjects.indexOfFirst {
+                                    it.normalizedDirectory == project.normalizedDirectory
+                                }
+                                if (currentIndex <= 0) return@CustomAccessibilityAction false
+                                val reorderedProjects = displayedProjects.moveItem(currentIndex, currentIndex - 1)
+                                displayedProjects = reorderedProjects
+                                viewModel.reorderRecentProjects(reorderedProjects) {
+                                    displayedProjects = currentRecentProjects
+                                }
+                                true
+                            })
+                        }
+                        if (index < displayedProjects.lastIndex) {
+                            add(CustomAccessibilityAction(moveProjectDownLabel) {
+                                val currentIndex = displayedProjects.indexOfFirst {
+                                    it.normalizedDirectory == project.normalizedDirectory
+                                }
+                                if (currentIndex !in 0 until displayedProjects.lastIndex) {
+                                    return@CustomAccessibilityAction false
+                                }
+                                val reorderedProjects = displayedProjects.moveItem(currentIndex, currentIndex + 1)
+                                displayedProjects = reorderedProjects
+                                viewModel.reorderRecentProjects(reorderedProjects) {
+                                    displayedProjects = currentRecentProjects
+                                }
+                                true
+                            })
+                        }
+                    }
                     RecentProjectCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(if (isDragging) Modifier else Modifier.animateItem())
+                            .zIndex(if (isDragging) 1f else 0f)
+                            .graphicsLayer {
+                                translationY = currentDragState?.offsetY?.takeIf { isDragging } ?: 0f
+                            },
                         project = project,
                         isDeleting = state.deletingProjectDirectory == project.normalizedDirectory,
                         isOpening = state.isOpening,
+                        isDragging = isDragging,
+                        accessibilityReorderActions = accessibilityReorderActions,
+                        dragHandleModifier = if (displayedProjects.size > 1) {
+                            Modifier.pointerInput(project.normalizedDirectory) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        dragState = ProjectDragState(project.normalizedDirectory)
+                                        autoScrollDelta = 0f
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        val activeDragState = dragState
+                                        val draggedItem = activeDragState?.let {
+                                            recentProjectListState.findVisibleReorderItem(it.directory)
+                                        }
+                                        if (activeDragState != null && draggedItem != null) {
+                                            dragState = activeDragState.copy(
+                                                offsetY = activeDragState.offsetY + dragAmount.y,
+                                            )
+                                            moveDraggedProjectToVisibleTarget()
+                                            updateAutoScrollDelta()
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        dragState = null
+                                        autoScrollDelta = 0f
+                                        if (displayedProjects.map { it.normalizedDirectory } !=
+                                            currentRecentProjects.map { it.normalizedDirectory }
+                                        ) {
+                                            viewModel.reorderRecentProjects(displayedProjects) {
+                                                displayedProjects = currentRecentProjects
+                                            }
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        dragState = null
+                                        autoScrollDelta = 0f
+                                        displayedProjects = currentRecentProjects
+                                    },
+                                )
+                            }
+                        } else {
+                            Modifier
+                        },
                         onOpen = { viewModel.openProject(project.normalizedDirectory, onOpenProject) },
                         onDelete = { pendingDeleteProject = project },
                     )
@@ -173,13 +360,20 @@ fun ProjectPickerScreen(
 
 @Composable
 private fun RecentProjectCard(
+    modifier: Modifier = Modifier,
     project: ProjectRef,
     isDeleting: Boolean,
     isOpening: Boolean,
+    isDragging: Boolean,
+    accessibilityReorderActions: List<CustomAccessibilityAction>,
+    dragHandleModifier: Modifier,
     onOpen: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    OpenCodeCard(modifier = Modifier.fillMaxWidth()) {
+    OpenCodeCard(
+        modifier = modifier,
+        color = if (isDragging) OpenCodePalette.PanelMuted else OpenCodePalette.Panel,
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -190,7 +384,9 @@ private fun RecentProjectCard(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = 48.dp)
+                    .semantics(mergeDescendants = true) { customActions = accessibilityReorderActions }
                     .clickable(enabled = !isOpening && !isDeleting, onClick = onOpen)
+                    .then(dragHandleModifier)
                     .padding(end = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
             ) {
@@ -216,6 +412,16 @@ private fun RecentProjectCard(
         }
     }
 }
+
+private data class ProjectDragState(
+    val directory: String,
+    val offsetY: Float = 0f,
+) {
+    override fun toString(): String = "ProjectDragState(directory=<redacted>, offsetY=$offsetY)"
+}
+
+private val ProjectDragAutoScrollThreshold = 56.dp
+private val ProjectDragAutoScrollStep = 24.dp
 
 @Composable
 private fun ProjectDirectorySuggestions(

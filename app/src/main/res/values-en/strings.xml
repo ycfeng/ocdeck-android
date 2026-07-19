@@ -53,6 +53,8 @@
     <string name="a11y_jump_to_latest_message">Jump to latest message</string>
     <string name="a11y_menu">Menu</string>
     <string name="a11y_more_options">More Options</string>
+    <string name="a11y_move_project_down">Move Project Down</string>
+    <string name="a11y_move_project_up">Move Project Up</string>
     <string name="a11y_move_server_down">Move Server Down</string>
     <string name="a11y_move_server_up">Move Server Up</string>
     <string name="a11y_notification_error">Has error notification</string>
@@ -211,6 +213,7 @@
     <string name="project_file_context_invalid">The project file path is invalid. Choose the file again.</string>
     <string name="project_error_open_navigation_failed">Unable to open the project. Try again.</string>
     <string name="project_error_delete_recent_failed">Failed to delete recent project</string>
+    <string name="project_error_reorder_failed">Failed to reorder projects</string>
     <string name="project_error_load_candidates_failed">Unable to load suggested paths</string>
     <string name="project_build_anything">Build anything</string>
     <string name="project_recent_sessions">Recent Sessions</string>

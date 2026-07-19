@@ -10,17 +10,17 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 
 | 层级 | 当前覆盖 |
 | --- | --- |
-| Kotlin/JVM 单元测试 | 路径与项目文件 URL、最近项目记录、会话窗口、通知/channel 策略、脱敏、Retrofit/direct encoded/decoded 与 identity-SSE 入站边界、类型化失败与本地化 UI 映射、安全 value 摘要、DTO 容错、Store revision、prompt/项目上下文状态与恢复、Provider auth/OAuth 与分阶段 custom-config 事务、服务器凭据事务、SSH/STCP 协调、对比度和 feature helper。 |
+| Kotlin/JVM 单元测试 | 路径与项目文件 URL、最近项目顺序/记录/重排回滚模型、会话窗口、通知/channel 策略、脱敏、Retrofit/direct encoded/decoded 与 identity-SSE 入站边界、类型化失败与本地化 UI 映射、安全 value 摘要、DTO 容错、Store revision、prompt/项目上下文状态与恢复、Provider auth/OAuth 与分阶段 custom-config 事务、服务器凭据事务、SSH/STCP 协调、对比度和 feature helper。 |
 | Go race tests | GoMobile wrapper 与生成的 patched frp client 包。 |
 | 第三方与法律审计 | 固定版本、依赖清单、哈希、provenance、许可证和发布脚本引用。 |
 | Bridge 校验 | AAR checksum、Java API signature、bridge/frp provenance、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态和可复现性。 |
 | Android 构建 | 两个 Android 模块的单元测试和 Debug APK 构建。 |
 | Android instrumentation 测试 | 覆盖 Popup 与 modal bottom sheet 独立 Compose 窗口根的本地化，包括 Popup 保持打开时的原地语言切换。 |
-| 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
+| 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目选择页与 Drawer 排序、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
 | Release 制品校验 | APK metadata、单 signer、预期证书指纹、ABI 隔离、`zipalign -P 16`、AAR native 字节绑定、内嵌法律文件、文件名和 checksum。 |
 | 真机验证 | 维护者已记录 `0.1.0` 发布门禁通过真机 native load/启动、16KB page-size native 运行，以及覆盖 `/global/health`、代表性 REST、全局/项目 SSE 和受控重连的真实 STCP 闭环。具体环境信息未公开；后续候选版本仍须重复执行这些门禁。 |
 
-`app/src/androidTest` 测试集目前覆盖独立窗口根的本地化，但 CI 尚无 emulator/instrumentation job。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
+`app/src/androidTest` 测试集目前覆盖独立窗口根的本地化，但 CI 尚无 emulator/instrumentation job。最近项目拖拽排序仍不在 instrumentation 覆盖范围内；其自动化覆盖主要来自下文列出的 JVM reducer、recorder、ViewModel 和 Drawer model 测试。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
 
 ## 聚焦测试清单
 
@@ -32,7 +32,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `SensitiveValueToStringTest` 验证 network、domain、Store、feature 和 UI value 摘要不暴露人工凭据、URL/endpoint、alias、路径、prompt、Base64、SSE payload 或 tool output，同时保持普通 value object 行为。
 - `OpenCodeContrastTest` 对浅色/深色主题执行 4.5:1 文字与 3:1 图形对比度门禁，覆盖主题文字、语义化 Diff/Markdown/语法/图表颜色、状态指示、附件遮罩、选择边框和 `ControlBorder`。
 - `SessionRunningIndicatorTest` 覆盖 4×4 四角遮罩、每个点独立的 1–2 秒节奏、有界相位偏移、满足无障碍要求的透明度与缩放范围、可见帧变化、差异化初始帧和公共循环的无缝连续性。
-- `ProjectDrawerModelTest`、`ProjectInitialTest`、`ProjectPickerViewModelTest`、`RecentProjectRecorderTest` 与 `RecentProjectStoreReducerTest` 覆盖当前项目补入、MRU 顺序保持、Windows 路径别名去重、不等待 DataStore 的导航、有序重试、本地失败分类、项目首页导航决策和 Unicode 项目首字。
+- `RecentProjectStoreReducerTest` 覆盖数值 `sortOrder`、旧数组顺序保留、连续重编号、新项目置顶、已有项目 metadata 更新时位置稳定、比较 key 去重、原子重排且只显式纳入当前项目、保留未提交/并发新增项目、不复活并发删除的陈旧记录、服务器间隔离和每服务器 20 项上限。`RecentProjectRecorderTest`、`ProjectPickerViewModelTest`、`ProjectDrawerModelTest`、`ProjectInitialTest` 与 `VerticalLazyListReorderTest` 覆盖已有项目不移动的串行/重试 best-effort 记录、不等待 DataStore 的导航、展示顺序持久化与失败回滚 callback、有界当前项目合并、项目首页导航决策、Unicode 项目首字和短视口边缘滚动方向。
 - `SessionListWindowCoordinatorTest`、`InMemoryOpenCodeStoreSessionWindowTest` 与 `OpenCodeRepositorySessionWindowTest` 覆盖共享 20 条目标、50 条请求余量、本地展开与网络加载、重试/末尾状态、有序前缀替换、快速点击合并、旧 generation/transport 拒绝、tombstone、项目/workspace 隔离和有界 metadata/父链补取。
 - `NotificationAlertPolicyTest`、`NotificationChannelMigrationPolicyTest`、`OpenCodeNotificationAudioAttributesTest` 与 `SessionVisibilityRegistryTest` 覆盖单事件唯一声音所有者、App/系统设置独立、系统显式声音/静音优先级、legacy 到 v2 迁移决策、notification audio usage 和前台 destination 可见性。
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest` 覆盖按服务端顺序过滤 Build/Plan 及回退、初始模型/Variant 校验与切换回退，以及只对新会话接受项目首页轻量 Composer 路由选择。
@@ -137,11 +137,11 @@ Fixture 规则见[测试夹具](test-fixtures.zh-CN.md)。
 | 环境 | 检查项 | 预期结果 |
 | --- | --- | --- |
 | 200% 字体的紧凑竖屏手机 | 二次确认 dialog、服务器状态、设置 sheet、内联建议、权限/问题 UI、Composer 附件和参数行 | 内容保持有界且可滚动；标题、字段和主操作可达，不因固定高度裁切 |
-| 包含 20 个最近项目的项目抽屉 | Rail 滚动、项目列表 75% 高度上限、当前项目选择、“打开项目”、“设置”、项目首页切换 | 项目按钮可滚动且不裁切；固定操作始终可达；仅一个项目被选中；切换会关闭抽屉且不堆叠重复项目首页 |
+| 项目选择页和最多 20 个最近项目的 Drawer | 长按纵向拖拽、边缘自动滚动、两个入口同步、普通项目点击、项目选择页删除图标、模拟持久化失败、当前项目不在持久列表、Drawer 列表 75% 高度上限、“打开项目”、“设置”、项目首页切换和抽屉水平手势 | 两个入口展示同一已保存顺序；新项目默认置顶；点击已有项目不重排；只有项目选择页卡片正文启动拖拽且删除保持独立；乐观移动失败后回滚；当前项目合入后仍最多 20 项且可通过重排持久化；固定操作始终可达且不移动；仅 rail 拖拽期间禁用水平抽屉手势；切换会关闭抽屉且不堆叠重复项目首页 |
 | 超过 20 条根会话的项目 | 项目主页和抽屉中的加载更多、共享状态、网络加载、重试、末尾状态、直接打开旧会话 route | 两个界面展示相同目标；失败时保留已有行；重试可达；末尾状态稳定；窗口外会话及有界父链可补取且窗口不缩小 |
 | API 26/29/30+/33+ fresh install 与旧通知升级 | 默认提醒、App 内“无”、系统显式声音、channel 显式静音/阻止/低 importance、权限拒绝、当前会话前后台 | 每个事件最多一个声音所有者；Android 系统选择优先；App 播放不绕过低打扰设置；后台会话不会误标已查看 |
 | IME 打开 | 固定底部 Composer、建议面板、model/agent/variant popup、附件条、系统返回 | Inset 保持 Composer 可见；浮层不被遮挡；系统返回先关闭聚焦浮层，再离开页面 |
-| TalkBack 启用 | 项目 Tab 与路径、可点击图标标签、Tab/RadioButton/Checkbox/Switch 状态、展开/折叠控件、未读/错误/权限/连接提示、服务器排序 | 项目 Tab 播报唯一完整标签和选中状态；其他 role 与状态正确播报；重要含义不只依赖颜色；服务器卡片提供本地化上移/下移自定义操作 |
+| TalkBack 启用 | 项目 Tab 与路径、可点击图标标签、Tab/RadioButton/Checkbox/Switch 状态、展开/折叠控件、未读/错误/权限/连接提示、服务器排序和两个入口的项目排序 | 项目 Tab 播报唯一完整名称/路径标签、选中状态和通知状态；其他 role 与状态正确播报；重要含义不只依赖颜色；服务器卡片以及项目选择页/Drawer 项目都提供本地化上移/下移自定义操作 |
 | 浅色和深色主题 | 正文/辅助文字、文本框和边框、选中/错误/状态指示、Diff/Markdown/代码、附件遮罩 | 文字达到 4.5:1 目标，必要非文本控件/指示达到 3:1；状态在两种主题下都可理解 |
 | Composer 模型与 Variant 选择器 | 选中视野外项目后重新打开、搜索、provider 分组、当前 check、连接 Provider、管理模型 | 重新打开时当前选择会自动滚入视野，并在滚动边界允许时居中；搜索和手动滚动仍由用户控制；行和图标操作保持 48dp 目标；管理操作关闭 picker 并导航到真实 Provider/模型设置路由 |
 | Provider 设置与认证 | 搜索和已加载/可连接分组；动态 text/select prompt；API key 键盘；OAuth 浏览器、code、auto callback 与取消；明文/loopback/断开确认 | 浮层关闭后 secret 消失；系统返回先关闭聚焦 sheet；IME 与 200% 字体下操作仍可达；已加载、disabled、pending、错误均有非颜色提示；取消不会静默重试 |

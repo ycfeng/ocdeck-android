@@ -50,8 +50,20 @@ internal fun mergeProjectDrawerProjects(
     if (!includesCurrent) {
         merged.add(0, normalizedCurrent)
     }
-    return merged
+    return merged.take(MAX_DRAWER_PROJECTS)
 }
+
+internal fun projectToEnsureForDrawer(
+    currentProject: ProjectRef,
+    recentProjects: List<ProjectRef>,
+    pathNormalizer: PathNormalizer,
+): ProjectRef? = currentProject.takeIf { current ->
+    recentProjects.none { recent ->
+        pathNormalizer.areSame(recent.normalizedDirectory, current.normalizedDirectory)
+    }
+}
+
+private const val MAX_DRAWER_PROJECTS = 20
 
 private fun ProjectRef.normalizedForDrawer(pathNormalizer: PathNormalizer): ProjectRef {
     val normalizedDirectory = pathNormalizer.normalize(normalizedDirectory)

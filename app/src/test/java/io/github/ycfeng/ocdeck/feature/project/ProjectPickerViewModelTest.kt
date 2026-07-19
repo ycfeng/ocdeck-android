@@ -167,6 +167,61 @@ class ProjectPickerViewModelTest {
         }
     }
 
+    @Test
+    fun reorderPersistsProjectsInDisplayedOrder() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        try {
+            val repository = FakeRecentProjectRepository()
+            val viewModel = viewModel(repository, RecentProjectRecorder(
+                repository = repository,
+                pathNormalizer = PathNormalizer(),
+                scope = backgroundScope,
+                failureReporter = RecentProjectFailureReporter { },
+            ))
+            val reordered = listOf(project("/workspace/beta"), project("/workspace/alpha"))
+
+            viewModel.reorderRecentProjects(reordered)
+            runCurrent()
+
+            assertEquals(1, repository.reorderCalls)
+            assertEquals(reordered, repository.lastReorderedProjects)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun reorderFailureRollsBackAndUsesLocalFailureText() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        try {
+            val repository = FakeRecentProjectRepository(
+                onReorder = { throw IllegalStateException("synthetic local failure") },
+            )
+            val viewModel = viewModel(repository, RecentProjectRecorder(
+                repository = repository,
+                pathNormalizer = PathNormalizer(),
+                scope = backgroundScope,
+                failureReporter = RecentProjectFailureReporter { },
+            ))
+            var rollbackCalled = false
+
+            viewModel.reorderRecentProjects(listOf(project("/workspace/alpha"))) {
+                rollbackCalled = true
+            }
+            runCurrent()
+
+            assertTrue(rollbackCalled)
+            assertEquals(
+                R.string.project_error_reorder_failed,
+                (viewModel.uiState.value.error as UiText.Resource).id,
+            )
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
     private fun viewModel(
         repository: RecentProjectRepository,
         recorder: RecentProjectRecorder,
@@ -181,9 +236,12 @@ class ProjectPickerViewModelTest {
     private class FakeRecentProjectRepository(
         private val onAdd: suspend () -> Unit = {},
         private val onRemove: suspend () -> Unit = {},
+        private val onReorder: suspend () -> Unit = {},
     ) : RecentProjectRepository {
         var addCalls = 0
         var removeCalls = 0
+        var reorderCalls = 0
+        var lastReorderedProjects: List<ProjectRef> = emptyList()
 
         override fun observe(serverId: String): Flow<List<ProjectRef>> = flowOf(emptyList())
 
@@ -194,6 +252,16 @@ class ProjectPickerViewModelTest {
         }
 
         override suspend fun upsert(serverId: String, project: ProjectRef): ProjectRef = project
+
+        override suspend fun reorder(
+            serverId: String,
+            projects: List<ProjectRef>,
+            projectToEnsure: ProjectRef?,
+        ) {
+            reorderCalls++
+            lastReorderedProjects = projects
+            onReorder()
+        }
 
         override suspend fun remove(serverId: String, directory: String) {
             removeCalls++
