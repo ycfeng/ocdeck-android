@@ -25,6 +25,8 @@ internal enum class FrpControlFailure(val description: String) {
     HEARTBEAT_TIMEOUT("control heartbeat timed out"),
     QUEUE_OVERFLOW("control queue limit exceeded"),
     WORK_FAILED("work connection failed"),
+    CLIENT_STREAM_FAILED("client stream failed"),
+    STALE_IDENTITY("control identity is stale"),
     CLOSED("control is closed"),
 }
 

@@ -41,6 +41,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -231,13 +232,18 @@ class FrpControlClientTest {
     fun reconnectBackoffCapsAtTwentySeconds() = runBlocking {
         val fixture = v1Fixture()
         val muxes = Collections.synchronizedList(mutableListOf<FakeMuxConnection>())
-        val connector = RecordingConnector { _ ->
+        val connector = RecordingConnector { index ->
             FakeMuxConnection(
                 streams = listOf(ScriptedMuxStream(FrpContractFixtures.bytes("wire-v1-login-response"))),
-                initialFailure = FrpTransportException(FrpTransportFailure.READ_FAILED),
+                initialFailure = if (index == 0) {
+                    null
+                } else {
+                    FrpTransportException(FrpTransportFailure.READ_FAILED)
+                },
             ).also(muxes::add)
         }
         val delayer = RecordingStopDelayer(stopAfter = 7)
+        val terminatedIdentities = Collections.synchronizedSet(mutableSetOf<FrpControlIdentity>())
         val parentScope = newParentScope()
         val client = newClient(
             config = fixture.config.copy(
@@ -251,15 +257,20 @@ class FrpControlClientTest {
             delayer = delayer,
             secureRandom = RepeatingSecureRandom(0x80),
             lifecycleHooks = FrpControlLifecycleHooks(
-                beforeOpenPublish = {
-                    waitUntil {
-                        synchronized(muxes) { muxes.lastOrNull()?.closeCount?.get() == 1 }
+                beforeOpenPublish = { identity ->
+                    if (connector.connectCount.get() > 1) {
+                        waitUntil { synchronized(terminatedIdentities) { identity in terminatedIdentities } }
                     }
                 },
+                afterTerminationRecorded = { identity -> terminatedIdentities += identity },
             ),
         )
         try {
             client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            synchronized(muxes) { muxes.single() }.fail(
+                FrpTransportException(FrpTransportFailure.READ_FAILED),
+            )
             waitUntil { delayer.snapshot().size == 7 }
             waitUntil { client.state.value is FrpControlState.Closed }
             client.awaitStopped()
@@ -456,6 +467,220 @@ class FrpControlClientTest {
     }
 
     @Test
+    fun workCleanupRetainsSharedPermitUntilAsyncResetCompletes() = runBlocking {
+        val fixture = v1Fixture()
+        val resetRelease = CompletableDeferred<Unit>()
+        val workStream = ScriptedMuxStream(
+            initialInput = FrpWireV1.encodeMessage(StartWorkConn(proxyName = "work")),
+            resetRelease = resetRelease,
+        )
+        val clientStream = ScriptedMuxStream()
+        val mux = FakeMuxConnection(
+            listOf(ScriptedMuxStream(fixture.fullServerInput), workStream, clientStream),
+        )
+        val handlerCalled = CompletableDeferred<Unit>()
+        val permitWaitStarted = CompletableDeferred<Unit>()
+        val permitAcquired = CompletableDeferred<Unit>()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 414L,
+            workHandler = FrpWorkConnectionHandler { handlerCalled.complete(Unit) },
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                beforeClientStreamPermitWait = { permitWaitStarted.complete(Unit) },
+                afterClientStreamPermitAcquired = { permitAcquired.complete(Unit) },
+            ),
+        )
+        try {
+            client.start()
+            withTimeout(5_000L) { handlerCalled.await() }
+            waitUntil { workStream.resetCount.get() == 1 }
+            assertEquals(1, client.diagnostics().activeWorkConnections)
+            assertEquals(0, client.diagnostics().availableDataPermits)
+            val identity = (client.state.value as FrpControlState.Open).identity
+
+            val opening = async { client.openClientStream(identity) }
+            withTimeout(5_000L) { permitWaitStarted.await() }
+            delay(25L)
+            assertFalse(permitAcquired.isCompleted)
+            assertFalse(opening.isCompleted)
+            assertEquals(2, mux.openCount.get())
+
+            resetRelease.complete(Unit)
+            val lease = withTimeout(5_000L) { opening.await() }
+            assertTrue(permitAcquired.isCompleted)
+            assertEquals(0, client.diagnostics().activeWorkConnections)
+            assertEquals(3, mux.openCount.get())
+            assertEquals(0, client.diagnostics().availableDataPermits)
+
+            lease.reset()
+            waitUntil { client.diagnostics().availableDataPermits == 1 }
+            assertEquals(1, workStream.resetCount.get())
+            assertEquals(1, clientStream.resetCount.get())
+        } finally {
+            resetRelease.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun ordinaryWorkResetFailureReleasesPermitForNextWork() = runBlocking {
+        val fixture = v1Fixture()
+        val requests = encryptV1ServerMessages(listOf(ReqWorkConn(), ReqWorkConn()))
+        val controlStream = ScriptedMuxStream(
+            FrpContractFixtures.bytes("wire-v1-login-response") + requests,
+        )
+        val resetRelease = CompletableDeferred<Unit>()
+        val firstWork = ScriptedMuxStream(
+            initialInput = FrpWireV1.encodeMessage(StartWorkConn(proxyName = "first")),
+            resetFailure = FrpTransportException(FrpTransportFailure.WRITE_FAILED),
+            resetRelease = resetRelease,
+        )
+        val secondWork = ScriptedMuxStream(
+            FrpWireV1.encodeMessage(StartWorkConn(proxyName = "second")),
+        )
+        val mux = FakeMuxConnection(listOf(controlStream, firstWork, secondWork))
+        val handlers = Channel<String>(Channel.UNLIMITED)
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                workWorkerCount = 1,
+                maxActiveWorkConnections = 1,
+            ),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 415L,
+            workHandler = FrpWorkConnectionHandler { handlers.send(it.start.proxyName) },
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            assertEquals("first", withTimeout(5_000L) { handlers.receive() })
+            waitUntil { firstWork.resetCount.get() == 1 }
+            delay(25L)
+            assertEquals(2, mux.openCount.get())
+            assertEquals(1, client.diagnostics().activeWorkConnections)
+            assertEquals(0, client.diagnostics().availableDataPermits)
+
+            resetRelease.complete(Unit)
+            assertEquals("second", withTimeout(5_000L) { handlers.receive() })
+            waitUntil {
+                secondWork.resetCount.get() == 1 &&
+                    client.diagnostics().activeWorkConnections == 0 &&
+                    client.diagnostics().availableDataPermits == 1
+            }
+
+            assertTrue(client.state.value is FrpControlState.Open)
+            assertEquals(0L, client.diagnostics().workFailureCount)
+            assertEquals(1, firstWork.resetCount.get())
+            assertEquals(1, secondWork.resetCount.get())
+            assertEquals(3, mux.openCount.get())
+        } finally {
+            resetRelease.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun workResetJvmErrorTerminatesControlOwner() = runBlocking {
+        val fixture = v1Fixture()
+        val error = AssertionError("synthetic work reset error")
+        val workStream = ScriptedMuxStream(
+            initialInput = FrpWireV1.encodeMessage(StartWorkConn(proxyName = "work")),
+            resetFailure = error,
+        )
+        val mux = FakeMuxConnection(
+            listOf(ScriptedMuxStream(fixture.fullServerInput), workStream),
+        )
+        val handlerCalled = CompletableDeferred<Unit>()
+        val completion = CompletableDeferred<Throwable?>()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 416L,
+            workHandler = FrpWorkConnectionHandler { handlerCalled.complete(Unit) },
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start().invokeOnCompletion { completion.complete(it) }
+            withTimeout(5_000L) { handlerCalled.await() }
+
+            val observed = withTimeout(5_000L) { completion.await() }
+            assertTrue(observed is AssertionError)
+            assertSame(error, observed?.cause)
+            withTimeout(5_000L) { client.awaitStopped() }
+            assertTrue(client.state.value is FrpControlState.Failed)
+            assertEquals(FrpControlFailure.TRANSPORT_FAILED, (client.state.value as FrpControlState.Failed).failure)
+            assertEquals(1, workStream.resetCount.get())
+            assertEquals(1, mux.closeCount.get())
+            assertEquals(0, client.diagnostics().activeWorkConnections)
+            assertEquals(1, client.diagnostics().availableDataPermits)
+        } finally {
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun concurrentShutdownWaitsForOneWorkCleanupFlight() = runBlocking {
+        val fixture = v1Fixture()
+        val resetRelease = CompletableDeferred<Unit>()
+        val workStream = ScriptedMuxStream(
+            initialInput = FrpWireV1.encodeMessage(StartWorkConn(proxyName = "work")),
+            resetRelease = resetRelease,
+        )
+        val mux = FakeMuxConnection(
+            listOf(ScriptedMuxStream(fixture.fullServerInput), workStream),
+        )
+        val handlerCalled = CompletableDeferred<Unit>()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 417L,
+            workHandler = FrpWorkConnectionHandler { handlerCalled.complete(Unit) },
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            withTimeout(5_000L) { handlerCalled.await() }
+            waitUntil { workStream.resetCount.get() == 1 }
+            val stopped = async { client.awaitStopped() }
+
+            List(8) { async(Dispatchers.Default) { client.close() } }.forEach { it.await() }
+            delay(25L)
+            assertFalse(stopped.isCompleted)
+            assertEquals(1, workStream.resetCount.get())
+            assertEquals(1, mux.closeCount.get())
+
+            resetRelease.complete(Unit)
+            withTimeout(5_000L) { stopped.await() }
+            assertEquals(1, workStream.resetCount.get())
+            assertEquals(1, mux.closeCount.get())
+            assertEquals(0, client.diagnostics().activeWorkConnections)
+            assertEquals(1, client.diagnostics().availableDataPermits)
+        } finally {
+            resetRelease.complete(Unit)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun workHandshakeTimeoutClosesOnlyThatStreamAndNextWorkStillSucceeds() = runBlocking {
         val fixture = v1Fixture()
         val requests = encryptV1ServerMessages(listOf(ReqWorkConn(), ReqWorkConn()))
@@ -616,9 +841,11 @@ class FrpControlClientTest {
             client.close()
             release.complete(Unit)
             withTimeout(5_000L) { client.awaitStopped() }
+            collector.cancelAndJoin()
+            val observedStates = synchronized(states) { states.toList() }
 
             assertTrue(client.state.value is FrpControlState.Closed)
-            assertTrue(states.none { it is FrpControlState.Open })
+            assertTrue(observedStates.none { it is FrpControlState.Open })
             assertEquals(1, mux.closeCount.get())
         } finally {
             collector.cancel()
@@ -906,9 +1133,11 @@ class FrpControlClientTest {
             release.complete(Unit)
             assertOriginalCancellation(cancellation, withTimeout(5_000L) { completion.await() })
             withTimeout(5_000L) { client.awaitStopped() }
+            collector.cancelAndJoin()
+            val observedStates = synchronized(states) { states.toList() }
 
             assertTrue(client.state.value is FrpControlState.Closed)
-            assertTrue(states.none { it is FrpControlState.Open })
+            assertTrue(observedStates.none { it is FrpControlState.Open })
             assertEquals(1, mux.closeCount.get())
         } finally {
             release.complete(Unit)
@@ -962,9 +1191,11 @@ class FrpControlClientTest {
             releaseRetryPublish.countDown()
             assertOriginalCancellation(cancellation, withTimeout(5_000L) { completion.await() })
             withTimeout(5_000L) { client.awaitStopped() }
+            collector.cancelAndJoin()
+            val observedStates = synchronized(states) { states.toList() }
 
             assertTrue(client.state.value is FrpControlState.Closed)
-            assertTrue(states.none { it is FrpControlState.Retrying })
+            assertTrue(observedStates.none { it is FrpControlState.Retrying })
         } finally {
             releaseRetryPublish.countDown()
             collector.cancel()
@@ -1100,6 +1331,7 @@ class FrpControlClientTest {
         val mux = FakeMuxConnection(listOf(stableV1ControlStream()))
         val connector = RecordingConnector { _ -> mux }
         val reached = CompletableDeferred<Unit>()
+        val terminationRecorded = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()
         val delayer = ManualDelayer()
         val parentScope = newParentScope()
@@ -1119,6 +1351,7 @@ class FrpControlClientTest {
                     reached.complete(Unit)
                     release.await()
                 },
+                afterTerminationRecorded = { terminationRecorded.complete(Unit) },
             ),
         )
         val states = Collections.synchronizedList(mutableListOf<FrpControlState>())
@@ -1128,13 +1361,16 @@ class FrpControlClientTest {
             withTimeout(5_000L) { reached.await() }
 
             mux.fail(FrpTransportException(FrpTransportFailure.READ_FAILED))
-            waitUntil { mux.closeCount.get() == 1 }
+            terminationRecorded.await()
             release.complete(Unit)
-            waitUntil { client.state.value is FrpControlState.Retrying }
+            waitUntil { client.state.value is FrpControlState.Failed }
+            waitUntil { mux.closeCount.get() == 1 }
+            collector.cancelAndJoin()
+            val observedStates = synchronized(states) { states.toList() }
 
-            val retrying = client.state.value as FrpControlState.Retrying
-            assertEquals(FrpControlFailure.TRANSPORT_FAILED, retrying.failure)
-            assertTrue(states.none { it is FrpControlState.Open })
+            val failed = client.state.value as FrpControlState.Failed
+            assertEquals(FrpControlFailure.TRANSPORT_FAILED, failed.failure)
+            assertTrue(observedStates.none { it is FrpControlState.Open })
             assertEquals(1, connector.connectCount.get())
         } finally {
             collector.cancel()
@@ -1163,13 +1399,15 @@ class FrpControlClientTest {
         try {
             client.start()
             waitUntil { client.state.value is FrpControlState.Open }
-            waitUntil { states.any { it is FrpControlState.Open } }
+            waitUntil { synchronized(states) { states.any { it is FrpControlState.Open } } }
 
             client.close()
             withTimeout(5_000L) { client.awaitStopped() }
+            collector.cancelAndJoin()
+            val observedStates = synchronized(states) { states.toList() }
 
             assertTrue(client.state.value is FrpControlState.Closed)
-            assertTrue(states.none { it is FrpControlState.Retrying })
+            assertTrue(observedStates.none { it is FrpControlState.Retrying })
             assertEquals(1, connector.connectCount.get())
             assertEquals(1, mux.closeCount.get())
         } finally {
@@ -1333,6 +1571,562 @@ class FrpControlClientTest {
     }
 
     @Test
+    fun clientStreamLeaseCarriesCurrentControlMetadataAndReleasesSharedPermit() = runBlocking {
+        val firstClientStream = ScriptedMuxStream()
+        val secondClientStream = ScriptedMuxStream()
+        val mux = FakeMuxConnection(
+            listOf(stableV1ControlStream(), firstClientStream, secondClientStream),
+        )
+        val permitWaits = Channel<Unit>(capacity = 2)
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 631L,
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                beforeClientStreamPermitWait = { permitWaits.send(Unit) },
+            ),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+
+            val first = client.openClientStream(identity)
+            assertEquals(identity, first.identity)
+            assertEquals("run_fixture_001", first.runId)
+            assertEquals(FrpWireProtocol.V1, first.wireProtocol)
+            assertEquals(1, client.diagnostics().activeClientStreams)
+            withTimeout(5_000L) { permitWaits.receive() }
+
+            val secondCall = async { client.openClientStream(identity) }
+            withTimeout(5_000L) { permitWaits.receive() }
+            assertFalse(secondCall.isCompleted)
+            assertEquals(2, mux.openCount.get())
+
+            first.reset()
+            val second = withTimeout(5_000L) { secondCall.await() }
+            assertEquals(3, mux.openCount.get())
+            assertEquals(1, firstClientStream.resetCount.get())
+            second.reset()
+            waitUntil { client.diagnostics().activeClientStreams == 0 }
+            assertEquals(1, secondClientStream.resetCount.get())
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun clientStreamCancellationWhileWaitingForPermitDoesNotConsumeIt() = runBlocking {
+        val firstStream = ScriptedMuxStream()
+        val nextStream = ScriptedMuxStream()
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), firstStream, nextStream))
+        val permitWaits = Channel<Unit>(Channel.UNLIMITED)
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 636L,
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                beforeClientStreamPermitWait = { permitWaits.send(Unit) },
+            ),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val first = client.openClientStream(identity)
+            permitWaits.receive()
+
+            val waiting = async { client.openClientStream(identity) }
+            permitWaits.receive()
+            assertFalse(waiting.isCompleted)
+            waiting.cancelAndJoin()
+            first.reset()
+
+            val next = withTimeout(5_000L) { client.openClientStream(identity) }
+            assertEquals(3, mux.openCount.get())
+            next.reset()
+            assertEquals(1, nextStream.resetCount.get())
+            waitUntil { client.diagnostics().availableDataPermits == 1 }
+            assertEquals(1, client.diagnostics().availableDataPermits)
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun clientStreamCancellationAfterPermitBeforeOpenReturnsPermit() = runBlocking {
+        val acquired = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), ScriptedMuxStream()))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 637L,
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                afterClientStreamPermitAcquired = {
+                    acquired.complete(Unit)
+                    release.await()
+                },
+            ),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val opening = async { client.openClientStream(identity) }
+            acquired.await()
+            opening.cancelAndJoin()
+
+            assertEquals(1, mux.openCount.get())
+            assertEquals(1, client.diagnostics().availableDataPermits)
+        } finally {
+            release.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun clientStreamCancellationAfterOpenBeforeRegistrationResetsAndReturnsPermit() = runBlocking {
+        val opened = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val stream = ScriptedMuxStream()
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), stream))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 638L,
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                afterClientStreamOpen = {
+                    opened.complete(Unit)
+                    release.await()
+                },
+            ),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val opening = async { client.openClientStream(identity) }
+            opened.await()
+            opening.cancelAndJoin()
+
+            assertEquals(1, stream.resetCount.get())
+            assertEquals(1, client.diagnostics().availableDataPermits)
+        } finally {
+            release.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun clientStreamCancellationAtRegisteredHandoffResetsAndReturnsPermit() = runBlocking {
+        val registered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val stream = ScriptedMuxStream()
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), stream))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 639L,
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                afterClientStreamRegistration = {
+                    registered.complete(Unit)
+                    withContext(NonCancellable) { release.await() }
+                },
+            ),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val opening = async { client.openClientStream(identity) }
+            registered.await()
+            assertEquals(1, client.diagnostics().activeClientStreams)
+            opening.cancel()
+            release.complete(Unit)
+            opening.join()
+
+            waitUntil { stream.resetCount.get() == 1 && client.diagnostics().availableDataPermits == 1 }
+            assertEquals(0, client.diagnostics().activeClientStreams)
+        } finally {
+            release.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun clientStreamHandoffResetJvmErrorOutranksCancellationAndReturnsPermit() = runBlocking {
+        val registered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val error = object : Error("synthetic client stream reset error") {}
+        val stream = ScriptedMuxStream(resetFailure = error)
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), stream))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 641L,
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                afterClientStreamRegistration = {
+                    registered.complete(Unit)
+                    withContext(NonCancellable) { release.await() }
+                },
+            ),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val opening = parentScope.async { client.openClientStream(identity) }
+            registered.await()
+            val cancellation = CancellationException("client stream handoff cancellation")
+
+            opening.cancel(cancellation)
+            release.complete(Unit)
+            val failure = try {
+                opening.await()
+                throw AssertionError("cancelled handoff unexpectedly returned a lease")
+            } catch (actual: Throwable) {
+                actual
+            }
+
+            assertSame(error, failure)
+            assertTrue(error.suppressed.any { it === cancellation || it.cause === cancellation })
+            waitUntil {
+                stream.resetCount.get() == 1 && client.diagnostics().availableDataPermits == 1
+            }
+            assertEquals(0, client.diagnostics().activeClientStreams)
+        } finally {
+            release.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun controlTerminationRevokesOpenBeforeBlockedClientLeaseReset() = runBlocking {
+        val resetRelease = CompletableDeferred<Unit>()
+        val stream = ScriptedMuxStream(resetRelease = resetRelease)
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), stream))
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 640L,
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            client.openClientStream(identity)
+
+            mux.fail(FrpTransportException(FrpTransportFailure.CLOSED))
+            waitUntil { client.state.value is FrpControlState.Retrying && stream.resetCount.get() == 1 }
+            assertTrue(client.state.value is FrpControlState.Retrying)
+            val stale = try {
+                client.openClientStream(identity)
+                throw AssertionError("terminated identity unexpectedly opened a stream")
+            } catch (failure: FrpControlException) {
+                failure
+            }
+            assertEquals(FrpControlFailure.STALE_IDENTITY, stale.failure)
+            assertEquals(0, client.diagnostics().availableDataPermits)
+
+            resetRelease.complete(Unit)
+            waitUntil { client.diagnostics().availableDataPermits == 1 }
+        } finally {
+            resetRelease.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun controlFailurePublishesRetryBeforeBlockedPhysicalClose() = runBlocking {
+        val closeStarted = CountDownLatch(1)
+        val releaseClose = CountDownLatch(1)
+        val mux = FakeMuxConnection(
+            streams = listOf(stableV1ControlStream()),
+            beforeClose = {
+                closeStarted.countDown()
+                releaseClose.await()
+            },
+        )
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig(),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 642L,
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+
+            mux.fail(FrpTransportException(FrpTransportFailure.READ_FAILED))
+            assertTrue(withContext(Dispatchers.IO) { closeStarted.await(5, TimeUnit.SECONDS) })
+
+            val retrying = client.state.value as FrpControlState.Retrying
+            assertEquals(FrpControlFailure.TRANSPORT_FAILED, retrying.failure)
+            val stale = try {
+                client.openClientStream(identity)
+                throw AssertionError("terminated identity unexpectedly opened a stream")
+            } catch (failure: FrpControlException) {
+                failure
+            }
+            assertEquals(FrpControlFailure.STALE_IDENTITY, stale.failure)
+            assertEquals(1, mux.closeCount.get())
+        } finally {
+            releaseClose.countDown()
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun clientStreamsAndWorkConnectionsShareOneDataPermitBudget() = runBlocking {
+        val fixture = v1Fixture()
+        val controlInput = fixture.fullServerInput
+        val workStream = ScriptedMuxStream(FrpWireV1.encodeMessage(StartWorkConn(proxyName = "work")))
+        val clientStream = ScriptedMuxStream()
+        val mux = FakeMuxConnection(listOf(ScriptedMuxStream(controlInput), workStream, clientStream))
+        val handlerStarted = CompletableDeferred<Unit>()
+        val releaseHandler = CompletableDeferred<Unit>()
+        val clientPermitWait = CompletableDeferred<Unit>()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 632L,
+            workHandler = FrpWorkConnectionHandler {
+                handlerStarted.complete(Unit)
+                releaseHandler.await()
+            },
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                beforeClientStreamPermitWait = { clientPermitWait.complete(Unit) },
+            ),
+        )
+        try {
+            client.start()
+            withTimeout(5_000L) { handlerStarted.await() }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val clientCall = async { client.openClientStream(identity) }
+            withTimeout(5_000L) { clientPermitWait.await() }
+
+            assertFalse(clientCall.isCompleted)
+            assertEquals(2, mux.openCount.get())
+            releaseHandler.complete(Unit)
+
+            val lease = withTimeout(5_000L) { clientCall.await() }
+            assertEquals(3, mux.openCount.get())
+            lease.reset()
+        } finally {
+            releaseHandler.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun shutdownAfterWorkPermitAcquisitionReturnsTheSharedPermit() = runBlocking {
+        val fixture = v1Fixture()
+        val acquired = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val mux = FakeMuxConnection(
+            listOf(ScriptedMuxStream(fixture.fullServerInput), ScriptedMuxStream()),
+        )
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(maxActiveWorkConnections = 1),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 641L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                afterWorkPermitAcquired = {
+                    acquired.complete(Unit)
+                    release.await()
+                },
+            ),
+        )
+        try {
+            client.start()
+            acquired.await()
+            assertEquals(0, client.diagnostics().availableDataPermits)
+
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            assertEquals(1, client.diagnostics().availableDataPermits)
+        } finally {
+            release.complete(Unit)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun controlShutdownInvalidatesAndWaitsForRegisteredClientStreams() = runBlocking {
+        val releaseReset = CompletableDeferred<Unit>()
+        val clientStream = ScriptedMuxStream(resetRelease = releaseReset)
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), clientStream))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig(),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 633L,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val lease = client.openClientStream(identity)
+
+            client.close()
+            val stopped = async { client.awaitStopped() }
+            waitUntil { clientStream.resetCount.get() == 1 }
+
+            assertTrue(lease.isClosed)
+            assertFalse(stopped.isCompleted)
+            releaseReset.complete(Unit)
+            withTimeout(5_000L) { stopped.await() }
+            assertEquals(0, client.diagnostics().activeClientStreams)
+        } finally {
+            releaseReset.complete(Unit)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun controlCloseAfterClientStreamRegistrationRejectsTheLateLease() = runBlocking {
+        val registered = CompletableDeferred<Unit>()
+        val releaseRegistration = CompletableDeferred<Unit>()
+        val clientStream = ScriptedMuxStream()
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), clientStream))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig(),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 635L,
+            secureRandom = RepeatingSecureRandom(0x80),
+            lifecycleHooks = FrpControlLifecycleHooks(
+                afterClientStreamRegistration = {
+                    registered.complete(Unit)
+                    withContext(NonCancellable) { releaseRegistration.await() }
+                },
+            ),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val openCall = async {
+                try {
+                    client.openClientStream(identity)
+                    throw AssertionError("late client stream unexpectedly escaped")
+                } catch (failure: FrpControlException) {
+                    failure
+                }
+            }
+            withTimeout(5_000L) { registered.await() }
+            assertEquals(1, client.diagnostics().activeClientStreams)
+
+            client.close()
+            waitUntil { clientStream.resetCount.get() == 1 }
+            releaseRegistration.complete(Unit)
+
+            val failure = withTimeout(5_000L) { openCall.await() }
+            assertEquals(FrpControlFailure.STALE_IDENTITY, failure.failure)
+            withTimeout(5_000L) { client.awaitStopped() }
+            assertEquals(0, client.diagnostics().activeClientStreams)
+        } finally {
+            releaseRegistration.complete(Unit)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun staleIdentityCannotOpenOrConsumeAClientStream() = runBlocking {
+        val mux = FakeMuxConnection(listOf(stableV1ControlStream(), ScriptedMuxStream()))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig(),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 634L,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val stale = identity.copy(transportIdentity = identity.transportIdentity + 1L)
+
+            val failure = try {
+                client.openClientStream(stale)
+                throw AssertionError("stale identity unexpectedly opened a stream")
+            } catch (failure: FrpControlException) {
+                failure
+            }
+
+            assertEquals(FrpControlFailure.STALE_IDENTITY, failure.failure)
+            assertEquals(1, mux.openCount.get())
+            assertEquals(0, client.diagnostics().activeClientStreams)
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun matchingUserPrefixIsRemovedOnceWithoutMutatingServerMessage() {
         val server = StartWorkConn(proxyName = "alice.alice.proxy", srcAddr = "source")
 
@@ -1389,6 +2183,57 @@ class FrpControlClientTest {
             assertTrue(client.state.value is FrpControlState.Closed)
             assertFalse(client.state.value.toString().contains(error.message.orEmpty()))
         } finally {
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun blockedPhysicalCloseOwnerPublishesLateJvmErrorAfterParentEnds() = runBlocking {
+        val error = AssertionError("late physical close error")
+        val closeStarted = CountDownLatch(1)
+        val releaseClose = CountDownLatch(1)
+        val mux = FakeMuxConnection(
+            streams = listOf(stableV1ControlStream()),
+            closeFailure = error,
+            beforeClose = {
+                closeStarted.countDown()
+                releaseClose.await()
+            },
+        )
+        val parentJob = SupervisorJob()
+        val parentScope = CoroutineScope(
+            parentJob + Dispatchers.Default + CoroutineExceptionHandler { _, _ -> },
+        )
+        val client = newClient(
+            config = basicConfig(),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 643L,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        val completion = CompletableDeferred<Throwable?>()
+        try {
+            val runner = client.start()
+            runner.invokeOnCompletion { completion.complete(it) }
+            waitUntil { client.state.value is FrpControlState.Open }
+
+            client.close()
+            assertTrue(withContext(Dispatchers.IO) { closeStarted.await(5, TimeUnit.SECONDS) })
+            val stopped = async { client.awaitStopped() }
+            delay(25L)
+            assertFalse(stopped.isCompleted)
+
+            parentJob.cancel()
+            client.close()
+            releaseClose.countDown()
+
+            assertSame(error, withTimeout(5_000L) { completion.await() })
+            withTimeout(5_000L) { stopped.await() }
+            assertEquals(1, mux.closeCount.get())
+            assertTrue(client.state.value is FrpControlState.Closed)
+        } finally {
+            releaseClose.countDown()
             client.close()
             parentScope.cancel()
         }
@@ -1579,6 +2424,7 @@ class FrpControlClientTest {
         streams: List<FrpMuxStream>,
         initialFailure: Throwable? = null,
         private val closeFailure: Throwable? = null,
+        private val beforeClose: () -> Unit = {},
         private val awaitTerminationFailure: Throwable? = null,
         private val beforeAwaitTerminationResult: suspend () -> Unit = {},
     ) : FrpMuxConnection {
@@ -1586,6 +2432,7 @@ class FrpControlClientTest {
         private val termination = CompletableDeferred<Unit>()
         private val closed = AtomicBoolean(false)
         val closeCount = AtomicInteger(0)
+        val openCount = AtomicInteger(0)
 
         init {
             streams.forEach { check(streamQueue.trySend(it).isSuccess) }
@@ -1593,7 +2440,7 @@ class FrpControlClientTest {
         }
 
         override suspend fun openStream(): FrpMuxStream =
-            streamQueue.receiveCatching().getOrNull()
+            streamQueue.receiveCatching().getOrNull()?.also { openCount.incrementAndGet() }
                 ?: throw FrpTransportException(FrpTransportFailure.CLOSED)
 
         override suspend fun awaitTermination() {
@@ -1611,6 +2458,7 @@ class FrpControlClientTest {
             closeCount.incrementAndGet()
             streamQueue.close()
             termination.complete(Unit)
+            beforeClose()
             closeFailure?.let { throw it }
         }
 
