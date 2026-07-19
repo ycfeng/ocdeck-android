@@ -106,7 +106,7 @@ class ProjectDrawerModelTest {
     }
 
     @Test
-    fun opensProjectHomeFromSessionDetailOrAnotherProject() {
+    fun distinguishesSessionExitFromProjectToProjectNavigation() {
         val activeSession = ActiveProjectDrawerRoute(
             serverId = "server",
             directory = "E:/work/current",
@@ -114,11 +114,20 @@ class ProjectDrawerModelTest {
         )
 
         assertEquals(
-            ProjectDrawerNavigation.OpenProjectHome,
+            ProjectDrawerNavigation.OpenProjectHomeFromSession,
             resolveProjectDrawerNavigation(
                 activeProject = activeSession,
                 targetServerId = "server",
                 targetDirectory = "E:/work/current",
+                pathNormalizer = pathNormalizer,
+            ),
+        )
+        assertEquals(
+            ProjectDrawerNavigation.OpenProjectHomeFromSession,
+            resolveProjectDrawerNavigation(
+                activeProject = activeSession,
+                targetServerId = "other-server",
+                targetDirectory = "E:/work/other",
                 pathNormalizer = pathNormalizer,
             ),
         )

@@ -105,6 +105,7 @@ internal fun ProjectDrawerHost(
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    var isDrawerNavigationCommitted by remember { mutableStateOf(false) }
     val projectRouteKey = activeProject?.let { route ->
         "${route.serverId}:${appContainer.pathNormalizer.normalize(route.directory)}"
     }
@@ -148,6 +149,19 @@ internal fun ProjectDrawerHost(
         fileViewModel?.onPanelClosed()
         isFilePanelOpen = false
         filePickerRequest = null
+    }
+    val commitDrawerNavigation: (() -> Unit) -> Unit = { navigate ->
+        if (!isDrawerNavigationCommitted) {
+            isDrawerNavigationCommitted = true
+            navigate()
+            scope.launch {
+                try {
+                    drawerState.close()
+                } finally {
+                    isDrawerNavigationCommitted = false
+                }
+            }
+        }
     }
 
     BackHandler(enabled = isFilePanelOpen) {
@@ -274,32 +288,29 @@ internal fun ProjectDrawerHost(
                                 isProjectRailDragging = isDragging
                             },
                             onSelectProject = { directory ->
-                                scope.launch {
-                                    drawerState.close()
+                                commitDrawerNavigation {
                                     onOpenProject(route.serverId, directory)
                                 }
                             },
                             onOpenProjectPicker = {
-                                scope.launch {
-                                    drawerState.close()
+                                commitDrawerNavigation {
                                     onOpenProjectPicker(route.serverId)
                                 }
                             },
                             onOpenSettings = {
-                                onOpenSettings(route.serverId)
-                                scope.launch { drawerState.snapTo(DrawerValue.Closed) }
+                                commitDrawerNavigation {
+                                    onOpenSettings(route.serverId)
+                                }
                             },
                             onNewSession = {
-                                scope.launch {
-                                    drawerState.close()
+                                commitDrawerNavigation {
                                     if (route.sessionId != OpenCodePromptSender.NEW_SESSION_ID) {
                                         onOpenSession(route.serverId, route.directory, OpenCodePromptSender.NEW_SESSION_ID)
                                     }
                                 }
                             },
                             onOpenSession = { sessionId ->
-                                scope.launch {
-                                    drawerState.close()
+                                commitDrawerNavigation {
                                     if (route.sessionId != sessionId) {
                                         onOpenSession(route.serverId, route.directory, sessionId)
                                     }
