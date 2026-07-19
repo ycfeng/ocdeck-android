@@ -19,6 +19,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxConnecto
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.YamuxStreamBlockingIo
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.handoffFrpOwnedResult
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
@@ -53,6 +54,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
 
 internal fun interface FrpWorkConnectionHandler {
     suspend fun handle(connection: FrpWorkConnection)
@@ -62,7 +64,14 @@ internal data class FrpControlLifecycleHooks(
     val beforeOpenPublish: suspend (FrpControlIdentity) -> Unit = {},
     val beforeWorkDelivery: suspend (FrpControlIdentity) -> Unit = {},
     val afterWorkRegistration: suspend (FrpControlIdentity) -> Unit = {},
+    val beforeClientStreamPermitWait: suspend (FrpControlIdentity) -> Unit = {},
+    val afterClientStreamPermitAcquired: suspend (FrpControlIdentity) -> Unit = {},
+    val beforeClientStreamOpen: suspend (FrpControlIdentity) -> Unit = {},
+    val afterClientStreamOpen: suspend (FrpControlIdentity) -> Unit = {},
+    val afterClientStreamRegistration: suspend (FrpControlIdentity) -> Unit = {},
+    val afterWorkPermitAcquired: suspend (FrpControlIdentity) -> Unit = {},
     val beforeStatePublish: (FrpControlState) -> Unit = {},
+    val afterTerminationRecorded: (FrpControlIdentity) -> Unit = {},
 )
 
 internal class FrpWorkConnection internal constructor(
@@ -100,12 +109,108 @@ internal class FrpWorkConnection internal constructor(
             "errorPresent=${start.error.isNotEmpty()}, closed=$isClosed)"
 }
 
+internal class FrpClientStreamLease internal constructor(
+    val identity: FrpControlIdentity,
+    val runId: String,
+    val wireProtocol: FrpWireProtocol,
+    delegate: FrpMuxStream,
+    cleanupScope: CoroutineScope,
+    private val onReleased: (FrpClientStreamLease) -> Unit,
+) {
+    private val closed = AtomicBoolean(false)
+    private val resetFailure = AtomicReference<Throwable?>()
+    private val resetDone = CompletableDeferred<Unit>()
+    private val delegateStream = delegate
+
+    val stream: FrpMuxStream = object : FrpMuxStream {
+        override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
+            checkOpen()
+            return delegateStream.read(destination, offset, length)
+        }
+
+        override suspend fun write(source: ByteArray, offset: Int, length: Int) {
+            checkOpen()
+            delegateStream.write(source, offset, length)
+        }
+
+        override suspend fun closeWrite() {
+            checkOpen()
+            delegateStream.closeWrite()
+        }
+
+        override suspend fun reset() {
+            this@FrpClientStreamLease.reset()
+        }
+
+        override fun toString(): String = "FrpClientLeaseStream(closed=${closed.get()})"
+    }
+
+    private val resetJob = AtomicReference<Job?>()
+    private val cleanupScope = cleanupScope
+
+    val isClosed: Boolean
+        get() = closed.get()
+
+    suspend fun reset() {
+        beginReset()
+        resetDone.await()
+        resetFailure.get()?.let { throw it }
+    }
+
+    internal fun beginReset() {
+        if (!closed.compareAndSet(false, true)) return
+        val job = cleanupScope.launch(
+            context = CoroutineName("FrpClientStreamLeaseCleanup"),
+            start = CoroutineStart.UNDISPATCHED,
+        ) {
+            var failure: Throwable? = null
+            try {
+                withContext(NonCancellable) { delegateStream.reset() }
+            } catch (resetCancellation: CancellationException) {
+                failure = resetCancellation
+            } catch (resetError: Error) {
+                failure = resetError
+            } catch (_: Exception) {
+                // Reset is best effort after the logical lease is synchronously invalidated.
+            } finally {
+                resetFailure.set(failure)
+                try {
+                    onReleased(this@FrpClientStreamLease)
+                } catch (releaseCancellation: CancellationException) {
+                    resetFailure.set(preferControlFatalFailure(resetFailure.get(), releaseCancellation))
+                } catch (releaseError: Error) {
+                    resetFailure.set(preferControlFatalFailure(resetFailure.get(), releaseError))
+                } finally {
+                    resetDone.complete(Unit)
+                }
+            }
+        }
+        check(resetJob.compareAndSet(null, job))
+    }
+
+    internal suspend fun awaitReset() {
+        if (!closed.get()) return
+        resetDone.await()
+        resetFailure.get()?.let { throw it }
+    }
+
+    override fun toString(): String =
+        "FrpClientStreamLease(identity=$identity, runIdPresent=${runId.isNotEmpty()}, " +
+            "wireProtocol=$wireProtocol, closed=${closed.get()})"
+
+    private fun checkOpen() {
+        if (closed.get()) throw FrpControlException(FrpControlFailure.CLOSED)
+    }
+}
+
 internal data class FrpControlDiagnostics(
     val started: Boolean,
     val closed: Boolean,
     val runnerActive: Boolean,
     val identity: FrpControlIdentity?,
     val activeWorkConnections: Int,
+    val activeClientStreams: Int,
+    val availableDataPermits: Int,
     val workFailureCount: Long,
 )
 
@@ -174,6 +279,7 @@ internal class FrpControlClient(
                 transitionToClosed()
             }
             session?.close()
+            ownerJob.complete()
             stopped.complete(Unit)
         }
         return job
@@ -183,11 +289,27 @@ internal class FrpControlClient(
         stopped.await()
     }
 
+    suspend fun openClientStream(expectedIdentity: FrpControlIdentity): FrpClientStreamLease {
+        currentCoroutineContext().ensureActive()
+        if (!hasActiveOwnerLease() || expectedIdentity.generation != generation) {
+            throw FrpControlException(FrpControlFailure.STALE_IDENTITY)
+        }
+        val session = activeSession.get()
+            ?: throw FrpControlException(FrpControlFailure.STALE_IDENTITY)
+        if (session.identity != expectedIdentity) {
+            throw FrpControlException(FrpControlFailure.STALE_IDENTITY)
+        }
+        return session.openClientStream(expectedIdentity)
+    }
+
     override fun close() {
         if (!transitionToClosed()) return
         val session = activeSession.getAndSet(null)
-        session?.close()
-        ownerJob.cancel(ControlClientClosedCancellation())
+        if (session == null) {
+            ownerJob.cancel(ControlClientClosedCancellation())
+        } else {
+            session.close()
+        }
         if (!started.get()) stopped.complete(Unit)
     }
 
@@ -199,6 +321,8 @@ internal class FrpControlClient(
             runnerActive = runner.get()?.isActive == true,
             identity = session?.identity,
             activeWorkConnections = session?.activeWorkConnectionCount ?: 0,
+            activeClientStreams = session?.activeClientStreamCount ?: 0,
+            availableDataPermits = session?.availableDataPermits ?: config.maxActiveWorkConnections,
             workFailureCount = session?.workFailureCount ?: 0L,
         )
     }
@@ -209,6 +333,8 @@ internal class FrpControlClient(
             "closed=${diagnostics.closed}, runnerActive=${diagnostics.runnerActive}, " +
             "identityPresent=${diagnostics.identity != null}, " +
             "activeWorkConnections=${diagnostics.activeWorkConnections}, " +
+            "activeClientStreams=${diagnostics.activeClientStreams}, " +
+            "availableDataPermits=${diagnostics.availableDataPermits}, " +
             "workFailureCount=${diagnostics.workFailureCount})"
     }
 
@@ -216,6 +342,7 @@ internal class FrpControlClient(
         var previousRunId = ""
         var hasOpened = false
         var retryAttempt = 0
+        var escapingFailure: Throwable? = null
         try {
             while (hasActiveOwnerLease()) {
                 if (!hasOpened) publish(FrpControlState.Connecting(generation, attempt = 1))
@@ -244,7 +371,6 @@ internal class FrpControlClient(
 
                 previousRunId = established.runId
                 epochSequence.set(epoch)
-                hasOpened = true
                 val session = ControlSession(
                     identity = established.identity,
                     runId = established.runId,
@@ -264,12 +390,16 @@ internal class FrpControlClient(
                 )
                 if (!hasActiveOwnerLease() || !activeSession.compareAndSet(null, session)) {
                     session.close()
-                    withContext(NonCancellable) { session.shutdown() }
+                    val completedFailure = shutdownSession(session, null)
+                    if (completedFailure is CancellationException || completedFailure is Error) {
+                        throw completedFailure
+                    }
                     return
                 }
                 session.start()
                 lifecycleHooks.beforeOpenPublish(session.identity)
                 if (session.publishOpenIfActive { publish(FrpControlState.Open(session.identity)) }) {
+                    hasOpened = true
                     retryAttempt = 0
                 }
 
@@ -282,30 +412,68 @@ internal class FrpControlClient(
                     awaitFailure = failure
                 } catch (failure: Exception) {
                     awaitFailure = failure
-                } finally {
-                    withContext(NonCancellable) { session.shutdown() }
-                    activeSession.compareAndSet(session, null)
                 }
                 val failure = awaitFailure?.let { preferControlFailure(session.finalFailure(), it) }
                     ?: session.finalFailure()
-                when (failure) {
-                    is CancellationException -> throw failure
-                    is Error -> throw failure
+                var retryDelayMillis: Long? = null
+                var terminateAfterCleanup = false
+                when {
+                    failure is Error -> {
+                        if (hasActiveOwnerLease()) {
+                            publish(FrpControlState.Failed(generation, FrpControlFailure.TRANSPORT_FAILED))
+                        } else {
+                            transitionToClosed()
+                        }
+                    }
+                    failure is CancellationException || !hasActiveOwnerLease() -> transitionToClosed()
+                    !hasOpened -> {
+                        val mapped = mapControlFailure(
+                            failure,
+                            FrpControlFailure.TRANSPORT_FAILED,
+                        ) as FrpControlException
+                        publish(FrpControlState.Failed(generation, mapped.failure))
+                        terminateAfterCleanup = true
+                    }
+                    else -> {
+                        val mapped = mapControlFailure(
+                            failure,
+                            FrpControlFailure.TRANSPORT_FAILED,
+                        ) as FrpControlException
+                        retryAttempt = incrementAttempt(retryAttempt)
+                        val delayMillis = reconnectDelay(retryAttempt)
+                        retryDelayMillis = delayMillis
+                        publish(FrpControlState.Retrying(generation, retryAttempt, delayMillis, mapped.failure))
+                    }
                 }
+                val completedFailure = shutdownSession(session, failure)
+                activeSession.compareAndSet(session, null)
+                when (completedFailure) {
+                    is CancellationException -> throw completedFailure
+                    is Error -> {
+                        if (hasActiveOwnerLease()) {
+                            publish(FrpControlState.Failed(generation, FrpControlFailure.TRANSPORT_FAILED))
+                        }
+                        throw completedFailure
+                    }
+                }
+                if (terminateAfterCleanup) return
                 if (!hasActiveOwnerLease()) return
-                val mapped = mapControlFailure(
-                    failure,
-                    FrpControlFailure.TRANSPORT_FAILED,
-                ) as FrpControlException
-                retryAttempt = incrementAttempt(retryAttempt)
-                delayBeforeRetry(retryAttempt, mapped.failure)
+                delayer.delayMillis(checkNotNull(retryDelayMillis))
             }
         } catch (failure: CancellationException) {
+            escapingFailure = failure
             if (!closed.get()) {
                 transitionToClosed()
             }
             throw failure
         } catch (failure: Error) {
+            escapingFailure = failure
+            if (!closed.get()) {
+                publish(FrpControlState.Failed(generation, FrpControlFailure.TRANSPORT_FAILED))
+            }
+            throw failure
+        } catch (failure: Exception) {
+            escapingFailure = failure
             if (!closed.get()) {
                 publish(FrpControlState.Failed(generation, FrpControlFailure.TRANSPORT_FAILED))
             }
@@ -313,9 +481,29 @@ internal class FrpControlClient(
         } finally {
             activeSession.getAndSet(null)?.let { session ->
                 session.close()
-                withContext(NonCancellable) { session.shutdown() }
+                val completedFailure = shutdownSession(session, escapingFailure)
+                if (completedFailure !== escapingFailure &&
+                    (completedFailure is CancellationException || completedFailure is Error)
+                ) {
+                    throw completedFailure
+                }
             }
         }
+    }
+
+    private suspend fun shutdownSession(session: ControlSession, current: Throwable?): Throwable {
+        var shutdownFailure: Throwable? = null
+        try {
+            withContext(NonCancellable) { session.shutdown() }
+        } catch (failure: CancellationException) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
+        } catch (failure: Error) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
+        }
+        val completedFailure = shutdownFailure?.let { failure ->
+            preferControlFailure(session.finalFailure(), failure)
+        } ?: session.finalFailure()
+        return current?.let { failure -> preferControlFailure(failure, completedFailure) } ?: completedFailure
     }
 
     private suspend fun establish(previousRunId: String, identity: FrpControlIdentity): EstablishedControl {
@@ -520,6 +708,9 @@ private class ControlSession(
     private val closing = AtomicBoolean(false)
     private val terminationSignal = CompletableDeferred<Unit>()
     private val openDecision = CompletableDeferred<Boolean>()
+    private val physicalCloseStarted = AtomicBoolean(false)
+    private val physicalCloseCompletion = CompletableDeferred<Unit>()
+    private val physicalCloseFailure = AtomicReference<Throwable?>()
     private val lifecycleLock = Any()
     private var lifecycle = SessionLifecycle.STARTING
     private var selectedFailure: Throwable? = null
@@ -533,17 +724,36 @@ private class ControlSession(
     )
     private val jobsLock = Any()
     private val jobs = mutableListOf<Job>()
-    private val activeWork = LinkedHashSet<FrpWorkConnection>()
+    private val activeWork = LinkedHashSet<ActiveWorkLease>()
     private val handlerJobs = LinkedHashSet<Job>()
-    private val activeWorkPermits = Channel<Unit>(config.maxActiveWorkConnections).apply {
-        repeat(config.maxActiveWorkConnections) { check(trySend(Unit).isSuccess) }
-    }
+    private val workCleanupFlights = LinkedHashSet<ActiveWorkLease>()
+    private val activeClientStreams = LinkedHashSet<FrpClientStreamLease>()
+    private val activeClientOpenCalls = LinkedHashSet<CompletableDeferred<Unit>>()
+    private val activeDataPermits = Semaphore(config.maxActiveWorkConnections)
+    private val clientStreamCleanupJob = SupervisorJob()
+    private val clientStreamCleanupScope = CoroutineScope(
+        parentScope.coroutineContext.minusKey(Job) +
+            clientStreamCleanupJob +
+            CoroutineName("FrpClientStreamCleanup"),
+    )
+    private val workCleanupJob = SupervisorJob()
+    private val workCleanupScope = CoroutineScope(
+        parentScope.coroutineContext.minusKey(Job) +
+            workCleanupJob +
+            CoroutineName("FrpWorkConnectionCleanup"),
+    )
     private val workFailures = AtomicLong(0L)
     private val lastPongMillis = AtomicLong(monotonicTimeSource.nowMillis())
     private val firstPingMillis = CompletableDeferred<Long>()
 
     val activeWorkConnectionCount: Int
         get() = synchronized(lifecycleLock) { activeWork.size }
+
+    val activeClientStreamCount: Int
+        get() = synchronized(lifecycleLock) { activeClientStreams.size }
+
+    val availableDataPermits: Int
+        get() = activeDataPermits.availablePermits
 
     val workFailureCount: Long
         get() = workFailures.get()
@@ -566,6 +776,64 @@ private class ControlSession(
         terminationSignal.await()
     }
 
+    suspend fun openClientStream(expectedIdentity: FrpControlIdentity): FrpClientStreamLease {
+        val openCall = registerClientOpenCall(expectedIdentity)
+        var permitOwned = false
+        var stream: FrpMuxStream? = null
+        var lease: FrpClientStreamLease? = null
+        try {
+            lifecycleHooks.beforeClientStreamPermitWait(identity)
+            activeDataPermits.acquire()
+            permitOwned = true
+            lifecycleHooks.afterClientStreamPermitAcquired(identity)
+            currentCoroutineContext().ensureActive()
+            lifecycleHooks.beforeClientStreamOpen(identity)
+            requireOpenClientStreamOwner(expectedIdentity)
+            val openedStream = mux.openStream()
+            stream = openedStream
+            lifecycleHooks.afterClientStreamOpen(identity)
+            requireOpenClientStreamOwner(expectedIdentity)
+
+            val created = FrpClientStreamLease(
+                identity = identity,
+                runId = runId,
+                wireProtocol = config.wireProtocol,
+                delegate = openedStream,
+                cleanupScope = clientStreamCleanupScope,
+                onReleased = ::releaseClientStream,
+            )
+            lease = created
+            stream = null
+            if (!registerClientStream(created)) {
+                created.reset()
+                throw FrpControlException(FrpControlFailure.STALE_IDENTITY)
+            }
+            permitOwned = false
+            lifecycleHooks.afterClientStreamRegistration(identity)
+            if (!isRegisteredClientStream(created)) {
+                created.reset()
+                throw FrpControlException(FrpControlFailure.STALE_IDENTITY)
+            }
+            val handedOff = handoffFrpOwnedResult(created, FrpClientStreamLease::beginReset)
+            lease = null
+            return handedOff
+        } catch (failure: CancellationException) {
+            cleanupRejectedClientStream(lease, stream, failure)
+        } catch (failure: Error) {
+            cleanupRejectedClientStream(lease, stream, failure)
+        } catch (failure: Exception) {
+            val mapped = if (failure is FrpControlException) {
+                failure
+            } else {
+                FrpControlException(FrpControlFailure.CLIENT_STREAM_FAILED)
+            }
+            cleanupRejectedClientStream(lease, stream, mapped)
+        } finally {
+            if (permitOwned) releaseDataPermit()
+            finishClientOpenCall(openCall)
+        }
+    }
+
     fun publishOpenIfActive(publish: () -> Unit): Boolean = synchronized(lifecycleLock) {
         if (lifecycle != SessionLifecycle.STARTING || closing.get() || !isAuthoritative(identity)) {
             openDecision.complete(false)
@@ -586,17 +854,36 @@ private class ControlSession(
     }
 
     suspend fun shutdown() {
-        beginPhysicalClose()
+        var shutdownFailure: Throwable? = null
+        try {
+            closePhysicalTransportAndAwait()
+        } catch (failure: CancellationException) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
+            recordFailure(failure)
+        } catch (failure: Error) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
+            recordFailure(failure)
+        }
         val activeHandlers = synchronized(lifecycleLock) { handlerJobs.toList() }
         sessionJob.cancel(ControlSessionClosedCancellation())
         val childJobs = synchronized(jobsLock) { jobs.toList() }
         (childJobs + activeHandlers).distinct().joinAll()
         closeActiveWorkConnections()
+        awaitWorkCleanup()?.let { failure ->
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
+            recordFailure(failure)
+        }
+        workCleanupJob.cancel()
+        awaitClientOpenCalls()
+        awaitClientStreamShutdown()
+        clientStreamCleanupJob.cancel()
         try {
             mux.awaitTermination()
         } catch (failure: CancellationException) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
             recordFailure(failure)
         } catch (failure: Error) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
             recordFailure(failure)
         } catch (_: Exception) {
             // The selected control failure remains authoritative for ordinary mux close I/O.
@@ -604,12 +891,16 @@ private class ControlSession(
         try {
             runControlCodec { channel.close() }
         } catch (failure: CancellationException) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
             recordFailure(failure)
         } catch (failure: Error) {
+            shutdownFailure = preferControlFailure(shutdownFailure, failure)
             recordFailure(failure)
         } catch (_: Exception) {
             // The selected control failure remains authoritative.
         }
+        val completedFailure = preferControlFailure(shutdownFailure, finalFailure())
+        if (completedFailure is CancellationException || completedFailure is Error) throw completedFailure
     }
 
     override fun toString(): String =
@@ -747,21 +1038,21 @@ private class ControlSession(
     private suspend fun runWorkWorker() {
         for (ignored in workQueue) {
             if (closing.get()) return
-            activeWorkPermits.receive()
-            if (closing.get()) {
-                releaseWorkPermit()
-                return
-            }
             processWorkRequest()
         }
     }
 
     private suspend fun processWorkRequest() {
-        var permitOwned = true
+        var permitOwned = false
         var blockingIo: YamuxStreamBlockingIo? = null
         var workConnection: FrpWorkConnection? = null
         var activeLease: ActiveWorkLease? = null
         try {
+            activeDataPermits.acquire()
+            permitOwned = true
+            lifecycleHooks.afterWorkPermitAcquired(identity)
+            currentCoroutineContext().ensureActive()
+            if (closing.get()) return
             if (!isAuthoritative(identity)) return
             val stream = mux.openStream()
             if (!isAuthoritative(identity)) {
@@ -819,7 +1110,7 @@ private class ControlSession(
                 runWorkHandler(lease)
             }
             lease.attach(handlerJob)
-            handlerJob.invokeOnCompletion { lease.release() }
+            handlerJob.invokeOnCompletion { lease.beginCleanup() }
             if (!registerWorkHandler(lease)) {
                 handlerJob.cancel()
                 return
@@ -834,9 +1125,9 @@ private class ControlSession(
         } catch (_: Exception) {
             workFailures.incrementAndGet()
         } finally {
-            activeLease?.release()
+            activeLease?.beginCleanup()
             workConnection?.close() ?: blockingIo?.close()
-            if (permitOwned) releaseWorkPermit()
+            if (permitOwned) releaseDataPermit()
         }
     }
 
@@ -844,7 +1135,7 @@ private class ControlSession(
         if (lifecycle != SessionLifecycle.OPEN || !isAuthoritative(identity) || lease.isReleased) {
             false
         } else {
-            activeWork += lease.connection
+            activeWork += lease
             handlerJobs += lease.job
             true
         }
@@ -861,7 +1152,7 @@ private class ControlSession(
     private suspend fun runWorkHandler(lease: ActiveWorkLease) {
         val deliver = synchronized(lifecycleLock) {
             lifecycle == SessionLifecycle.OPEN &&
-                activeWork.contains(lease.connection) &&
+                activeWork.contains(lease) &&
                 handlerJobs.contains(lease.job) &&
                 isAuthoritative(identity)
         }
@@ -877,8 +1168,113 @@ private class ControlSession(
         }
     }
 
-    private fun releaseWorkPermit() {
-        check(activeWorkPermits.trySend(Unit).isSuccess)
+    private fun releaseDataPermit() {
+        activeDataPermits.release()
+    }
+
+    private fun hasOpenClientStreamOwner(): Boolean = synchronized(lifecycleLock) {
+        lifecycle == SessionLifecycle.OPEN && !closing.get() && isAuthoritative(identity)
+    }
+
+    private fun registerClientOpenCall(expectedIdentity: FrpControlIdentity): CompletableDeferred<Unit> =
+        synchronized(lifecycleLock) {
+            if (expectedIdentity != identity || lifecycle != SessionLifecycle.OPEN || closing.get() ||
+                !isAuthoritative(identity)
+            ) {
+                throw FrpControlException(FrpControlFailure.STALE_IDENTITY)
+            }
+            CompletableDeferred<Unit>().also(activeClientOpenCalls::add)
+        }
+
+    private fun finishClientOpenCall(openCall: CompletableDeferred<Unit>) {
+        synchronized(lifecycleLock) { activeClientOpenCalls.remove(openCall) }
+        openCall.complete(Unit)
+    }
+
+    private suspend fun awaitClientOpenCalls() {
+        val calls = synchronized(lifecycleLock) { activeClientOpenCalls.toList() }
+        calls.forEach { withContext(NonCancellable) { it.await() } }
+    }
+
+    private fun requireOpenClientStreamOwner(expectedIdentity: FrpControlIdentity) {
+        if (expectedIdentity != identity || !hasOpenClientStreamOwner()) {
+            throw FrpControlException(FrpControlFailure.STALE_IDENTITY)
+        }
+    }
+
+    private fun registerClientStream(lease: FrpClientStreamLease): Boolean = synchronized(lifecycleLock) {
+        if (lifecycle != SessionLifecycle.OPEN || closing.get() || !isAuthoritative(identity) || lease.isClosed) {
+            false
+        } else {
+            activeClientStreams += lease
+            true
+        }
+    }
+
+    private fun isRegisteredClientStream(lease: FrpClientStreamLease): Boolean = synchronized(lifecycleLock) {
+        lifecycle == SessionLifecycle.OPEN &&
+            !closing.get() &&
+            isAuthoritative(identity) &&
+            activeClientStreams.contains(lease) &&
+            !lease.isClosed
+    }
+
+    private fun releaseClientStream(lease: FrpClientStreamLease) {
+        val removed = synchronized(lifecycleLock) { activeClientStreams.remove(lease) }
+        if (removed) releaseDataPermit()
+    }
+
+    private suspend fun cleanupRejectedClientStream(
+        lease: FrpClientStreamLease?,
+        stream: FrpMuxStream?,
+        failure: Throwable,
+    ): Nothing {
+        var selected = failure
+        if (lease != null) {
+            try {
+                lease.reset()
+            } catch (cleanupFailure: CancellationException) {
+                selected = preferControlFatalFailure(selected, cleanupFailure)
+            } catch (cleanupFailure: Error) {
+                selected = preferControlFatalFailure(selected, cleanupFailure)
+            } catch (_: Exception) {
+                // The typed open failure remains authoritative.
+            }
+        } else if (stream != null) {
+            try {
+                withContext(NonCancellable) { stream.reset() }
+            } catch (cleanupFailure: CancellationException) {
+                selected = preferControlFatalFailure(selected, cleanupFailure)
+            } catch (cleanupFailure: Error) {
+                selected = preferControlFatalFailure(selected, cleanupFailure)
+            } catch (_: Exception) {
+                // The typed open failure remains authoritative.
+            }
+        }
+        throw selected
+    }
+
+    private fun closeActiveClientStreams() {
+        val leases = synchronized(lifecycleLock) { activeClientStreams.toList() }
+        leases.forEach(FrpClientStreamLease::beginReset)
+    }
+
+    private suspend fun awaitClientStreamShutdown() {
+        val leases = synchronized(lifecycleLock) { activeClientStreams.toList() }
+        var fatalFailure: Throwable? = null
+        leases.forEach { lease ->
+            lease.beginReset()
+            try {
+                withContext(NonCancellable) { lease.awaitReset() }
+            } catch (failure: CancellationException) {
+                fatalFailure = preferControlFatalFailure(fatalFailure, failure)
+            } catch (failure: Error) {
+                fatalFailure = preferControlFatalFailure(fatalFailure, failure)
+            } catch (_: Exception) {
+                // Ordinary reset I/O is secondary to control shutdown.
+            }
+        }
+        fatalFailure?.let(::recordFailure)
     }
 
     private fun readWorkMessage(input: InputStream): FrpMessage? = when (config.wireProtocol) {
@@ -906,38 +1302,58 @@ private class ControlSession(
                 true
             }
         }
-        if (firstTermination) beginPhysicalClose()
+        if (firstTermination) lifecycleHooks.afterTerminationRecorded(identity)
     }
 
-    private fun beginPhysicalClose() {
-        if (!closing.compareAndSet(false, true)) return
-        writerQueue.close()
-        workQueue.close()
-        closeActiveWorkConnections()
-        try {
-            mux.close()
-        } catch (failure: CancellationException) {
-            updateSelectedFailure(failure)
-        } catch (failure: Error) {
-            updateSelectedFailure(failure)
-        } catch (_: Exception) {
-            // Expected close I/O is secondary to the selected control failure.
+    private suspend fun closePhysicalTransportAndAwait() {
+        if (physicalCloseStarted.compareAndSet(false, true)) {
+            var closeFailure: Throwable? = null
+            try {
+                closing.set(true)
+                writerQueue.close()
+                workQueue.close()
+                closeActiveWorkConnections()
+                closeActiveClientStreams()
+                try {
+                    mux.close()
+                } catch (failure: CancellationException) {
+                    closeFailure = preferControlFailure(closeFailure, failure)
+                    updateSelectedFailure(failure)
+                } catch (failure: Error) {
+                    closeFailure = preferControlFailure(closeFailure, failure)
+                    updateSelectedFailure(failure)
+                } catch (_: Exception) {
+                    // Expected close I/O is secondary to the selected control failure.
+                }
+            } finally {
+                physicalCloseFailure.set(closeFailure)
+                physicalCloseCompletion.complete(Unit)
+            }
         }
+        withContext(NonCancellable) { physicalCloseCompletion.await() }
+        physicalCloseFailure.get()?.let { throw it }
     }
 
     private fun closeActiveWorkConnections() {
-        val connections = synchronized(lifecycleLock) {
-            activeWork.toList().also { activeWork.clear() }
-        }
-        connections.forEach { connection ->
-            try {
-                connection.close()
-            } catch (failure: CancellationException) {
-                updateSelectedFailure(failure)
-            } catch (failure: Error) {
-                updateSelectedFailure(failure)
-            } catch (_: Exception) {
-                // Work connection close is best effort after session termination.
+        val leases = synchronized(lifecycleLock) { activeWork.toList() }
+        leases.forEach(ActiveWorkLease::beginCleanup)
+    }
+
+    private suspend fun awaitWorkCleanup(): Throwable? {
+        var selectedFailure: Throwable? = null
+        while (true) {
+            val flights = synchronized(lifecycleLock) { workCleanupFlights.toList() }
+            if (flights.isEmpty()) return selectedFailure
+            flights.forEach { lease ->
+                try {
+                    withContext(NonCancellable) { lease.awaitCleanup() }
+                } catch (failure: CancellationException) {
+                    selectedFailure = preferControlFailure(selectedFailure, failure)
+                } catch (failure: Error) {
+                    selectedFailure = preferControlFailure(selectedFailure, failure)
+                } catch (_: Exception) {
+                    // Ordinary reset I/O is local to the released work stream.
+                }
             }
         }
     }
@@ -951,42 +1367,92 @@ private class ControlSession(
     private inner class ActiveWorkLease(
         val connection: FrpWorkConnection,
     ) {
-        private val released = AtomicBoolean(false)
+        private val cleanupStarted = AtomicBoolean(false)
+        private val cleanupCompletion = CompletableDeferred<Unit>()
+        private val cleanupFailure = AtomicReference<Throwable?>()
         private var handlerJob: Job? = null
 
         val job: Job
             get() = checkNotNull(handlerJob)
 
         val isReleased: Boolean
-            get() = released.get()
+            get() = cleanupStarted.get()
 
         fun attach(job: Job) {
             check(handlerJob == null)
             handlerJob = job
         }
 
-        fun release() {
-            if (!released.compareAndSet(false, true)) return
+        fun beginCleanup() {
+            if (!cleanupStarted.compareAndSet(false, true)) return
             val job = handlerJob
             job?.cancel()
             synchronized(lifecycleLock) {
-                activeWork.remove(connection)
-                if (job != null) handlerJobs.remove(job)
+                workCleanupFlights += this
             }
-            try {
-                connection.close()
-            } catch (failure: CancellationException) {
-                updateSelectedFailure(failure)
-            } catch (failure: Error) {
-                updateSelectedFailure(failure)
-            } catch (_: Exception) {
-                // Work close is best effort after ownership has left the handler.
+            workCleanupScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                var selectedFailure: Throwable? = null
+                try {
+                    try {
+                        connection.close()
+                    } catch (failure: CancellationException) {
+                        selectedFailure = preferControlFailure(selectedFailure, failure)
+                    } catch (failure: Error) {
+                        selectedFailure = preferControlFailure(selectedFailure, failure)
+                    } catch (_: Exception) {
+                        // Continue to the adapter's reset completion barrier.
+                    }
+                    try {
+                        connection.awaitClosed()
+                    } catch (failure: CancellationException) {
+                        selectedFailure = preferControlFailure(selectedFailure, failure)
+                    } catch (failure: Error) {
+                        selectedFailure = preferControlFailure(selectedFailure, failure)
+                    } catch (_: Exception) {
+                        // Ordinary reset I/O is isolated to this work connection.
+                    }
+                    if (job != null) {
+                        try {
+                            withContext(NonCancellable) { job.join() }
+                        } catch (failure: CancellationException) {
+                            selectedFailure = preferControlFailure(selectedFailure, failure)
+                        } catch (failure: Error) {
+                            selectedFailure = preferControlFailure(selectedFailure, failure)
+                        } catch (_: Exception) {
+                            // Handler-local ordinary failures were already classified by runWorkHandler.
+                        }
+                    }
+                    selectedFailure?.let { failure ->
+                        try {
+                            recordFailure(failure)
+                        } catch (candidate: CancellationException) {
+                            selectedFailure = preferControlFailure(selectedFailure, candidate)
+                        } catch (candidate: Error) {
+                            selectedFailure = preferControlFailure(selectedFailure, candidate)
+                        }
+                    }
+                } finally {
+                    synchronized(lifecycleLock) {
+                        activeWork.remove(this@ActiveWorkLease)
+                        if (job != null) handlerJobs.remove(job)
+                    }
+                    releaseDataPermit()
+                    cleanupFailure.set(selectedFailure)
+                    cleanupCompletion.complete(Unit)
+                    synchronized(lifecycleLock) {
+                        workCleanupFlights.remove(this@ActiveWorkLease)
+                    }
+                }
             }
-            releaseWorkPermit()
+        }
+
+        suspend fun awaitCleanup() {
+            cleanupCompletion.await()
+            cleanupFailure.get()?.let { throw it }
         }
 
         override fun toString(): String =
-            "ActiveWorkLease(released=${released.get()}, jobAttached=${handlerJob != null})"
+            "ActiveWorkLease(cleanupStarted=${cleanupStarted.get()}, jobAttached=${handlerJob != null})"
     }
 
     private class OutgoingMessage(
@@ -1077,8 +1543,8 @@ private fun preferControlFailure(current: Throwable?, candidate: Throwable): Thr
     return selected
 }
 
-private fun preferControlFatalFailure(current: Throwable, candidate: Throwable): Throwable {
-    if (current === candidate) return current
+private fun preferControlFatalFailure(current: Throwable?, candidate: Throwable): Throwable {
+    if (current == null || current === candidate) return candidate
     val selected = when {
         candidate is Error && current !is Error -> candidate
         current is Error -> current
