@@ -13,7 +13,23 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the `0.1.3` release. / 尚无超出 `0.1.3` 发布范围的变更。
+No changes have been assigned beyond the `0.2.0` release. / 尚无超出 `0.2.0` 发布范围的变更。
+
+## [0.2.0] - 2026-07-19
+
+### Added / 新增
+
+- Added shared per-server recent-project ordering across the Project Picker and project drawer, with long-press drag reordering, edge auto-scroll, and TalkBack move-up/move-down actions. / 新增 Project Picker 与项目抽屉共享的按服务器最近项目顺序，支持长按拖动排序、边缘自动滚动和 TalkBack 上移/下移操作。
+- Added session message jump controls for the first currently rendered user message and the latest message or active thinking state, while staying clear of the Composer and IME. / 新增会话消息跳转控件，可跳到当前已渲染的首条用户消息，以及最新消息或活跃思考状态，并避让 Composer 与 IME。
+
+### Changed / 变更
+
+- Recent-project records now use a stable numeric order per server. Legacy records preserve their existing array order and receive consecutive order values on the next related write; optimistic reordering rolls back on persistence failure without discarding concurrent additions. / 最近项目记录现在按服务器使用稳定的数字顺序。旧记录会保留现有数组顺序，并在下一次相关写入时补全连续顺序值；乐观排序在持久化失败时回滚，同时不会丢失并发新增项目。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.7-frp0.69.1-p1` because the AAR embeds the `0.2.0` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.0` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.7-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- The Activity now resizes for the soft keyboard so the bottom Composer and screen-constrained overlays remain usable while the IME is visible. / Activity 现在会随软键盘调整尺寸，使底部 Composer 和受屏幕约束的浮层在 IME 显示时仍可使用。
 
 ## [0.1.3] - 2026-07-17
 

@@ -1,8 +1,8 @@
 OC DECK THIRD-PARTY NOTICES
 
-Last reviewed: 2026-07-17
-OC Deck application version: 0.1.3
-GoMobile bridge version: 0.3.6-frp0.69.1-p1
+Last reviewed: 2026-07-19
+OC Deck application version: 0.2.0
+GoMobile bridge version: 0.3.7-frp0.69.1-p1
 
 This file identifies third-party software and assets used by OC Deck. It does
 not replace the applicable license texts. Copies of the relevant licenses are
