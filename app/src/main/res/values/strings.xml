@@ -49,6 +49,8 @@
     <string name="a11y_delete_recent_project">删除最近项目</string>
     <string name="a11y_delete_server">删除服务器</string>
     <string name="a11y_edit_server">编辑服务器</string>
+    <string name="a11y_jump_to_first_user_message">跳到第一条用户消息</string>
+    <string name="a11y_jump_to_latest_message">跳到最新消息</string>
     <string name="a11y_menu">菜单</string>
     <string name="a11y_more_options">更多选项</string>
     <string name="a11y_move_server_down">下移服务器</string>

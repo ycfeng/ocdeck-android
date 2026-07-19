@@ -49,6 +49,8 @@
     <string name="a11y_delete_recent_project">Delete Recent Project</string>
     <string name="a11y_delete_server">Delete Server</string>
     <string name="a11y_edit_server">Edit Server</string>
+    <string name="a11y_jump_to_first_user_message">Jump to first user message</string>
+    <string name="a11y_jump_to_latest_message">Jump to latest message</string>
     <string name="a11y_menu">Menu</string>
     <string name="a11y_more_options">More Options</string>
     <string name="a11y_move_server_down">Move Server Down</string>
