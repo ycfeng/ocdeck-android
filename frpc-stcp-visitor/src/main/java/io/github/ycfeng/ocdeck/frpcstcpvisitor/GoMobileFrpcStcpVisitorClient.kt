@@ -3,7 +3,13 @@ package io.github.ycfeng.ocdeck.frpcstcpvisitor
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.net.BindException
+import java.util.Collections
+import java.util.IdentityHashMap
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -27,20 +33,23 @@ class GoMobileFrpcStcpVisitorClient private constructor(
     override suspend fun ensureVisitor(
         sessionId: String,
         visitor: FrpcStcpVisitorConfig,
-    ): FrpcEnsureVisitorResult =
-        withContext(Dispatchers.IO) {
-            decodeBridgeResult(bridge.ensureVisitor(sessionId, json.encodeToString(visitor)))
+    ): FrpcEnsureVisitorResult {
+        val resultJson = invokeBindBridge {
+            bridge.ensureVisitor(sessionId, json.encodeToString(visitor))
         }
+        return decodeBridgeResult(resultJson)
+    }
 
     override suspend fun waitVisitorReady(
         sessionId: String,
         visitorName: String,
         desiredRevision: Long,
         timeoutMillis: Long,
-    ): FrpcVisitorReadyResult = withContext(Dispatchers.IO) {
-        decodeBridgeResult(
-            bridge.waitVisitorReady(sessionId, visitorName, desiredRevision, timeoutMillis),
-        )
+    ): FrpcVisitorReadyResult {
+        val resultJson = invokeBindBridge {
+            bridge.waitVisitorReady(sessionId, visitorName, desiredRevision, timeoutMillis)
+        }
+        return decodeBridgeResult(resultJson)
     }
 
     override suspend fun stopVisitor(sessionId: String, visitorName: String) = withContext(Dispatchers.IO) {
@@ -58,12 +67,44 @@ class GoMobileFrpcStcpVisitorClient private constructor(
         decodeBridgeResult(bridge.getState(sessionId))
     }
 
+    private suspend fun invokeBindBridge(block: () -> String): String =
+        try {
+            withContext(Dispatchers.IO) { block() }
+        } catch (exception: Exception) {
+            exception.bridgeJvmErrorCauseOrNull()?.let { throw it }
+            if (exception is CancellationException) throw exception
+            currentCoroutineContext().ensureActive()
+            exception.bridgeCancellationCauseOrNull()?.let { throw it }
+            if (exception.hasLegacyBindConflictMessage()) throw BindException()
+            throw exception
+        }
+
     private inline fun <reified T> decodeBridgeResult(resultJson: String): T =
         try {
             json.decodeFromString(resultJson)
         } catch (_: IllegalArgumentException) {
             throw GoMobileBridgeApiMismatchException()
         }
+}
+
+private inline fun <reified T : Throwable> Throwable.bridgeCauseOrNull(): T? {
+    val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+    var current: Throwable? = this
+    while (current != null && seen.add(current)) {
+        if (current is T) return current
+        current = current.cause
+    }
+    return null
+}
+
+private fun Throwable.bridgeJvmErrorCauseOrNull(): Error? = bridgeCauseOrNull()
+
+private fun Throwable.bridgeCancellationCauseOrNull(): CancellationException? = bridgeCauseOrNull()
+
+private fun Exception.hasLegacyBindConflictMessage(): Boolean {
+    val detail = message ?: return false
+    return detail.contains("address already in use", ignoreCase = true) ||
+        detail.contains("eaddrinuse", ignoreCase = true)
 }
 
 internal interface GoMobileFrpcStcpVisitorBridge {

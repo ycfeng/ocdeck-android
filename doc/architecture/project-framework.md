@@ -8,7 +8,7 @@ This document and the Chinese version are maintained in parallel. If the documen
 
 This plan builds the OC Deck engineering framework from the interaction conclusions in `doc/architecture/mobile-interaction.md`. OC Deck is an independently maintained native Android client for OpenCode Server and is not an official product of or affiliated with OpenCode or Anomaly. The goal is not to mechanically copy the desktop Web UI, but to preserve the OpenCode information architecture and core workflows in a stable, evolvable, and verifiable Android project designed for phones.
 
-The current project follows a conservative strategy: one business module, a separate native bridge, manual dependency injection, and deferred Room/Hilt adoption. The primary paths for server connection, project selection, session list/details, ordinary prompts, SSE, and security redaction are implemented. Business code remains in `:app`; only the frpc STCP GoMobile integration is isolated behind the approved `:frpc-stcp-visitor` bridge boundary. Database, Hilt, and business-module splitting are evaluated only against demonstrated needs.
+The current project follows a conservative strategy: one business module, a separate STCP bridge library, manual dependency injection, and deferred Room/Hilt adoption. The primary paths for server connection, project selection, session list/details, ordinary prompts, SSE, and security redaction are implemented. Business code remains in `:app`; the GoMobile production client and pure Kotlin internal-canary client are isolated behind the approved `:frpc-stcp-visitor` boundary. Database, Hilt, and business-module splitting are evaluated only against demonstrated needs.
 
 Core principles:
 
@@ -40,7 +40,7 @@ Version selection is based on official Android documentation, Maven metadata, an
 | SSE | OkHttp `Call` + custom bounded reader | Connects `/global/event` and `/event?directory=...`; retain `okhttp-sse:5.4.0` as a dependency but do not use its parser in production |
 | JSON | kotlinx.serialization `1.11.0` | DTO serialization with unknown fields ignored by default |
 | Concurrency | kotlinx.coroutines `1.11.0` | Repository, SSE, and ViewModel state flows |
-| STCP native bridge | Go `1.26.4` + GoMobile/x-mobile `4dd8f1dbf5d2` + NDK `27.1.12297006` + frp `v0.69.1-p1` | `bridge-versions.properties` pins every version; `p1` is the auditable minimal downstream patch stack |
+| STCP clients | Go `1.26.4` + GoMobile/x-mobile `4dd8f1dbf5d2` + NDK `27.1.12297006` + frp `v0.69.1-p1`, plus a pure Kotlin client | `bridge-versions.properties` pins the GoMobile toolchain; GoMobile is the formal `debug`/`release` default, while the Kotlin client is selected only by the internal `canary` build |
 | SSH | JSch `2.28.3` + BouncyCastle `1.84` | SSH local forwarding, private keys, and host keys; fixed host fingerprints must be verified before user authentication |
 | Markdown | Markwon `4.6.2` + Prism4j `2.0.0` | Renders agent/assistant responses; ordinary Markdown uses Markwon, inline code uses highlighted transparent text, and fenced code uses a native Compose block with a 1 dp border and Prism4j highlighting |
 | Local settings | DataStore Preferences `1.2.1` | Server list, recent projects, and preferences |
@@ -126,13 +126,22 @@ VERSION_NAME=0.1.3
 
 `VERSION_NAME` is stable SemVer, and a stable tag must be exactly `v${VERSION_NAME}`. `VERSION_CODE` must exceed the previous stable tag. CI does not dynamically override source versions from tags or run numbers, preventing drift among local builds, Settings display, APK filenames, and release records.
 
-Automation is split into two workflows. Ordinary CI has no signing secrets and runs community/documentation and third-party/legal audits, Go race tests, GoMobile AAR gates, Android unit tests, and Debug builds. The Release workflow uses `preflight`, `prepare-notes`, `build-release`, and `publish` jobs. `prepare-notes` renders an auditable notes artifact without signing secrets, the JKS-holding job has no repository write permission, and the `contents: write` publishing job cannot read signing secrets. Releases contain only `arm64-v8a`, `armeabi-v7a`, and `x86_64` APKs plus `SHA256SUMS`; no AAB or universal APK is built. See `doc/release/github-actions.md` for operating steps.
+Automation is split into two workflows. Ordinary CI has no release-signing secrets and runs community/documentation and third-party/legal audits, Go race tests, GoMobile AAR gates, `debug` and `canary` App unit tests, the bridge unit tests, and both verification APK builds. The Release workflow uses `preflight`, `prepare-notes`, `build-release`, and `publish` jobs. It repeats the `debug`/`canary` verification before applying release signing, but only the GoMobile-default `release` APKs receive release signing and are staged and published. `prepare-notes` renders an auditable notes artifact without signing secrets, the JKS-holding job has no repository write permission, and the `contents: write` publishing job cannot read signing secrets. Releases contain only `arm64-v8a`, `armeabi-v7a`, and `x86_64` APKs plus `SHA256SUMS`; no Canary APK, AAB, or universal APK is published. See `doc/release/github-actions.md` for operating steps.
+
+### 3.3 STCP Backend Build Types
+
+STCP backend selection is fixed at App build time through `BuildConfig`:
+
+- `debug` and `release` set `USE_KOTLIN_FRPC_STCP_VISITOR=false` and instantiate `GoMobileFrpcStcpVisitorClient`.
+- `canary` inherits `debug`, adds application ID suffix `.canary` and version-name suffix `-canary`, sets `USE_KOTLIN_FRPC_STCP_VISITOR=true`, and instantiates `KotlinFrpcStcpVisitorClient`.
+- This is not a user setting, creates no persistence/schema state, and has no runtime fallback from one backend to the other.
+- Both implementations live in `:frpc-stcp-visitor`, so a Canary APK may still package Go native libraries. The guarantee is which client instance `AppContainer` selects, not the absence of the other implementation's packaged bytes.
 
 ## 4. Project Structure
 
 Business code remains primarily in the single `:app` module. OpenCode API, state, and page boundaries are still being calibrated, so package structure enforces responsibility boundaries and leaves a future split path without incurring premature cross-module costs.
 
-Exception: `frpc STCP visitor` uses the separate Android library module `:frpc-stcp-visitor` as the GoMobile AAR bridge boundary. It exposes only stable Kotlin interfaces and value objects, carries no feature/data/domain business code, and does not represent an early business multi-module split.
+Exception: `frpc STCP visitor` uses the separate Android library module `:frpc-stcp-visitor` as the stable client/GoMobile AAR bridge boundary. It contains the shared Kotlin interface, the GoMobile adapter, and the pure Kotlin implementation, carries no feature/data/domain business code, and does not represent an early business multi-module split.
 
 Recommended directories:
 
@@ -201,7 +210,16 @@ STCP bridge module structure:
 frpc-stcp-visitor/src/main/java/io/github/ycfeng/ocdeck/frpcstcpvisitor/
   FrpcStcpVisitorClient.kt
   GoMobileFrpcStcpVisitorClient.kt
+  KotlinFrpcStcpVisitorClient.kt
+  KotlinFrpcStcpVisitorFailure.kt
   UnavailableFrpcStcpVisitorClient.kt
+  internal/
+    control/
+    crypto/
+    protocol/
+    runtime/
+    transport/
+    yamux/
 
 frpc-stcp-visitor-go/
   bridge-versions.properties
@@ -229,9 +247,11 @@ frpc-stcp-visitor-go/
 
 The canonical `.github/scripts/verify-bridge-reproducibility.sh` and `.ps1` gates require a clean checkout. On one host platform, they build the current checkout and a detached worktree at a different absolute path with separate `GOCACHE`, `GOMODCACHE`, and `GOPATH` directories, then compare the AAR, sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. The temporary checkout and caches are removed while primary outputs remain for the Gradle gate; CI and Release use the shell variant. This makes no cross-operating-system byte-identity claim. App packaging excludes `libgojni.so` from Android Gradle Plugin's later strip transform so Release APKs preserve those verified AAR bytes; APK gates still revalidate their hash, ELF metadata, alignment, and stripped state. The GoMobile `-javapkg` prefix maps to reflection entry `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`. `internal/anetcompat` replaces `github.com/wlynxg/anet` with standard-library network-interface functions, and the main module explicitly inherits frp's yamux replacement.
 
-Android Debug still compiles when the AAR has not been generated, but STCP returns a clear runtime unavailable error. Release `preReleaseBuild` must run `checkGoMobileBridgeAar`, byte-for-byte verifying checksum, pinned API signature, internal/external bridge and frp provenance, legal texts, licenses, native metadata, and each ABI's `libgojni.so` hash. `-PrequireGoMobileBridge=true` applies the same gate to Debug/CI. Passing static gates is not sufficient for release: native load and a real STCP loop must still be verified on target ABIs and 16 KB page-size devices.
+Android Debug still compiles when the AAR has not been generated, but its GoMobile-backed STCP path returns a clear runtime unavailable error. Canary selects the Kotlin backend, although the shared library may still package Go native bytes when the AAR exists. Release `preReleaseBuild` must run `checkGoMobileBridgeAar`, byte-for-byte verifying checksum, pinned API signature, internal/external bridge and frp provenance, legal texts, licenses, native metadata, and each ABI's `libgojni.so` hash. `-PrequireGoMobileBridge=true` applies the same AAR gate to the full Debug/Canary CI verification. Passing static gates is not sufficient for release: native load and a real STCP loop must still be verified on target ABIs and 16 KB page-size devices.
 
-The Kotlin bridge reports missing generated classes as `GoMobileBridgeUnavailableException` and incompatible classes, methods, or payloads as `GoMobileBridgeApiMismatchException`. Readiness and SSE classify these setup failures as permanent rather than retrying indefinitely. A Kotlin-only bridge API or failure-handling change still requires the complete bridge gate, but it may leave generated AAR bytes and `BRIDGE_VERSION` unchanged. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
+The GoMobile Kotlin adapter reports missing generated classes as `GoMobileBridgeUnavailableException` and incompatible classes, methods, or payloads as `GoMobileBridgeApiMismatchException`. Readiness and SSE classify these setup failures as permanent rather than retrying indefinitely. A Kotlin-only bridge API or failure-handling change still requires the complete bridge gate, but it may leave generated AAR bytes and `BRIDGE_VERSION` unchanged. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
+
+The pure Kotlin runtime reports `KotlinFrpcStcpVisitorFailure` enum values through `KotlinFrpcStcpVisitorException`. App code maps those typed values into `OpenCodeFailure`; local-port conflict and predecessor bind retry decisions use `BindException` or the typed bind failure values and never parse exception messages.
 
 If business modules are split later, possible directions are:
 
@@ -251,10 +271,12 @@ The project currently uses ordinary Kotlin objects for dependency injection and 
 
 Responsibilities:
 
-- `AppContainer` creates global dependencies: `Json`, `OkHttpClient`, `RetrofitFactory`, `SecureCredentialStore`, `ServerPreferencesStore`, `PathNormalizer`, `Redactor`, `InMemoryOpenCodeStore`, `ProjectSnapshotCoordinator`, `OpenCodeEventClient`, and `AppConnectionCoordinator`.
+- `AppContainer` creates global dependencies: `Json`, `OkHttpClient`, `RetrofitFactory`, `SecureCredentialStore`, `ServerPreferencesStore`, `PathNormalizer`, `Redactor`, the build-selected `FrpcStcpVisitorClient`, `FrpcStcpVisitorManager`, `InMemoryOpenCodeStore`, `ProjectSnapshotCoordinator`, `OpenCodeEventClient`, and `AppConnectionCoordinator`.
 - `AppContainer` creates API clients and Repositories for the current server.
 - ViewModels receive Repositories, Stores, and UseCases through constructors.
 - `AppViewModelProvider` centralizes ViewModel Factory boilerplate.
+
+`AppContainer` makes exactly one STCP client selection from `BuildConfig` and passes that client to the single application `FrpcStcpVisitorManager`. No settings screen, DataStore field, persisted schema, or runtime error path changes the selected backend, and the manager does not fall back to the other implementation.
 
 Dependency graph example:
 
@@ -268,6 +290,8 @@ OpenCodeApplication
     -> OkHttpClient
     -> RetrofitFactory
     -> OpenCodeApi
+    -> FrpcStcpVisitorClient (GoMobile or Kotlin, selected by build type)
+    -> FrpcStcpVisitorManager
     -> ProjectSnapshotCoordinator
     -> OpenCodeEventClient
     -> AppConnectionCoordinator
@@ -355,7 +379,7 @@ Core classes:
 - `RedactingInterceptor`: redacts request/response logs.
 - `AuthInterceptor`: attaches server credentials without exposing raw values to logs.
 - `SshTunnelManager`: creates per-server SSH local forwarding and rewrites the remote OpenCode URL to `127.0.0.1:<localPort>` for shared REST/SSE use.
-- `FrpcStcpVisitorManager`: starts a per-server frpc STCP visitor and rewrites the remote URL to `127.0.0.1:<bindPort>` for shared REST/SSE use. The real frp client is adapted through a GoMobile AAR in `:frpc-stcp-visitor`, generated locally or in CI by `frpc-stcp-visitor-go/build-aar.ps1` or `build-aar.sh`.
+- `FrpcStcpVisitorManager`: starts a per-server frpc STCP visitor and rewrites the remote URL to `127.0.0.1:<bindPort>` for shared REST/SSE use. It consumes the common `FrpcStcpVisitorClient` interface; `AppContainer` supplies either the GoMobile adapter backed by the generated AAR or the pure Kotlin client selected by the Canary build.
 - Optional `DirectoryQueryInterceptor`: centrally verifies directory normalization.
 
 Android connection addresses are environment-specific and no emulator, physical-device, or `adb reverse` mapping is a universal default. Direct, SSH local forwarding, and frpc STCP visitor are mutually exclusive. SSH and STCP both expose `127.0.0.1:<localPort/bindPort>` on the device for REST and SSE.
@@ -365,7 +389,7 @@ STCP uses two readiness layers:
 1. Transport readiness: `StartSession -> EnsureVisitor -> WaitVisitorReady`. The transport is ready only when the current frps Control is logged in and the visitor for the specified config revision actually holds the local listener in the current control epoch. Configuration commit or temporary port bindability is not a readiness signal.
 2. Application readiness: issue `GET /global/health` through that listener. Success proves the current path across local listener, STCP forwarding, server name/secret, target OpenCode, TLS/HTTP, and authentication.
 
-`FrpcStcpVisitorManager` tracks state by server config epoch and monotonic tunnel generation. The first REST request, health check, global SSE, and project SSE in one generation share a single-flight. The global state lock protects only state transitions; JNI, HTTP, retry delays, and stop operations run outside the lock. Cache success by generation only. Do not cache failure, and stop the exact session retained by that generation rather than closing a newer tunnel by `serverId`. A change in token/secret values from configuration or Keystore invalidates the old lease and requires a new generation even when the credential key is unchanged.
+`FrpcStcpVisitorManager` tracks state by server config epoch and monotonic tunnel generation. The first REST request, health check, global SSE, and project SSE in one generation share a single-flight. The global state lock protects only state transitions; backend I/O, HTTP, retry delays, and stop operations run outside the lock. Cache success by generation only. Do not cache failure, and stop the exact session retained by that generation rather than closing a newer tunnel by `serverId`. A change in token/secret values from configuration or Keystore invalidates the old lease and requires a new generation even when the credential key is unchanged. These config leases, generations, readiness checks, health probes, cleanup rules, and REST/SSE barriers are shared unchanged by the GoMobile and Kotlin clients.
 
 For an already Ready generation, `getConnection()` reads native runtime state. Reuse without another health call when the control epoch is unchanged and the listener remains ready. If frps reconnects, the listener rebinds, or control epoch changes, share one `WaitVisitorReady + /global/health` recovery inside the same generation. Before returning, read native state again and revalidate the exact generation/control epoch against manager state. This special barrier applies only to STCP; Direct and SSH add no equivalent check. Late results from an old epoch cannot overwrite a new generation. `ServerRepository.getConnection()` is the shared barrier for REST and SSE, so neither project snapshots nor EventSource may start before readiness completes.
 
@@ -683,15 +707,16 @@ Current test priorities:
 - `RedactorTest`: key/token/password/header/env/config redaction.
 - `RetrofitInboundResponsePolicyTest` and `EncodedResponseLimitInterceptorTest`: every `OpenCodeApi` method has an explicit mode; missing policy fails closed; encoded and decoded known/unknown/understated lengths enforce `max + 1`; a real OkHttp gzip chain applies the encoded cap before Bridge decoding; non-2xx and successful Unit bodies are closed without reading; direct calls without `Invocation` remain outside the Retrofit policy.
 - `SessionMessagesTransportTest`, `SessionMessagesResponseReaderTest`, and `FileContentResponseReaderTest`: body-free HTTP failures, streaming decode, EOF verification, cancellation/close races, 64 MiB direct-message limits, and the `/file/content` second defense.
-- `OpenCodeFailureTest`, `ErrorUiTextTest`, and `OpenCodeRepositoryFailureHandlingTest`: semantic classification without exception-message parsing, localized resource mapping with operation fallbacks, Repository propagation, and cancellation/JVM `Error` behavior.
+- `OpenCodeFailureTest`, `ErrorUiTextTest`, and `OpenCodeRepositoryFailureHandlingTest`: semantic classification, including typed Kotlin runtime failures and local-port rejection, without exception-message parsing; localized resource mapping with operation fallbacks; Repository propagation; and cancellation/JVM `Error` behavior.
 - `ProviderSettingsParsingTest` and `ProviderCapabilityRefreshTest`: safe projection of secret-capable Provider/auth payloads, authoritative `connected` handling, preservation of auth wire indexes and conditions, safe OAuth URL parsing, and capability refresh through the current project/global SSE authority lease.
 - `ProviderSettingsViewModelTest`: project-scoped dynamic auth inputs, cleartext frozen confirmation, single-flight mutation, OAuth code/callback scope, secret-free state summaries, and post-mutation reload/calibration.
 - `CustomProviderValidationTest`, `OpenCodeProviderRepositoryCustomTest`, and `CustomProviderFormViewModelTest`: Provider/model/header validation, staged disabled/auth/enable ordering, safe config projection, partial and unknown outcomes, disable-before-auth-cleanup, deep-merge no-fake-delete rules, secret clearing, and immutable persisted identifiers.
 - `SensitiveValueToStringTest`: structural summaries omit synthetic credentials, URLs, aliases, paths, prompts, Base64, SSE payloads, and tool output across network, domain, Store, feature, and UI objects.
 - `OpenCodeContrastTest`: light/dark 4.5:1 text and 3:1 graphical contrast for theme, semantic, syntax, status, attachment, and control-border colors.
 - `FrpcStcpVisitorUrlResolverTest`: STCP local-port URL rewriting preserves scheme/path.
-- `FrpcStcpVisitorManagerTest`: generation single-flight, native listener gate, application-health retry, configuration invalidation, exact cleanup, caller cancellation isolation, no cross-server blocking, control-epoch recovery, and protection from late old-epoch results.
-- `FrpcStcpReadinessRetryClassifierTest` and `GoMobileFrpcStcpVisitorClientTest`: transient retry classification, permanent inbound/bridge failures, typed unavailable/API-mismatch errors, safe summaries, API v2 JSON, revision/epoch, `WaitVisitorReady`, and reflection cancellation/JVM `Error` propagation.
+- `FrpcStcpVisitorClientFactoryTest`: the current variant's `BuildConfig` selects GoMobile for Debug and Kotlin for Canary, while the explicit factory can construct either backend.
+- `FrpcStcpVisitorManagerTest`: generation single-flight, native listener gate, application-health retry, configuration invalidation, exact cleanup, caller cancellation isolation, no cross-server blocking, control-epoch recovery, late old-epoch protection, typed bind-conflict conversion, and predecessor retry without message parsing.
+- `FrpcStcpReadinessRetryClassifierTest`, `GoMobileFrpcStcpVisitorClientTest`, and `KotlinFrpcStcpVisitorClientTest`: transient retry classification, permanent inbound/bridge failures, typed unavailable/API-mismatch/runtime errors, safe summaries, API v1/v2 behavior, revision/epoch, `WaitVisitorReady`, listener/relay lifecycle, and cancellation/JVM `Error` propagation.
 - Go wrapper/downstream tests: startup config updates are not lost, ready only after real bind, bind failure, closed manager, control epoch, superseded revision, Stop waits for port release, and sensitive errors are redacted. Run concurrency-related packages under `go test -race`.
 - `PromptSendStateMachineTest`: empty input, attachments, project-context-only input, and working stop/send state.
 - `OpenCodePromptSenderTest`: lazy session creation, authoritative Store capability revision, final attachment/project-context validation, optimistic `file://` parts, conditional rollback, SSE confirmation first, ordinary/loaded-command context propagation, real session alias, abort, and single-flight.
@@ -707,7 +732,7 @@ Current test priorities:
 - SSE lifecycle tests: close races, generation/lease, snapshot failure not blocking reconnect, one calibration per recovery, and foreground resume.
 - SSH/external-input tests: pre-authentication host-key validation, server-URL structural constraints, data URL header/payload, and streaming limits for URI/network response/Base64/native returns/private keys.
 
-There is currently no `app/src/androidTest` suite and no emulator/instrumentation job in CI. Until that gate exists, manually validate these interaction paths on compact phone screens in both themes, with the IME open, at 200% font scale, and with TalkBack enabled:
+The focused `app/src/androidTest` suite covers localized independent-window roots, but CI still has no emulator/instrumentation job. Until broader device automation exists, manually validate these interaction paths on compact phone screens in both themes, with the IME open, at 200% font scale, and with TalkBack enabled:
 
 - Project selection.
 - Open session details from the session list.
@@ -724,14 +749,14 @@ Build gates:
 - `python .github/scripts/audit-community.py` verifies governance files, issue forms, CODEOWNERS, bilingual document pairs, relative links, release-note sections and labels, obsolete paths, synthetic fixtures, and repository hygiene.
 - `python .github/scripts/audit-third-party.py` verifies versions, dependencies, the union of four Android Go targets, resource hashes, frp modified/added provenance, legal texts, and release-script references.
 - `./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug`
-- `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`
+- The full bridge/CI Android gate is `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true`.
 - `go run ./cmd/preparefrp`, `go test -race -modfile=build/frp-patched.mod ./...`, and `go test -race ./client/...` inside the patched frp module.
 - `.github/scripts/verify-bridge-reproducibility.sh`, or `.ps1` on Windows, must use the Go/x-mobile/Android API/NDK versions pinned in `bridge-versions.properties`; CI and Release use the shell variant.
 - A Kotlin-only bridge API or failure-handling change still runs this complete gate even when generated AAR bytes and `BRIDGE_VERSION` remain unchanged. Any native or generated AAR byte change requires a `BRIDGE_VERSION` increment.
 - On one host platform, the bridge gate must use a clean current checkout and a detached checkout at a different absolute path, isolate `GOCACHE`, `GOMODCACHE`, and `GOPATH`, and compare the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. Each ABI's `libgojni.so` in Release APKs must match the corresponding AAR entry hash, and ELF machine, every `PT_LOAD` 16 KB alignment, and stripped state must be rechecked.
 - APKs must contain current `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.txt`, `TRADEMARKS.md`, the merged full-license text, and every individual license byte-for-byte. The AAR must embed matching legal/API/provenance metadata under `META-INF/OCDECK/`.
 - Add ktlint/detekt to CI only after they are introduced. Add Android lint as an independent gate after existing errors are fixed.
-- `.github/workflows/ci.yml` runs unsigned gates on pushes/PRs to `main`. `.github/workflows/release.yml` reruns every gate and builds signed artifacts for stable tags.
+- `.github/workflows/ci.yml` runs Debug and Canary gates without release-signing secrets on pushes/PRs to `main`. `.github/workflows/release.yml` reruns both verification variants, then applies release signing only to the GoMobile-default Release artifacts for stable tags.
 - Before publishing, verify tag/source version, that the tagged commit is in `origin/main` history, monotonically increasing `VERSION_CODE`, three APK outputs, pinned signing certificate fingerprint, and `SHA256SUMS`. Release notes always state independence, user-provided OpenCode Server, and pre-1.0 risk. Current automation builds no AAB. Native load, 16 KB page-size behavior, and a real STCP loop still require manual device verification.
 
 ## 15. Current Implementation Status
@@ -739,6 +764,7 @@ Build gates:
 ### 15.1 Available or Substantially Available
 
 - Android project, manual DI, DataStore/Keystore/in-memory Store, server list with client-explanation empty state, add/health-check, and mutually exclusive Direct/SSH/STCP modes; no localhost server is auto-created.
+- Build-time STCP assembly selects GoMobile for `debug`/`release` and pure Kotlin for the internal `canary`; both use the same manager lease/readiness contract, with no user setting, persisted selector, or runtime fallback.
 - Path normalization, best-effort ordered recent-project persistence, project picker/shell, shared Store-backed session window with network Load More, session drawer/details, lazy session creation, ordinary prompt, global/project SSE, and provider/model/agent base data. Session messages use a specialized transport with separate 64 MiB encoded and decoded limits.
 - Every ordinary `OpenCodeApi` Retrofit method has explicit separate 16 MiB encoded and decoded boundaries or an empty-success policy; non-2xx and Unit bodies are discarded without reading, and `/file/content` retains a reader-level decoded boundary.
 - Slash commands, `@` mentions, agent/model/variant pickers, phone-local attachments, project file tree/search/read-only preview and whole-file Composer contexts, permission/question, session Changes/diff, and context usage.

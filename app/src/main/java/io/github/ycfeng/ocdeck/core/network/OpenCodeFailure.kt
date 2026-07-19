@@ -3,6 +3,8 @@ package io.github.ycfeng.ocdeck.core.network
 import com.jcraft.jsch.JSchException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.GoMobileBridgeApiMismatchException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.GoMobileBridgeUnavailableException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
 import retrofit2.HttpException
@@ -57,9 +59,43 @@ class LocalPortInUseException(
 object OpenCodeFailureClassifier {
     fun classify(throwable: Throwable): OpenCodeFailure {
         val causes = throwable.causeChain()
-        causes.firstOrNull { it is CancellationException || it is Error }?.let { throw it }
+        throwable.fatalCauseOrNull()?.let { throw it }
 
         causes.filterIsInstance<OpenCodeRequestException>().firstOrNull()?.let { return it.failure }
+        causes.filterIsInstance<KotlinFrpcStcpVisitorException>().firstOrNull()?.let { exception ->
+            return when (exception.failure) {
+                KotlinFrpcStcpVisitorFailure.INVALID_CONFIGURATION,
+                KotlinFrpcStcpVisitorFailure.UNSUPPORTED_CONFIGURATION,
+                KotlinFrpcStcpVisitorFailure.SESSION_LIMIT,
+                KotlinFrpcStcpVisitorFailure.MAILBOX_FULL,
+                KotlinFrpcStcpVisitorFailure.VISITOR_LIMIT,
+                KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED,
+                KotlinFrpcStcpVisitorFailure.RELAY_LIMIT,
+                -> OpenCodeFailure.OperationRejected()
+
+                KotlinFrpcStcpVisitorFailure.CLIENT_CLOSED,
+                KotlinFrpcStcpVisitorFailure.SESSION_NOT_FOUND,
+                KotlinFrpcStcpVisitorFailure.SESSION_CLOSED,
+                KotlinFrpcStcpVisitorFailure.VISITOR_FAILED,
+                KotlinFrpcStcpVisitorFailure.VISITOR_NOT_FOUND,
+                KotlinFrpcStcpVisitorFailure.VISITOR_SUPERSEDED,
+                -> OpenCodeFailure.TransportChanged
+
+                KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT ->
+                    OpenCodeFailure.OperationRejected(OpenCodeOperationRejectionReason.LocalPortInUse)
+
+                KotlinFrpcStcpVisitorFailure.CONTROL_FAILED,
+                KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_FAILED,
+                -> OpenCodeFailure.Unknown
+
+                KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT,
+                KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_TIMEOUT,
+                KotlinFrpcStcpVisitorFailure.STOP_TIMEOUT,
+                -> OpenCodeFailure.Timeout
+
+                KotlinFrpcStcpVisitorFailure.RELAY_FAILED -> OpenCodeFailure.NetworkUnavailable
+            }
+        }
         if (causes.any { it is GoMobileBridgeUnavailableException }) {
             return OpenCodeFailure.OperationRejected(OpenCodeOperationRejectionReason.StcpComponentUnavailable)
         }
@@ -149,5 +185,8 @@ internal fun Throwable.causeChain(): List<Throwable> {
     return causes
 }
 
-internal fun Throwable.fatalCauseOrNull(): Throwable? = causeChain()
-    .firstOrNull { it is CancellationException || it is Error }
+internal fun Throwable.fatalCauseOrNull(): Throwable? {
+    val causes = causeChain()
+    return causes.filterIsInstance<Error>().firstOrNull()
+        ?: causes.filterIsInstance<CancellationException>().firstOrNull()
+}

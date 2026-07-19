@@ -31,7 +31,8 @@ This English checklist is canonical. The Chinese document is a complete convenie
 - [ ] Community/documentation and third-party/legal inventory audits passed.
 - [ ] On one host platform, the bridge reproducibility gate built the clean candidate checkout and a detached checkout at a different absolute path with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`; the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar matched byte-for-byte.
 - [ ] AAR checksum, exact Java API, bridge/frp provenance, four-ABI BuildInfo module identities/versions/sums, local-path-free and cross-ABI graph-digest proof, expected ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, embedded legal files, and sidecars passed.
-- [ ] `:app:testDebugUnitTest`, `:frpc-stcp-visitor:testDebugUnitTest`, `:app:assembleDebug`, and the required bridge gate passed.
+- [ ] `:app:testDebugUnitTest`, `:app:testCanaryUnitTest`, `:frpc-stcp-visitor:testDebugUnitTest`, `:app:assembleDebug`, `:app:assembleCanary`, and the required bridge gate passed; variant factory tests confirmed Debug/GoMobile and Canary/Kotlin selection.
+- [ ] Canary APKs remained verification outputs only; Release signing and release staging used only the GoMobile-default `assembleRelease` outputs.
 - [ ] Signed Release APK verification passed for metadata, one signer, expected certificate fingerprint, ABI isolation, `apksigner`, `zipalign -P 16`, native-byte binding, legal assets, filenames, and `SHA256SUMS`.
 
 ## Physical Device and Connection Gates

@@ -82,12 +82,14 @@ jobs:
         shell: bash
         run: bash .github/scripts/verify-bridge-reproducibility.sh
 
-      - name: Run Android tests and build debug APKs
+      - name: Run Android tests and build verification APKs
         shell: bash
         run: >-
           bash ./gradlew --no-daemon
           :frpc-stcp-visitor:checkGoMobileBridgeAar
           :app:testDebugUnitTest
+          :app:testCanaryUnitTest
           :frpc-stcp-visitor:testDebugUnitTest
           :app:assembleDebug
+          :app:assembleCanary
           -PrequireGoMobileBridge=true

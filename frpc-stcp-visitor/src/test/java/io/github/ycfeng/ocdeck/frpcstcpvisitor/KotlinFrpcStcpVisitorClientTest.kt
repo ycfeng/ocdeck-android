@@ -473,7 +473,7 @@ class KotlinFrpcStcpVisitorClientTest {
     }
 
     @Test
-    fun listenerBindFailureIsTypedSafeAndCommitsOnlyTheAcceptedRevision() = runBlocking {
+    fun bindPortConflictIsTypedSafeAndCommitsOnlyTheAcceptedRevision() = runBlocking {
         val marker = "unsafe-bind-endpoint-marker"
         val controlFactory = FakeControlFactory()
         val delayer = ManualRuntimeDelayer()
@@ -504,14 +504,14 @@ class KotlinFrpcStcpVisitorClientTest {
             assertEquals(1L, state.configRevision)
             assertEquals("failed", state.visitors.getValue("visitor").phase)
             assertEquals(
-                KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED.description,
+                KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT.description,
                 state.visitors.getValue("visitor").lastError,
             )
             assertFalse(state.toString().contains(marker))
             val exactFailure = captureRuntimeFailure {
                 client.waitVisitorReady(sessionId, "visitor", accepted.desiredRevision, 120_000L)
             }
-            assertEquals(KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED, exactFailure.failure)
+            assertEquals(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT, exactFailure.failure)
             assertFalse(exactFailure.toString().contains(marker))
             assertEquals(null, exactFailure.cause)
 
@@ -525,6 +525,53 @@ class KotlinFrpcStcpVisitorClientTest {
                 "ready",
                 client.waitVisitorReady(sessionId, "visitor", accepted.desiredRevision, 1_000L).phase,
             )
+        } finally {
+            control.releaseStop()
+            client.stopSession(sessionId, 5_000L)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun ordinaryListenerBindFailureRemainsListenerBindFailed() = runBlocking {
+        val marker = "ordinary-listener-failure-marker"
+        val controlFactory = FakeControlFactory()
+        val delayer = ManualRuntimeDelayer()
+        val listenerFactory = FakeListenerFactory().apply {
+            nextFailure = IllegalStateException(marker)
+        }
+        val controlStates = Channel<FrpControlState>(Channel.UNLIMITED)
+        val parentScope = newParentScope()
+        val client = newClient(
+            parentScope,
+            controlFactory,
+            listenerFactory,
+            runtimeDelayer = delayer,
+            hooks = KotlinFrpcRuntimeLifecycleHooks(
+                afterControlState = { controlStates.send(it) },
+            ),
+        )
+        val sessionId = client.startSession(sessionConfig())
+        val control = controlFactory.single()
+        try {
+            control.open(epoch = 1L, transport = 1L)
+            awaitControlState(controlStates) { it is FrpControlState.Open }
+
+            val accepted = client.ensureVisitor(sessionId, visitorConfig(bindPort = 50_039))
+            delayer.takeCall(10_000L)
+            val state = client.getState(sessionId)
+            assertEquals(
+                KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED.description,
+                state.visitors.getValue("visitor").lastError,
+            )
+            assertFalse(state.toString().contains(marker))
+            val exactFailure = captureRuntimeFailure {
+                client.waitVisitorReady(sessionId, "visitor", accepted.desiredRevision, 120_000L)
+            }
+            assertEquals(KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED, exactFailure.failure)
+            assertEquals(null, exactFailure.cause)
+            assertFalse(exactFailure.toString().contains(marker))
         } finally {
             control.releaseStop()
             client.stopSession(sessionId, 5_000L)
@@ -752,13 +799,13 @@ class KotlinFrpcStcpVisitorClientTest {
                 }.failure,
             )
             assertEquals(
-                KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED,
+                KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT,
                 captureRuntimeFailure {
                     client.waitVisitorReady(sessionId, "failed", failed.desiredRevision, 120_000L)
                 }.failure,
             )
             assertEquals(
-                KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED.description,
+                KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT.description,
                 client.getState(sessionId).visitors.getValue("failed").lastError,
             )
         } finally {

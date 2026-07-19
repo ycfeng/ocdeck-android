@@ -20,6 +20,8 @@ The first public artifact set is fixed to:
 
 The workflow does not create a universal APK, AAB, or Play upload artifact. GitHub sideload users must download the APK matching their device ABI.
 
+The internal `canary` build is a verification variant only. It inherits Debug, uses application ID suffix `.canary` and version-name suffix `-canary`, and selects the pure Kotlin STCP backend through `BuildConfig`. CI and Release automation test and assemble it, but never apply Release signing or stage or publish Canary APKs. Formal `release` remains GoMobile-default.
+
 The application ID is `io.github.ycfeng.ocdeck`, version `0.1.3` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
 
 ## 2. Version Rules
@@ -46,9 +48,11 @@ Normal CI pins Ubuntu 24.04, JDK 21, Go 1.26.4, Android SDK 36, Build Tools 36.0
 1. Audit community/documentation metadata, generate patched frp, and audit third-party/legal inventory, the union of dependencies for all four Android Go targets, resource hashes, and complete modified/added provenance.
 2. Run the outer Go race tests and separately run `client/...` race tests in the generated frp module.
 3. Run the canonical shell reproducibility gate on the Ubuntu runner. It builds the clean candidate checkout and a detached checkout at a different absolute path with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`; validates legal/API/provenance/native metadata and the fixed, local-path-free Go BuildInfo module graph for four ABIs; and compares the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte.
-4. Run the bridge AAR gate, Debug unit tests for both Android modules, and the Debug APK build.
+4. Run the bridge AAR gate, App Debug and Canary unit tests, `:frpc-stcp-visitor` unit tests, and both Debug and Canary APK builds.
 
-CI does not possess a JKS, passwords, or repository write permission. Physical-device native loading, a 16KB page-size device, and a real STCP end-to-end loop remain mandatory manual release gates. Static build checks do not replace them.
+The Debug factory test confirms the GoMobile default and the Canary factory test confirms the pure Kotlin selection. Because both implementations live in the same Android library, Canary may still package Go native bytes; the gate validates actual App assembly rather than asserting native-byte absence.
+
+CI does not possess a JKS, passwords, or repository write permission. Debug and Canary APKs remain verification outputs only. Physical-device native loading, a 16KB page-size device, and a real STCP end-to-end loop remain mandatory manual release gates. Static build checks do not replace them.
 
 ## 4. GitHub Repository Configuration
 
@@ -135,14 +139,14 @@ The `publish` job downloads the release-notes artifact from the same workflow ru
 6. Create and push `vMAJOR.MINOR.PATCH` on the already validated commit.
 7. `preflight` validates source versions, the tag, the `origin/main` ancestry relationship, the highest-version rule, and historical `VERSION_CODE` monotonicity.
 8. `prepare-notes` builds and uploads the final `release-notes.md` without signing secrets. For a real tag, it appends GitHub-generated notes.
-9. After Environment approval, `build-release` reruns all tests and uses the shell reproducibility gate to build the clean candidate checkout plus a detached checkout at a different absolute path on the same Ubuntu runner with isolated Go caches. It requires the complete bridge artifact/sidecar set to match byte-for-byte, then builds three signed APKs and checks the fixed certificate fingerprint.
+9. After Environment approval, `build-release` reruns all tests, including Debug/GoMobile and Canary/Kotlin App verification, and uses the shell reproducibility gate to build the clean candidate checkout plus a detached checkout at a different absolute path on the same Ubuntu runner with isolated Go caches. It requires the complete bridge artifact/sidecar set to match byte-for-byte, then separately runs `assembleRelease`, applies Release signing only to the three GoMobile-default Release APKs, and checks the fixed certificate fingerprint.
 10. `publish` downloads both verified artifact sets and uses `GITHUB_TOKEN` with `gh release create --verify-tag --notes-file`. It creates a prerelease for every `0.x` version and publishes a normal release beginning with `1.0.0`.
 
 ## 8. Artifact Checks
 
-The release scripts also verify:
+The release scripts verify only `release` artifacts for signing and publication; Debug and Canary outputs are not copied into the release asset set. They also verify:
 
-- APK metadata application ID, Release variant, `versionName`, `versionCode`, target ABI, and filename all agree.
+- APK metadata application ID `io.github.ycfeng.ocdeck`, Release variant, stable `versionName`, `versionCode`, target ABI, and filename all agree; `.canary` identities and `-canary` versions are rejected from the public asset set.
 - Each APK has exactly one signer, and the certificate fingerprint equals `RELEASE_CERT_SHA256`.
 - Each APK passes `apksigner` and 16KB `zipalign`, contains only its target ABI, and includes `libgojni.so` whose SHA-256 exactly matches the corresponding AAR entry.
 - APK native libraries pass ELF machine, all-`PT_LOAD` 16KB alignment, and stripped-state checks.

@@ -41,6 +41,30 @@ macOS/Linux:
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
+## Internal Kotlin Canary Build
+
+The `canary` build type inherits Debug behavior but uses build-time App assembly to instantiate `KotlinFrpcStcpVisitorClient`. `debug` and `release` continue to instantiate `GoMobileFrpcStcpVisitorClient`. There is no user-selectable setting, persisted selector, or runtime fallback between these backends.
+
+Windows:
+
+```powershell
+.\gradlew.bat :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleCanary
+```
+
+macOS/Linux:
+
+```bash
+./gradlew :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleCanary
+```
+
+Canary uses application ID `io.github.ycfeng.ocdeck.canary` and version name `<VERSION_NAME>-canary`, so it can be installed beside the formal app. Its ABI-split APKs are written under `app/build/outputs/apk/canary/` as:
+
+- `OCDeck_<version>-canary_arm64-v8a.apk`
+- `OCDeck_<version>-canary_armeabi-v7a.apk`
+- `OCDeck_<version>-canary_x86_64.apk`
+
+Canary is an internal verification identity, not a release-signed or published channel. Both backend implementations live in `:frpc-stcp-visitor`, so a Canary APK may still contain Go native libraries when the AAR is present. The build-type contract guarantees the client instance selected by `AppContainer`, not the absence of Go native bytes from the package.
+
 ## Build the Fixed GoMobile Bridge
 
 The bridge scripts prepare the pinned and patched frp source and install the pinned x/mobile tools. Before `gomobile bind`, `cmd/preparemoduleproxy` creates a stable, versioned local `GOPROXY` and bind module graph so the formal AAR does not record checkout-path replacements. The bind must produce both the AAR and its companion sources JAR; either one missing is a build failure. Both archives are normalized before the AAR, sources JAR, POM, checksum, API, provenance, and native metadata are written to the local Maven repository.
@@ -82,13 +106,13 @@ Then require the bridge during Android verification:
 Windows:
 
 ```powershell
-.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
 
 macOS/Linux:
 
 ```bash
-./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
 
 The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.7-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
@@ -102,7 +126,7 @@ VERSION_CODE=4
 VERSION_NAME=0.1.3
 ```
 
-Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts. The App packaging configuration preserves the already-stripped `libgojni.so` bytes verified in the GoMobile AAR; APK release checks independently revalidate native-byte binding, ELF metadata, 16KB alignment, and stripped state.
+Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts. Release remains GoMobile-default. CI and Release automation build Canary only as a verification variant without Release signing; only `assembleRelease` outputs receive Release signing, are staged, and are eligible for publication. The App packaging configuration preserves the already-stripped `libgojni.so` bytes verified in the GoMobile AAR; APK release checks independently revalidate native-byte binding, ELF metadata, 16KB alignment, and stripped state.
 
 The public workflow produces only these signed APKs and `SHA256SUMS`:
 
@@ -116,7 +140,8 @@ It does not produce a universal APK, AAB, or Play upload artifact. See the [rele
 
 - A JDK mismatch can cause Gradle or Kotlin toolchain failures. Confirm `java -version` and Gradle use JDK 21.
 - A bridge build fails immediately if Go or NDK differs from `bridge-versions.properties`.
-- An absent bridge is permitted only for builds that do not set `-PrequireGoMobileBridge=true`; STCP remains unavailable in those builds.
+- An absent bridge is permitted only for builds that do not set `-PrequireGoMobileBridge=true`. In that case the GoMobile-backed Debug STCP path is unavailable, while Canary still selects the Kotlin backend; the full CI-equivalent gate intentionally requires and validates the AAR for both verification builds.
+- Do not infer backend selection from APK contents. Canary may package `libgojni.so` because both implementations share one library; verify selection through the Canary `BuildConfig`/factory tests.
 - A changed generated AAR under an unchanged bridge coordinate is rejected as an immutability violation.
 - If APK native-byte binding fails while the AAR gate passes, confirm that App packaging still excludes the already-stripped `libgojni.so` from Android Gradle Plugin's native strip transform. Do not weaken the byte-binding check or replace the AAR hash.
 - Release signing failures must be fixed in local or GitHub Environment configuration. Never weaken certificate checks or print secrets to diagnose them.
