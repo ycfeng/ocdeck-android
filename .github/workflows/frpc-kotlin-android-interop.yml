@@ -176,6 +176,16 @@ jobs:
           SYSTEM_IMAGE="system-images;android-${API_LEVEL};default;x86_64"
           AVDMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager"
           EMULATOR="$ANDROID_SDK_ROOT/emulator/emulator"
+          EMULATOR_LOG="$RUNNER_TEMP/k6v-emulator-${API_LEVEL}.log"
+          dump_emulator_log() {
+            if [[ -f "$EMULATOR_LOG" ]]; then
+              printf '%s\n' '--- emulator log tail (maximum 64 KiB) ---' >&2
+              tail -c 65536 "$EMULATOR_LOG" >&2 || true
+              printf '%s\n' '--- end emulator log tail ---' >&2
+            else
+              printf 'emulator log was not created\n' >&2
+            fi
+          }
           printf 'no\n' | "$AVDMANAGER" create avd \
             --force \
             --name "$AVD_NAME" \
@@ -194,12 +204,13 @@ jobs:
             -camera-back none \
             -camera-front none \
             -wipe-data \
-            >"$RUNNER_TEMP/k6v-emulator-${API_LEVEL}.log" 2>&1 &
+            >"$EMULATOR_LOG" 2>&1 &
           emulator_pid=$!
           printf 'emulator_pid=%s\n' "$emulator_pid" >> "$GITHUB_OUTPUT"
           for _ in $(seq 1 180); do
             kill -0 "$emulator_pid" 2>/dev/null || {
               printf 'owned emulator process exited before boot completed\n' >&2
+              dump_emulator_log
               exit 1
             }
             if "$ADB" devices | awk -v serial="$SERIAL" '$1 == serial && $2 == "device" { found=1 } END { exit !found }'; then
@@ -212,6 +223,7 @@ jobs:
           done
           [[ "$("$ADB" -s "$SERIAL" shell getprop sys.boot_completed | tr -d '\r')" == "1" ]] || {
             printf 'emulator did not finish booting\n' >&2
+            dump_emulator_log
             exit 1
           }
           actual_api=$("$ADB" -s "$SERIAL" shell getprop ro.build.version.sdk | tr -d '\r')
