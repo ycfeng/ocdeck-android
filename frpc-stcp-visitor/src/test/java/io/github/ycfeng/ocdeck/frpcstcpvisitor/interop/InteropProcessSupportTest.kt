@@ -1,5 +1,7 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.interop
 
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
 import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -86,6 +88,41 @@ class InteropProcessSupportTest {
             deleteTreeBestEffort(root)
             deleteTreeBestEffort(externalRoot)
         }
+    }
+
+    @Test
+    fun outputRevisionFindsAReconnectAfterTheOriginalReadyLineRollsOutOfTheTail() {
+        val input = PipedInputStream()
+        val output = PipedOutputStream(input)
+        val log = BoundedProcessLog(input, InteropRedactor(), "revision-test")
+        try {
+            writeLine(output, "provider ready")
+            awaitRevision(log, 1L)
+            val baseline = log.revision()
+
+            repeat(80) { index -> writeLine(output, "noise-$index") }
+            writeLine(output, "provider ready")
+            awaitRevision(log, 82L)
+
+            assertTrue(log.containsMatchAfter(Regex("provider ready"), baseline))
+            assertEquals(82L, log.revision())
+        } finally {
+            output.close()
+            log.awaitDrain()
+        }
+    }
+
+    private fun writeLine(output: PipedOutputStream, value: String) {
+        output.write("$value\n".toByteArray(Charsets.UTF_8))
+        output.flush()
+    }
+
+    private fun awaitRevision(log: BoundedProcessLog, expected: Long) {
+        repeat(500) {
+            if (log.revision() >= expected) return
+            Thread.sleep(2L)
+        }
+        throw AssertionError("process log did not reach the expected revision")
     }
 
     private fun withTemporaryDirectory(block: (Path) -> Unit) {

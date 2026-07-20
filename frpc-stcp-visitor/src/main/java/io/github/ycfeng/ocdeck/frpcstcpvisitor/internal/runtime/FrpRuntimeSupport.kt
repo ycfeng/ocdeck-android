@@ -29,6 +29,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -315,6 +317,14 @@ internal data class FrpRelayVisitorConfig(
             "useEncryption=$useEncryption, useCompression=$useCompression)"
 }
 
+internal enum class FrpVisitorRelayCleanupPhase {
+    OPENING,
+    RELAYING,
+    RESETTING_LEASE,
+    RESETTING_ADAPTER,
+    COMPLETE,
+}
+
 internal class FrpVisitorRelay(
     val visitorRevision: Long,
     val listenerAttempt: Long,
@@ -325,6 +335,7 @@ internal class FrpVisitorRelay(
     parentScope: CoroutineScope,
     private val unixTimeSource: FrpUnixTimeSource,
     private val ioDispatcher: CoroutineDispatcher,
+    private val afterPumpOutcomeReceived: suspend () -> Unit = {},
 ) {
     private val closeStarted = AtomicBoolean(false)
     private val activeLease = AtomicReference<FrpClientStreamLease?>()
@@ -347,15 +358,20 @@ internal class FrpVisitorRelay(
     }
     private val runner = AtomicReference<Job?>()
     private val runnerState = AtomicReference(RelayRunnerState.NEW)
+    private val relayCleanupPhase = AtomicReference(FrpVisitorRelayCleanupPhase.OPENING)
 
     val isCompleted: Boolean
         get() = completion.isCompleted
+
+    val cleanupPhase: FrpVisitorRelayCleanupPhase
+        get() = relayCleanupPhase.get()
 
     fun start() {
         val job = scope.launch(start = CoroutineStart.LAZY) { runRelay() }
         check(runner.compareAndSet(null, job))
         job.invokeOnCompletion { failure ->
             runnerState.set(RelayRunnerState.TERMINATED)
+            relayCleanupPhase.set(FrpVisitorRelayCleanupPhase.COMPLETE)
             val completionError = findRelayCompletionError(failure)
             completeLocalStopOnce(completionError)
             completeRelayOnce(completionError, null)
@@ -365,11 +381,20 @@ internal class FrpVisitorRelay(
 
     fun close() {
         if (!closeStarted.compareAndSet(false, true)) return
-        val closeFailure = closeLocalExpected()
-        activeLease.get()?.beginReset()
+        var closeFailure = closeLocalExpected()
+        try {
+            activeLease.get()?.beginReset()
+        } catch (failure: CancellationException) {
+            closeFailure = preferRelayFatal(closeFailure, failure)
+        } catch (failure: Error) {
+            closeFailure = preferRelayFatal(closeFailure, failure)
+        } catch (_: Exception) {
+            // Logical stream invalidation is best effort after the local relay is closed.
+        }
+        completeLocalStopOnce(closeFailure)
         if (runnerState.compareAndSet(RelayRunnerState.NEW, RelayRunnerState.TERMINATED)) {
-            completeLocalStopOnce(null)
-            completeRelayOnce(null, null)
+            relayCleanupPhase.set(FrpVisitorRelayCleanupPhase.COMPLETE)
+            completeRelayOnce(closeFailure, null)
         }
         ownerJob.cancel(FrpRelayClosedCancellation())
         closeFailure?.let { throw it }
@@ -396,6 +421,20 @@ internal class FrpVisitorRelay(
         var handshakeIo: YamuxStreamBlockingIo? = null
         var selectedFatal: Throwable? = null
         var selectedOrdinary: KotlinFrpcStcpVisitorException? = null
+        val relayingFatalFailure = AtomicReference<Throwable?>()
+        fun observeFailure(failure: Throwable?) {
+            when (failure) {
+                null -> Unit
+                is CancellationException -> selectUnexpectedRelayCloseFailure(failure)?.let { unexpected ->
+                    selectedFatal = preferRelayFatal(selectedFatal, unexpected)
+                }
+                is Error -> selectedFatal = preferRelayFatal(selectedFatal, failure)
+                is KotlinFrpcStcpVisitorException -> if (selectedOrdinary == null) selectedOrdinary = failure
+                is Exception -> if (selectedOrdinary == null) {
+                    selectedOrdinary = KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.RELAY_FAILED)
+                }
+            }
+        }
         try {
             val opened = control.openClientStream(identity)
             lease = opened
@@ -404,16 +443,17 @@ internal class FrpVisitorRelay(
             val io = YamuxStreamBlockingIo(opened.stream, scope, blockingIoGuard)
             handshakeIo = io
             performHandshake(opened, io)
-            relayBidirectionally(opened, io)
+            relayCleanupPhase.set(FrpVisitorRelayCleanupPhase.RELAYING)
+            relayBidirectionally(opened, io, relayingFatalFailure)
         } catch (failure: CancellationException) {
-            if (!closeStarted.get()) {
-                selectedFatal = failure
-            }
+            observeFailure(failure)
+            observeFailure(relayingFatalFailure.get())
         } catch (failure: Error) {
-            selectedFatal = failure
+            observeFailure(failure)
+            observeFailure(relayingFatalFailure.get())
         } catch (failure: Exception) {
-            selectedOrdinary = failure as? KotlinFrpcStcpVisitorException
-                ?: KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.RELAY_FAILED)
+            observeFailure(failure)
+            observeFailure(relayingFatalFailure.get())
         } finally {
             closeStarted.set(true)
             closeLocalExpected()?.let { failure ->
@@ -439,6 +479,7 @@ internal class FrpVisitorRelay(
             }
             completeLocalStopOnce(selectedFatal)
             if (lease != null) {
+                relayCleanupPhase.set(FrpVisitorRelayCleanupPhase.RESETTING_LEASE)
                 try {
                     withContext(NonCancellable) { lease.reset() }
                 } catch (failure: CancellationException) {
@@ -448,6 +489,7 @@ internal class FrpVisitorRelay(
                 } catch (_: Exception) {
                     // Ordinary reset I/O is secondary to relay termination.
                 }
+                relayCleanupPhase.set(FrpVisitorRelayCleanupPhase.RESETTING_ADAPTER)
                 try {
                     withContext(NonCancellable) { handshakeIo?.awaitReset() }
                 } catch (failure: CancellationException) {
@@ -460,6 +502,7 @@ internal class FrpVisitorRelay(
             }
             activeLease.set(null)
             runnerState.set(RelayRunnerState.TERMINATED)
+            relayCleanupPhase.set(FrpVisitorRelayCleanupPhase.COMPLETE)
             completeRelayOnce(selectedFatal, selectedOrdinary)
             ownerJob.cancel()
         }
@@ -540,21 +583,27 @@ internal class FrpVisitorRelay(
     private suspend fun relayBidirectionally(
         lease: FrpClientStreamLease,
         io: YamuxStreamBlockingIo,
+        relayingFatalFailure: AtomicReference<Throwable?>,
     ) = supervisorScope {
-        val outcomes = Channel<Throwable?>(capacity = 2)
+        val completedPumps = Channel<Int>(capacity = Channel.UNLIMITED)
+        val outcomes = List(2) { AtomicReference<RelayPumpOutcome?>() }
+        val mergedOutcomes = BooleanArray(2)
         val pumps = listOf(
-            launchRelayPump(outcomes) { copyLocalToRemote(lease, io.output) },
-            launchRelayPump(outcomes) { copyRemoteToLocal(io.input) },
+            launchRelayPump(0, outcomes[0], completedPumps) { copyLocalToRemote(lease, io.output) },
+            launchRelayPump(1, outcomes[1], completedPumps) { copyRemoteToLocal(io.input) },
         )
         var selectedFailure: Throwable? = null
         var abortStarted = false
-        var received = 0
+        var observed = 0
         try {
-            while (received < pumps.size) {
-                val outcome = outcomes.receive()
-                received += 1
-                if (outcome != null) {
-                    selectedFailure = preferRelayFatal(selectedFailure, outcome)
+            while (observed < pumps.size) {
+                val completedIndex = completedPumps.receive()
+                afterPumpOutcomeReceived()
+                observed += 1
+                mergedOutcomes[completedIndex] = true
+                val failure = checkNotNull(outcomes[completedIndex].get()).failure
+                if (failure != null) {
+                    selectedFailure = preferRelayFatal(selectedFailure, failure)
                     if (!abortStarted) {
                         abortStarted = true
                         abortRelay(lease)?.let { failure ->
@@ -570,53 +619,65 @@ internal class FrpVisitorRelay(
         } catch (failure: Exception) {
             selectedFailure = preferRelayFatal(selectedFailure, failure)
         } finally {
-            if (selectedFailure != null) {
-                withContext(NonCancellable) {
-                    if (!abortStarted) {
-                        abortStarted = true
-                        abortRelay(lease)?.let { failure ->
-                            selectedFailure = preferRelayFatal(selectedFailure, failure)
-                        }
-                    }
-                    pumps.joinAll()
-                    while (received < pumps.size) {
-                        val outcome = outcomes.receive()
-                        received += 1
-                        if (outcome != null) {
-                            selectedFailure = preferRelayFatal(selectedFailure, outcome)
-                        }
+            withContext(NonCancellable) {
+                if (selectedFailure != null && !abortStarted) {
+                    abortStarted = true
+                    abortRelay(lease)?.let { failure ->
+                        selectedFailure = preferRelayFatal(selectedFailure, failure)
                     }
                 }
-            } else {
                 pumps.joinAll()
+                outcomes.forEachIndexed { index, outcome ->
+                    if (!mergedOutcomes[index]) checkNotNull(outcome.get()).failure?.let { failure ->
+                        selectedFailure = preferRelayFatal(selectedFailure, failure)
+                    }
+                }
+                relayingFatalFailure.set(
+                    when (val failure = selectedFailure) {
+                        is Error -> failure
+                        is CancellationException -> selectUnexpectedRelayCloseFailure(failure)
+                        else -> null
+                    },
+                )
             }
         }
         selectedFailure?.let { throw it }
     }
 
     private fun CoroutineScope.launchRelayPump(
-        outcomes: Channel<Throwable?>,
+        index: Int,
+        outcome: AtomicReference<RelayPumpOutcome?>,
+        completedPumps: Channel<Int>,
         block: suspend () -> Unit,
     ): Job {
-        val outcomeSent = AtomicBoolean(false)
         val job = launch(start = CoroutineStart.UNDISPATCHED) {
-            var outcome: Throwable? = null
+            var failure: Throwable? = null
             try {
                 block()
-            } catch (failure: CancellationException) {
-                outcome = failure
-            } catch (failure: Error) {
-                outcome = failure
-            } catch (failure: Exception) {
-                outcome = failure
+            } catch (caught: CancellationException) {
+                failure = caught
+            } catch (caught: Error) {
+                failure = caught
+            } catch (caught: Exception) {
+                failure = caught
             } finally {
-                if (outcomeSent.compareAndSet(false, true)) check(outcomes.trySend(outcome).isSuccess)
+                recordRelayPumpOutcome(index, outcome, completedPumps, failure)
             }
         }
         job.invokeOnCompletion { failure ->
-            if (outcomeSent.compareAndSet(false, true)) check(outcomes.trySend(failure).isSuccess)
+            recordRelayPumpOutcome(index, outcome, completedPumps, failure)
         }
         return job
+    }
+
+    private fun recordRelayPumpOutcome(
+        index: Int,
+        outcome: AtomicReference<RelayPumpOutcome?>,
+        completedPumps: Channel<Int>,
+        failure: Throwable?,
+    ) {
+        if (!outcome.compareAndSet(null, RelayPumpOutcome(failure))) return
+        check(completedPumps.trySend(index).isSuccess)
     }
 
     private fun abortRelay(lease: FrpClientStreamLease): Throwable? {
@@ -773,20 +834,84 @@ internal class FrpVisitorRelay(
         RUNNING,
         TERMINATED,
     }
+
+    private data class RelayPumpOutcome(val failure: Throwable?)
 }
 
 private fun preferRelayFatal(current: Throwable?, candidate: Throwable): Throwable {
     if (current == null || current === candidate) return candidate
-    val selected = when {
-        candidate is Error && current !is Error -> candidate
-        current is Error -> current
-        candidate is CancellationException && current !is CancellationException -> candidate
-        else -> current
-    }
+    val selected = if (relayFailurePriority(candidate) > relayFailurePriority(current)) candidate else current
     val secondary = if (selected === current) candidate else current
-    if (selected !== secondary) selected.addSuppressed(secondary)
+    if (selected !== secondary &&
+        !selected.referencesThrowable(secondary) &&
+        !secondary.referencesThrowable(selected)
+    ) {
+        selected.addSuppressed(secondary)
+    }
     return selected
 }
+
+private fun Throwable.referencesThrowable(target: Throwable): Boolean {
+    val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+    val pending = ArrayDeque<Throwable>()
+    pending.addLast(this)
+    var visited = 0
+    while (pending.isNotEmpty()) {
+        val current = pending.removeLast()
+        if (current === target) return true
+        if (!seen.add(current)) continue
+        visited += 1
+        if (visited >= MAXIMUM_RELAY_FAILURE_GRAPH_NODES) return true
+        current.cause?.takeUnless { it === current }?.let(pending::addLast)
+        current.suppressed.forEach { suppressed ->
+            if (suppressed !== current) pending.addLast(suppressed)
+        }
+    }
+    return false
+}
+
+private fun relayFailurePriority(failure: Throwable): Int = when {
+    failure is Error -> 3
+    failure is CancellationException && !failure.isRelayCloseCancellation() -> 2
+    failure is CancellationException -> 0
+    else -> 1
+}
+
+private fun selectUnexpectedRelayCloseFailure(failure: CancellationException): Throwable? {
+    var selected: Throwable? = null
+    val seen = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+    val pending = ArrayDeque<Throwable>()
+    pending.addLast(failure)
+    var visited = 0
+    while (pending.isNotEmpty()) {
+        val candidate = pending.removeLast()
+        if (!seen.add(candidate)) continue
+        visited += 1
+        if (!candidate.isRelayCloseCancellation()) {
+            selected = preferRelayFatal(selected, candidate)
+        }
+        if (visited >= MAXIMUM_RELAY_FAILURE_GRAPH_NODES) break
+        candidate.cause?.takeUnless { it === candidate }?.let(pending::addLast)
+        candidate.suppressed.forEach { suppressed ->
+            if (suppressed !== candidate) pending.addLast(suppressed)
+        }
+    }
+    return selected
+}
+
+private fun Throwable.isRelayCloseCancellation(): Boolean {
+    var current: Throwable? = this
+    repeat(MAXIMUM_RELAY_FAILURE_CAUSE_DEPTH) {
+        if (current is FrpRelayClosedCancellation) return true
+        val next = current?.cause
+        if (next == null || next === current) return false
+        current = next
+    }
+    return false
+}
+
+private const val MAXIMUM_RELAY_FAILURE_CAUSE_DEPTH = 16
+private const val MAXIMUM_RELAY_FAILURE_GRAPH_NODES = 64
 
 private class NonClosingInputStream(
     private val delegate: InputStream,

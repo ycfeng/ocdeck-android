@@ -9,7 +9,7 @@
 仓库使用三条 GitHub Actions 工作流：
 
 - `.github/workflows/ci.yml`：在 `main` push、面向 `main` 的 Pull Request 和手动触发时运行，不读取发布签名材料。手动 dispatch 可显式启用分支内 reusable K6V workflow；push 与 Pull Request 运行绝不会自动启用该 bootstrap。
-- `.github/workflows/frpc-kotlin-android-interop.yml`：显式请求、精确 SHA 的 Android STCP backend K6V 门禁。该 workflow 进入默认分支后支持直接手动触发，首次引入时也可通过只读 reusable call bootstrap。它在 API 26 与 API 36 x86_64 模拟器上顺序运行真实 GoMobile AAR 和纯 Kotlin client，并在不读取签名材料的情况下生成有界双语验收报告 artifact。
+- `.github/workflows/frpc-kotlin-android-interop.yml`：显式请求、精确 SHA 的 Android STCP backend K6V 门禁。该 workflow 进入默认分支后支持直接手动触发，首次引入时也可通过只读 reusable call bootstrap。其固定 x86_64 矩阵在 API 26 运行单 profile `compat` suite，在 API 36 运行 12-profile `full` suite，先执行真实 GoMobile AAR，再执行纯 Kotlin client，并在不读取签名材料的情况下生成有界双语验收报告 artifact。
 - `.github/workflows/release.yml`：稳定版本 tag 或手动 dry-run 触发。它先在不读取签名 secret 的情况下准备发布说明并运行固定 frp 互操作，再使用受保护的 `release` Environment 构建并校验签名制品；只有 tag 触发时才创建 GitHub Release。
 
 首版公开制品固定为：
@@ -54,9 +54,13 @@ VERSION_NAME=0.2.0
 
 Debug factory 测试确认 GoMobile 默认选择，Canary factory 测试确认纯 Kotlin 选择。由于两种实现位于同一个 Android library，Canary 仍可能打包 Go native 字节；门禁验证的是 App 实际装配，而不是断言安装包不存在 native 字节。
 
-K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.workflow_sha` 与检出的 `HEAD` 指向同一 commit。该 workflow 进入默认分支后可直接手动触发。首次引入时，手动触发 `CI` 并设置 `run_frpc_android_interop=true`，同时可选填写精确 `candidate_sha`；留空时使用所触发 ref 的 SHA，并调用同一个分支内 reusable workflow。普通 push 与 Pull Request CI 绝不会调用该 job。每个模拟器 lane 先构建真实 GoMobile bridge，再在新的 Gradle invocation 中运行 `:frpc-stcp-visitor:frpcAndroidInteropTest`。GoMobile 与 Kotlin 分别在独立 instrumentation 进程中执行；GoMobile 必须先完整停止、报告 `Closed` 并释放 listener，Kotlin 才可复用同一个 bind port。第一阶段覆盖强制 TLS、`/global/health`、global/project SSE、两次 echo 和两次超过流控窗口的大下载，固定使用 wire v1 且关闭 payload encryption/compression。报告状态绑定完整 matrix 结果，每个 lane 还会记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。最终 artifact 包含中英文报告、规范化 evidence JSON 和 `SHA256SUMS`，不包含凭据、endpoint、私有路径、原始进程日志或测试配置。
+K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.workflow_sha` 与检出的 `HEAD` 指向同一 commit。该 workflow 进入默认分支后可直接手动触发。首次引入时，手动触发 `CI` 并设置 `run_frpc_android_interop=true`，同时可选填写精确 `candidate_sha`；留空时使用所触发 ref 的 SHA，并调用同一个分支内 reusable workflow。普通 push 与 Pull Request CI 绝不会调用该 job。每个模拟器 lane 先构建真实 GoMobile bridge，再在新的 Gradle invocation 中显式指定 suite 与新的 summary 目标运行 `:frpc-stcp-visitor:frpcAndroidInteropTest`。矩阵固定为：API 26 x86_64 使用只含 `success-v1-00` 的 `compat`；API 36 x86_64 使用 `full`，包含八个 wire v1/v2 × 加密关闭/开启 × 压缩关闭/开启成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。
 
-普通 CI 与 K6V workflow 都不持有 JKS、密码或仓库写权限。Debug 与 Canary APK 仅作为验证输出。Host 互操作 job 覆盖完整 wire/payload、负例与重启矩阵，K6V 则补充真实 Android backend 执行。其 x86_64 模拟器证据不能替代物理目标 ABI native load、16KB page-size 真机、Doze 或网络切换、前后台、性能、soak 或发布设备 STCP 验证。K6V artifact 通过只代表可用于评估 K7，并不自动授权 Kotlin 默认装配。
+每个 profile 都按 GoMobile 后 Kotlin 的顺序在独立 instrumentation 进程中执行。GoMobile 必须完成 `stopVisitor`/`stopSession`、报告 `Closed` 并释放 listener，Kotlin 才可复用同一个 bind port。成功 profile 保持 global/project SSE 在线，同时并发运行 health、两次 echo 和两次大于 Yamux 窗口的下载，并要求两条流读取同一个 checkpoint。重启 profile 验证既有 SSE 断开与 control unavailable，等待重启后的 `frps` ready 和 provider 重连两个屏障，要求 control epoch 严格增加，并在恢复后重新运行 REST、SSE 与超窗口流量。
+
+Preflight 会运行报告 renderer 单元测试。只有两份 lane evidence 都包含严格 Host summary，并精确匹配 suite、设备 metadata、有序 profile、scenario/wire/encryption/compression 参数、`gomobile,kotlin` 顺序、精确 checks 与等价性时，renderer 才通过，否则 fail closed。Gradle task success 不能替代 profile 证据。报告状态绑定这一完整契约；每份报告都设置 `authorizesKotlinDefault=false`，每个 lane 还记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。最终 artifact 包含中英文报告、规范化 evidence JSON 和 `SHA256SUMS`，不包含凭据、endpoint、私有路径、原始进程日志或测试配置。
+
+普通 CI 与 K6V workflow 都不持有 JKS、密码或仓库写权限。Debug 与 Canary APK 仅作为验证输出。Host 互操作 job 与 API 36 K6V `full` lane 在不同执行边界分别覆盖完整 wire/payload、负例与重启矩阵。x86_64 模拟器证据不能替代物理目标 ABI native load、16KB page-size 真机、App 的真实 Store/快照/reconciliation 链路、Doze 或网络切换、前后台、性能、资源泄漏与长期 soak 证据、正式稳定发布周期或发布设备 STCP 验证。K6V artifact 通过只代表可用于评估 K7，并不自动授权 Kotlin 默认装配。
 
 ## 4. GitHub 仓库配置
 
@@ -171,7 +175,7 @@ Bridge 静态生成四个 GoMobile ABI，但公开应用发布只包含 `arm64-v
 - 发布说明准备失败：补充所需的 `release-notes/v${VERSION_NAME}.md`，移除禁止占位符，检查前言替换，并确认只有真实 tag 存在时才调用 generate-notes。
 - GoMobile 构建失败：确认 runner 安装精确 Go/NDK 版本，并检查 checksum、API signature、provenance、native metadata 或可复现性门禁。
 - 固定 frp 互操作失败：检查类型化场景与脱敏、有界日志尾部，核对固定 asset 清单，并使用 `:frpc-stcp-visitor:frpcInteropTest` 复现；不得把任务移进签名 job，也不得降低其哈希、进程或输入限制。
-- Android K6V 互操作失败：核对精确 SHA identity、固定 API 26/API 36 x86_64 system image、bridge 生成、模拟器 API/ABI 和结构化 lane 结果，再用 `:frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true -Pocdeck.frp.androidInterop.deviceSerial=<serial>` 复现。不得通过 Gradle 或 instrumentation argument 传递凭据，不得降低私有文件传输或 ownership-aware 清理约束，也不得把部分/缺失 lane 接受为通过报告。
+- Android K6V 互操作失败：核对精确 SHA identity、固定 API 26 `compat`/API 36 `full` x86_64 system image、bridge 生成、模拟器 API/ABI、renderer tests 以及结构化 lane/Host summary 结果。优先使用 `:frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true -Pocdeck.frp.androidInterop.deviceSerial=<serial> -Pocdeck.frp.androidInterop.suite=full -Pocdeck.frp.androidInterop.summaryFile=<new-path>` 复现 full lane，其中 summary 目标必须尚不存在；只有 API 26 兼容 lane 才使用 `compat`。不得通过 Gradle 或 instrumentation argument 传递凭据，不得降低私有文件传输或 ownership-aware 清理约束，不得把 Gradle task success 当作 profile 证据，也不得把部分/缺失 lane 接受为通过报告。
 - 签名失败：检查四个 Environment secret、JKS Base64 是否完整以及 alias/密码是否匹配；不得在日志中输出 secret。
 - 证书指纹失败：停止发布并确认 Environment 中的 JKS 是既有 app-signing key；不得通过修改预期指纹绕过连续性保护。
 - AAR 门禁通过后 APK native 字节绑定仍失败：确认 App 打包保留已经 stripped 的 `libgojni.so`；不得接受 transform 后的字节、替换 AAR hash 或降低 APK 校验。

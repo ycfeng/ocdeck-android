@@ -743,6 +743,24 @@ class FrpTransportTest {
     }
 
     @Test
+    fun closeControllerClosesRawSocketBeforeTlsWrapper() {
+        val rawClosed = CountDownLatch(1)
+        val closeOrder = mutableListOf<String>()
+        val socket = RawCloseReleasingSocket(rawClosed, closeOrder)
+        val tls = RawCloseAwaitingTlsSocket(rawClosed, closeOrder)
+        val controller = TransportCloseController()
+        controller.attachSocket(socket)
+        controller.attachTlsSocket(tls)
+
+        controller.close()
+
+        assertEquals(listOf("socket", "tls"), closeOrder)
+        assertEquals(1, socket.closeCount.get())
+        assertEquals(1, tls.closeCount.get())
+        assertTrue(controller.isClosed)
+    }
+
+    @Test
     fun closeControllerPreservesJvmErrorAheadOfCancellation() {
         val cancellation = CancellationException("close cancellation marker")
         val error = SyntheticTransportError()
@@ -962,6 +980,40 @@ class FrpTransportTest {
             if (closeCount.incrementAndGet() == 1) {
                 closedSignal.countDown()
                 closeFailure?.let { throw it }
+            }
+        }
+    }
+
+    private class RawCloseReleasingSocket(
+        private val rawClosed: CountDownLatch,
+        private val closeOrder: MutableList<String>,
+    ) : Socket() {
+        val closeCount = AtomicInteger(0)
+
+        override fun close() {
+            if (closeCount.incrementAndGet() == 1) {
+                closeOrder += "socket"
+                rawClosed.countDown()
+            }
+        }
+    }
+
+    private class RawCloseAwaitingTlsSocket(
+        private val rawClosed: CountDownLatch,
+        private val closeOrder: MutableList<String>,
+    ) : TlsClientSocket {
+        val closeCount = AtomicInteger(0)
+        override val inputStream: InputStream = ByteArrayInputStream(ByteArray(0))
+        override val outputStream: OutputStream = ByteArrayOutputStream()
+
+        override fun startHandshake() = Unit
+
+        override fun close() {
+            if (closeCount.incrementAndGet() == 1) {
+                closeOrder += "tls"
+                check(rawClosed.await(1, TimeUnit.SECONDS)) {
+                    "raw socket was not closed before the TLS wrapper"
+                }
             }
         }
     }

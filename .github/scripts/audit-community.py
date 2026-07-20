@@ -458,7 +458,15 @@ def audit_release_metadata(version_name: str) -> None:
         "Android interop report has unexpected dependencies",
     )
     matrix = android_matrix_job.get("strategy", {}).get("matrix", {})
-    require(matrix.get("api-level") == [26, 36], "Android interop emulator matrix must cover API 26 and 36")
+    require(
+        matrix == {
+            "include": [
+                {"lane-id": "legacy-api26-x86_64", "api-level": 26, "suite": "compat"},
+                {"lane-id": "modern-api36-x86_64", "api-level": 36, "suite": "full"},
+            ],
+        },
+        "Android interop emulator matrix must use the frozen API 26 compat and API 36 full lanes",
+    )
     require(android_matrix_job.get("strategy", {}).get("fail-fast") is False, "Android interop matrix must not fail fast")
 
     def android_step_named(job: dict[str, Any], name: str) -> dict[str, Any]:
@@ -482,6 +490,11 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(identity_run, str), "Android interop identity check must use a run script")
     for token in ("GITHUB_SHA", "WORKFLOW_SHA", "git rev-parse HEAD", "HEAD^{tree}"):
         require(token in identity_run, f"Android interop identity check omits {token}")
+    renderer_test_run = android_step_named(android_preflight, "Test Android interop report renderer").get("run")
+    require(
+        renderer_test_run == "python3 .github/scripts/test_render_frpc_android_interop_report.py",
+        "Android interop preflight does not run the canonical renderer tests",
+    )
     sdk_run = android_step_named(android_matrix_job, "Install Android SDK and emulator image").get("run")
     require(isinstance(sdk_run, str), "Android interop SDK setup must use a run script")
     require(
@@ -503,6 +516,8 @@ def audit_release_metadata(version_name: str) -> None:
         ":frpc-stcp-visitor:frpcAndroidInteropTest",
         "-PrequireGoMobileBridge=true",
         "ocdeck.frp.androidInterop.deviceSerial",
+        "ocdeck.frp.androidInterop.suite",
+        "ocdeck.frp.androidInterop.summaryFile",
     ):
         require(token in android_interop_run, f"Android interop gate omits {token}")
     report_run = android_step_named(android_report_job, "Render bilingual exact-SHA report").get("run")
@@ -514,7 +529,15 @@ def audit_release_metadata(version_name: str) -> None:
     require("--matrix-result" in report_run, "Android interop report does not bind matrix status")
     evidence_run = android_step_named(android_matrix_job, "Write bounded lane evidence").get("run")
     require(isinstance(evidence_run, str), "Android interop evidence step must use a run script")
-    for token in ("testApkSha256", "bridgeAarSha256", "/proc/self/smaps"):
+    for token in (
+        "testApkSha256",
+        "bridgeAarSha256",
+        "/proc/self/smaps",
+        "HOST_SUMMARY_FILE",
+        "hostSummary",
+        "laneId",
+        "suite",
+    ):
         require(token in evidence_run, f"Android interop evidence omits {token}")
 
     assemble = step_named(prepare_job, "Assemble release notes")

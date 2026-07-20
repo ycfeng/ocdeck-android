@@ -365,7 +365,7 @@ class YamuxConcurrencyTest {
     }
 
     @Test
-    fun closeUsesOneGoAwayDeadlineAndDoesNotDrainQueuedData() = runTest {
+    fun closeHardStopsQueuedDataWithoutSendingGoAway() = runTest {
         val streamCount = 8
         val gate = CompletableDeferred<Unit>()
         val transport = YamuxTestTransport(writeGate = gate, writeGateAfterStarts = streamCount)
@@ -394,27 +394,18 @@ class YamuxConcurrencyTest {
 
         val closing = backgroundScope.async { session.close() }
         runCurrent()
-        assertFalse(closing.isCompleted)
-        advanceTimeBy(999L)
-        runCurrent()
-        assertFalse(closing.isCompleted)
-        advanceTimeBy(1L)
-        runCurrent()
         closing.await()
-        sends.awaitAll()
+        val sendFailures = sends.awaitAll()
 
         val framesAtClose = parseYamuxTrace(transport.writtenBytes())
+        assertTrue(sendFailures.all { it is YamuxSessionClosedFailure })
         assertEquals(streamCount, framesAtClose.size)
         assertTrue(framesAtClose.none { it.header.type == YamuxFrameType.DATA })
+        assertTrue(framesAtClose.none { it.header.type == YamuxFrameType.GOAWAY })
         assertEquals(0, session.diagnostics().writerPendingFrames)
         assertEquals(0L, session.diagnostics().writerPendingBytes)
-        gate.complete(Unit)
-        advanceTimeBy(10_000L)
-        runCurrent()
-        assertEquals(
-            framesAtClose.map(YamuxTestFrame::header),
-            parseYamuxTrace(transport.writtenBytes()).map(YamuxTestFrame::header),
-        )
+        assertEquals(0, transport.activeWriteCount)
+        assertTrue(transport.isClosed)
     }
 
     @Test
@@ -493,6 +484,10 @@ class YamuxConcurrencyTest {
         assertTrue(failure is YamuxProtocolFailure)
         assertEquals(YamuxProtocolError.RECEIVE_WINDOW_EXCEEDED, (failure as YamuxProtocolFailure).reason)
         assertSame(failure, suspendFailureOf { stream.awaitClosed() })
+        val goAway = parseYamuxTrace(transport.writtenBytes()).single {
+            it.header.type == YamuxFrameType.GOAWAY
+        }
+        assertEquals(YamuxGoAwayCode.PROTOCOL_ERROR.wireValue, goAway.header.length)
         assertEquals(0L, session.diagnostics().receiveBytes)
         assertTrue(transport.isClosed)
     }
@@ -1263,7 +1258,7 @@ class YamuxConcurrencyTest {
     }
 
     @Test
-    fun sessionEndingWakesAllNormalGoAwayCallersWithoutASecondFrame() = runTest {
+    fun hardCloseWakesNormalGoAwayCallersAndCancelsThePendingFrame() = runTest {
         val gate = CompletableDeferred<Unit>()
         val transport = YamuxTestTransport(writeGate = gate)
         val session = createYamuxClientSession(transport, backgroundScope, testConfig())
@@ -1282,7 +1277,7 @@ class YamuxConcurrencyTest {
         gate.complete(Unit)
         closing.await()
         assertEquals(
-            1,
+            0,
             parseYamuxTrace(transport.writtenBytes()).count { it.header.type == YamuxFrameType.GOAWAY },
         )
         assertEquals(0, session.diagnostics().activeChildJobs)

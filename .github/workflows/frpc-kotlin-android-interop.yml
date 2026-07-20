@@ -83,12 +83,16 @@ jobs:
         shell: bash
         run: python3 .github/scripts/audit-community.py
 
+      - name: Test Android interop report renderer
+        shell: bash
+        run: python3 .github/scripts/test_render_frpc_android_interop_report.py
+
       - name: Audit third-party and legal inventory
         shell: bash
         run: python3 .github/scripts/audit-third-party.py
 
   android-interop:
-    name: Android API ${{ matrix.api-level }} x86_64
+    name: Android ${{ matrix.lane-id }}
     needs: preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -97,9 +101,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api-level:
-          - 26
-          - 36
+        include:
+          - lane-id: legacy-api26-x86_64
+            api-level: 26
+            suite: compat
+          - lane-id: modern-api36-x86_64
+            api-level: 36
+            suite: full
 
     steps:
       - name: Check out exact candidate
@@ -249,17 +257,24 @@ jobs:
         shell: bash
         env:
           DEVICE_SERIAL: ${{ steps.emulator.outputs.serial }}
+          INTEROP_SUITE: ${{ matrix.suite }}
+          HOST_SUMMARY_FILE: ${{ runner.temp }}/k6v-host-summary-${{ matrix.lane-id }}.json
         run: >-
           bash ./gradlew --no-daemon
           :frpc-stcp-visitor:frpcAndroidInteropTest
           -PrequireGoMobileBridge=true
           "-Pocdeck.frp.androidInterop.deviceSerial=${DEVICE_SERIAL}"
+          "-Pocdeck.frp.androidInterop.suite=${INTEROP_SUITE}"
+          "-Pocdeck.frp.androidInterop.summaryFile=${HOST_SUMMARY_FILE}"
 
       - name: Write bounded lane evidence
         if: always()
         shell: bash
         env:
+          LANE_ID: ${{ matrix.lane-id }}
           API_LEVEL: ${{ matrix.api-level }}
+          INTEROP_SUITE: ${{ matrix.suite }}
+          HOST_SUMMARY_FILE: ${{ runner.temp }}/k6v-host-summary-${{ matrix.lane-id }}.json
           CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
           TREE_SHA: ${{ needs.preflight.outputs.tree_sha }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
@@ -354,6 +369,28 @@ jobs:
               return digest.hexdigest()
 
 
+          def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+              value: dict[str, object] = {}
+              for key, item in pairs:
+                  if key in value:
+                      raise ValueError("duplicate JSON key")
+                  value[key] = item
+              return value
+
+
+          def bounded_host_summary() -> object | None:
+              path = Path(os.environ["HOST_SUMMARY_FILE"])
+              if not path.is_file() or path.is_symlink() or path.stat().st_size > 64 * 1024:
+                  return None
+              try:
+                  return json.loads(
+                      path.read_text(encoding="utf-8"),
+                      object_pairs_hook=reject_duplicate_keys,
+                  )
+              except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                  return None
+
+
           image_package = f"system-images;android-{api};default;x86_64"
           package_xml = sdk / "system-images" / f"android-{api}" / "default" / "x86_64" / "package.xml"
           image_revision = "unavailable"
@@ -425,7 +462,7 @@ jobs:
                   page_size = output.strip()
 
           evidence = {
-              "schemaVersion": 1,
+              "schemaVersion": 2,
               "candidateSha": os.environ["CANDIDATE_SHA"],
               "treeSha": os.environ["TREE_SHA"],
               "workflowSha": os.environ["WORKFLOW_SHA"],
@@ -442,6 +479,8 @@ jobs:
               "gradleVersion": command_prefixed_line([str(root / "gradlew"), "--version"], "Gradle "),
               "agpVersion": str(versions["agp"]),
               "kotlinVersion": str(versions["kotlin"]),
+              "laneId": os.environ["LANE_ID"],
+              "suite": os.environ["INTEROP_SUITE"],
               "emulatorApi": api,
               "emulatorRelease": adb_property("ro.build.version.release"),
               "emulatorAbi": adb_property("ro.product.cpu.abi"),
@@ -457,9 +496,12 @@ jobs:
               "testApkSha256": file_sha256(test_apk),
               "bridgeAarSha256": file_sha256(bridge_aar),
               "interopOutcome": os.environ.get("INTEROP_OUTCOME", "skipped"),
-              "backendOrder": ["gomobile", "kotlin"],
-              "scenario": "wire=v1 encryption=false compression=false",
-              "testCommand": ":frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true",
+              "testCommand": (
+                  ":frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true "
+                  f"-Pocdeck.frp.androidInterop.suite={os.environ['INTEROP_SUITE']} "
+                  "-Pocdeck.frp.androidInterop.summaryFile=<runner-temp>"
+              ),
+              "hostSummary": bounded_host_summary(),
           }
           output = root / "lane-evidence" / f"api-{api}.json"
           output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
@@ -499,7 +541,7 @@ jobs:
           INTEROP_OUTCOME: ${{ steps.interop.outcome }}
         run: |
           [[ "$INTEROP_OUTCOME" == "success" ]] || {
-            printf 'Android interop did not pass for API %s\n' '${{ matrix.api-level }}' >&2
+            printf 'Android interop did not pass for lane %s\n' '${{ matrix.lane-id }}' >&2
             exit 1
           }
 

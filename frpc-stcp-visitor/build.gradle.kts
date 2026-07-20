@@ -118,7 +118,7 @@ val androidInteropApkDirectory = layout.buildDirectory.dir("outputs/apk/androidT
 
 tasks.register<JavaExec>("frpcAndroidInteropTest") {
     group = "verification"
-    description = "Runs real GoMobile and Kotlin STCP visitors sequentially on one Android device."
+    description = "Runs the selected real GoMobile/Kotlin Android STCP differential suite."
     dependsOn(
         "checkGoMobileBridgeAar",
         "assembleDebugAndroidTest",
@@ -143,6 +143,12 @@ tasks.register<JavaExec>("frpcAndroidInteropTest") {
         )
         providers.gradleProperty("ocdeck.frp.androidInterop.deviceSerial").orNull?.let { serial ->
             systemProperty("ocdeck.frp.androidInterop.deviceSerial", serial)
+        }
+        providers.gradleProperty("ocdeck.frp.androidInterop.suite").orNull?.let { suite ->
+            systemProperty("ocdeck.frp.androidInterop.suite", suite)
+        }
+        providers.gradleProperty("ocdeck.frp.androidInterop.summaryFile").orNull?.let { summaryFile ->
+            systemProperty("ocdeck.frp.androidInterop.summaryFile", summaryFile)
         }
     }
 }

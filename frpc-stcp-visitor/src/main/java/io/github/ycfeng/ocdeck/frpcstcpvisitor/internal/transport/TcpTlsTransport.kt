@@ -368,7 +368,7 @@ internal class TransportCloseController {
                 TransportCloseState.OPEN -> {
                     closeState = TransportCloseState.CLOSING
                     closeOwner = currentThread
-                    resources = listOfNotNull(tlsSocket, socket)
+                    resources = listOfNotNull(socket, tlsSocket)
                     tlsSocket = null
                     socket = null
                     false

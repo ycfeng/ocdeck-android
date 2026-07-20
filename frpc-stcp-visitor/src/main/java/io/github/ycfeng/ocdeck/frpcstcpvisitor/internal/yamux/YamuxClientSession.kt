@@ -450,7 +450,6 @@ internal class YamuxClientSession(
             operationFailure = YamuxSessionClosedFailure(),
             finalFailure = null,
             termination = YamuxTermination.Closed,
-            goAwayCode = YamuxGoAwayCode.NORMAL,
         )
         terminationDoneSignal.await()
         finalFailureRef.get()?.let { throw it }

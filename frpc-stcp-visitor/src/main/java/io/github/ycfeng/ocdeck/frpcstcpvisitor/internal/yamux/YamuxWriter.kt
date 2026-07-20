@@ -365,7 +365,8 @@ internal class YamuxFrameWriter(
             var claimFailure: Throwable? = null
             val claimed = synchronized(ownershipLock) {
                 claimFailure = terminationFailure.get()
-                claimFailure == null && request.claimPhysicalWrite()
+                (claimFailure == null || request.priority == RequestPriority.TERMINAL) &&
+                    request.claimPhysicalWrite()
             }
             if (!claimed) {
                 claimFailure?.let { failure ->

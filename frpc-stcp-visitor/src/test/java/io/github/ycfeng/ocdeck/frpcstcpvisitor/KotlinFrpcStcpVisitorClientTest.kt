@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1336,6 +1337,224 @@ class KotlinFrpcStcpVisitorClientTest {
     }
 
     @Test
+    fun stopVisitorDoesNotWaitForBlockedRelayCloseWrite() = runBlocking {
+        val closeWriteRelease = CompletableDeferred<Unit>()
+        val controlFactory = FakeControlFactory()
+        val listenerFactory = FakeListenerFactory()
+        val parentScope = newParentScope()
+        val client = newClient(parentScope, controlFactory, listenerFactory)
+        val sessionId = client.startSession(sessionConfig())
+        val control = controlFactory.single()
+        try {
+            control.open(epoch = 1L, transport = 1L)
+            val ensured = client.ensureVisitor(sessionId, visitorConfig(bindPort = 50_053))
+            val listener = listenerFactory.takeBinding().listener
+            client.waitVisitorReady(sessionId, "visitor", ensured.desiredRevision, 1_000L)
+
+            val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
+            val stream = ScriptedMuxStream(response, closeWriteRelease = closeWriteRelease)
+            val local = FakeLocalConnection(ByteArray(0))
+            control.enqueueStream(stream)
+            listener.offer(local)
+            withTimeout(5_000L) { stream.closeWriteStarted.await() }
+
+            withTimeout(1_000L) { client.stopVisitor(sessionId, "visitor") }
+
+            assertFalse(closeWriteRelease.isCompleted)
+            assertFalse(client.getState(sessionId).visitors.containsKey("visitor"))
+            assertEquals(1, listener.closeCount.get())
+            assertEquals(1, local.closeCount.get())
+            assertEquals(1, client.diagnostics().activeRelays)
+
+            closeWriteRelease.complete(Unit)
+            waitUntil { client.diagnostics().activeRelays == 0 }
+        } finally {
+            closeWriteRelease.complete(Unit)
+            control.releaseStop()
+            client.stopSession(sessionId, 5_000L)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun relayCancellationAfterConsumedPumpNotificationDoesNotLoseCompletion() = runBlocking {
+        val notificationReceived = CompletableDeferred<Unit>()
+        val blockCoordinator = CompletableDeferred<Unit>()
+        val parentScope = newParentScope()
+        val control = FakeSessionControl(
+            generation = 1L,
+            protocol = FrpWireProtocol.V1,
+            parentScope = parentScope,
+            stopRelease = null,
+        )
+        val identity = control.open(epoch = 1L, transport = 1L)
+        val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
+        val stream = ScriptedMuxStream(response)
+        control.enqueueStream(stream)
+        val relay = FrpVisitorRelay(
+            visitorRevision = 1L,
+            listenerAttempt = 1L,
+            control = control,
+            identity = identity,
+            visitor = FrpRelayVisitorConfig(
+                serverName = "remote-service",
+                serverUser = "",
+                sessionUser = "",
+                secretKey = SYNTHETIC_SECRET,
+            ),
+            local = FakeLocalConnection(ByteArray(0)),
+            parentScope = parentScope,
+            unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+            ioDispatcher = Dispatchers.IO,
+            afterPumpOutcomeReceived = {
+                notificationReceived.complete(Unit)
+                blockCoordinator.await()
+            },
+        )
+        try {
+            relay.start()
+            withTimeout(5_000L) { notificationReceived.await() }
+
+            relay.close()
+
+            withTimeout(1_000L) { relay.awaitStopped() }
+            assertEquals(1, stream.resetCount.get())
+        } finally {
+            blockCoordinator.complete(Unit)
+            relay.close()
+            control.releaseStop()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun relayCloseRacingConsumedPumpCancellationPreservesTheExternalInstance() = runBlocking {
+        val notificationReceived = CompletableDeferred<Unit>()
+        val blockCoordinator = CompletableDeferred<Unit>()
+        val externalCancellation = CancellationException("independent relay pump cancellation")
+        val parentScope = newParentScope()
+        val control = FakeSessionControl(
+            generation = 1L,
+            protocol = FrpWireProtocol.V1,
+            parentScope = parentScope,
+            stopRelease = null,
+        )
+        val identity = control.open(epoch = 1L, transport = 1L)
+        val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
+        val stream = ScriptedMuxStream(response, afterInputFailure = externalCancellation)
+        control.enqueueStream(stream)
+        val relay = FrpVisitorRelay(
+            visitorRevision = 1L,
+            listenerAttempt = 1L,
+            control = control,
+            identity = identity,
+            visitor = FrpRelayVisitorConfig(
+                serverName = "remote-service",
+                serverUser = "",
+                sessionUser = "",
+                secretKey = SYNTHETIC_SECRET,
+            ),
+            local = BlockingLocalConnection(),
+            parentScope = parentScope,
+            unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+            ioDispatcher = Dispatchers.IO,
+            afterPumpOutcomeReceived = {
+                notificationReceived.complete(Unit)
+                blockCoordinator.await()
+            },
+        )
+        try {
+            relay.start()
+            withTimeout(5_000L) { notificationReceived.await() }
+
+            relay.close()
+
+            val actual = try {
+                withTimeout(1_000L) { relay.awaitStopped() }
+                throw AssertionError("cancelled relay unexpectedly completed")
+            } catch (failure: CancellationException) {
+                failure
+            }
+            assertTrue(actual === externalCancellation || actual.cause === externalCancellation)
+        } finally {
+            blockCoordinator.complete(Unit)
+            relay.close()
+            control.releaseStop()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun relayFailurePromotionDoesNotCreateCyclicSuppressedGraph() = runBlocking {
+        val notificationReceived = CompletableDeferred<Unit>()
+        val blockCoordinator = CompletableDeferred<Unit>()
+        val reportedFailure = CompletableDeferred<Throwable>()
+        val promotedError = AssertionError("promoted relay failure")
+        val externalCancellation = CancellationException("relay cancellation with a fatal failure").apply {
+            addSuppressed(promotedError)
+        }
+        val parentScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, failure ->
+                reportedFailure.complete(failure)
+            },
+        )
+        val control = FakeSessionControl(
+            generation = 1L,
+            protocol = FrpWireProtocol.V1,
+            parentScope = parentScope,
+            stopRelease = null,
+        )
+        val identity = control.open(epoch = 1L, transport = 1L)
+        val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
+        val stream = ScriptedMuxStream(response, afterInputFailure = externalCancellation)
+        control.enqueueStream(stream)
+        val relay = FrpVisitorRelay(
+            visitorRevision = 1L,
+            listenerAttempt = 1L,
+            control = control,
+            identity = identity,
+            visitor = FrpRelayVisitorConfig(
+                serverName = "remote-service",
+                serverUser = "",
+                sessionUser = "",
+                secretKey = SYNTHETIC_SECRET,
+            ),
+            local = BlockingLocalConnection(),
+            parentScope = parentScope,
+            unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+            ioDispatcher = Dispatchers.IO,
+            afterPumpOutcomeReceived = {
+                notificationReceived.complete(Unit)
+                blockCoordinator.await()
+            },
+        )
+        try {
+            relay.start()
+            withTimeout(5_000L) { notificationReceived.await() }
+
+            relay.close()
+
+            val actual = try {
+                withTimeout(1_000L) { relay.awaitStopped() }
+                throw AssertionError("relay with a fatal failure unexpectedly completed")
+            } catch (failure: AssertionError) {
+                failure
+            }
+            assertTrue(actual === promotedError || actual.cause === promotedError)
+            assertFalse(promotedError.suppressed.any { it === externalCancellation })
+            assertTrue(externalCancellation.suppressed.any { it === promotedError })
+            val reported = withTimeout(5_000L) { reportedFailure.await() }
+            assertTrue(reported === promotedError || reported.cause === promotedError)
+        } finally {
+            blockCoordinator.complete(Unit)
+            relay.close()
+            control.releaseStop()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun relayWatcherOwnsCleanupBeforeSessionCancellation() = runBlocking {
         val parentJob = SupervisorJob()
         val parentScope = CoroutineScope(
@@ -1427,6 +1646,66 @@ class KotlinFrpcStcpVisitorClientTest {
 
             val actual = withTimeout(5_000L) { stopping.await() }
             assertSame(resetCancellation, actual?.cause ?: actual)
+            assertEquals(0, client.diagnostics().activeRelays)
+        } finally {
+            resetRelease.complete(Unit)
+            control.releaseStop()
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun stopSessionPropagatesLateRelayResetError() = runBlocking {
+        val resetRelease = CompletableDeferred<Unit>()
+        val reportedFailure = CompletableDeferred<Throwable>()
+        val resetError = AssertionError("late relay reset error")
+        val controlFactory = FakeControlFactory()
+        val listenerFactory = FakeListenerFactory()
+        val parentScope = CoroutineScope(
+            SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, failure ->
+                reportedFailure.complete(failure)
+            },
+        )
+        val client = newClient(parentScope, controlFactory, listenerFactory)
+        val sessionId = client.startSession(sessionConfig())
+        val control = controlFactory.single()
+        try {
+            control.open(epoch = 1L, transport = 1L)
+            val ensured = client.ensureVisitor(sessionId, visitorConfig(bindPort = 50_055))
+            val listener = listenerFactory.takeBinding().listener
+            client.waitVisitorReady(sessionId, "visitor", ensured.desiredRevision, 1_000L)
+
+            val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
+            val stream = ScriptedMuxStream(
+                response,
+                resetRelease = resetRelease,
+                resetFailure = resetError,
+            )
+            val local = BlockingLocalConnection()
+            control.enqueueStream(stream)
+            listener.offer(local)
+            local.readStarted.await()
+
+            client.stopVisitor(sessionId, "visitor")
+            withTimeout(5_000L) { stream.resetStarted.await() }
+            control.releaseStop()
+            val stopping = async {
+                try {
+                    client.stopSession(sessionId, 5_000L)
+                    null
+                } catch (failure: Throwable) {
+                    failure
+                }
+            }
+            delay(50L)
+            assertFalse(stopping.isCompleted)
+            resetRelease.complete(Unit)
+
+            val actual = withTimeout(5_000L) { stopping.await() }
+            assertTrue(actual === resetError || actual?.cause === resetError)
+            val reported = withTimeout(5_000L) { reportedFailure.await() }
+            assertTrue(reported === resetError || reported.cause === resetError)
             assertEquals(0, client.diagnostics().activeRelays)
         } finally {
             resetRelease.complete(Unit)
@@ -2227,6 +2506,8 @@ private class ScriptedMuxStream(
     private val firstReadRelease: CompletableDeferred<Unit>? = null,
     private val afterInputRelease: CompletableDeferred<Unit>? = null,
     private val afterInputResult: Int = -1,
+    private val afterInputFailure: Throwable? = null,
+    private val closeWriteRelease: CompletableDeferred<Unit>? = null,
     private val resetRelease: CompletableDeferred<Unit>? = null,
     private val resetFailure: Throwable? = null,
 ) : FrpMuxStream {
@@ -2236,6 +2517,7 @@ private class ScriptedMuxStream(
     private val outputLock = Any()
     private val reset = AtomicBoolean(false)
     val closeWriteCount = AtomicInteger(0)
+    val closeWriteStarted = CompletableDeferred<Unit>()
     val resetCount = AtomicInteger(0)
     val resetStarted = CompletableDeferred<Unit>()
     val readStarted = CompletableDeferred<Unit>()
@@ -2247,6 +2529,7 @@ private class ScriptedMuxStream(
         if (reset.get()) return -1
         if (inputOffset >= input.size) {
             afterInputRelease?.await()
+            afterInputFailure?.let { throw it }
             if (reset.get()) return -1
             return afterInputResult
         }
@@ -2263,6 +2546,10 @@ private class ScriptedMuxStream(
 
     override suspend fun closeWrite() {
         closeWriteCount.incrementAndGet()
+        closeWriteStarted.complete(Unit)
+        closeWriteRelease?.let { release ->
+            withContext(NonCancellable) { release.await() }
+        }
     }
 
     override suspend fun reset() {

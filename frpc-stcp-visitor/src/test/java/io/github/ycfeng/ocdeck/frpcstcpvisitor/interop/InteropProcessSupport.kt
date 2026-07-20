@@ -119,11 +119,21 @@ internal class ManagedInteropProcess private constructor(
         return log.text()
     }
 
+    fun outputRevision(): Long {
+        log.throwIfFatal()
+        return log.revision()
+    }
+
     fun awaitOutput(pattern: Regex, timeoutMillis: Long, stage: String) {
+        awaitOutputAfter(pattern, afterRevision = 0L, timeoutMillis, stage)
+    }
+
+    fun awaitOutputAfter(pattern: Regex, afterRevision: Long, timeoutMillis: Long, stage: String) {
+        if (afterRevision < 0L) throw InteropFailure("process output revision was invalid")
         val deadline = InteropDeadline.afterMillis(timeoutMillis)
         while (!deadline.isExpired()) {
             requireAlive(stage)
-            if (pattern.containsMatchIn(capturedText())) return
+            if (log.containsMatchAfter(pattern, afterRevision)) return
             sleepBounded(minOf(PROCESS_OUTPUT_POLL_MILLIS, deadline.remainingMillis()))
         }
         throw InteropFailure("$stage did not report readiness within its deadline")
@@ -234,14 +244,15 @@ internal class ManagedInteropProcess private constructor(
     }
 }
 
-private class BoundedProcessLog(
+internal class BoundedProcessLog(
     input: InputStream,
     private val redactor: InteropRedactor,
     label: String,
 ) {
     private val lock = Any()
-    private val lines = ArrayDeque<String>()
+    private val lines = ArrayDeque<ProcessLogLine>()
     private var discardedLines = 0
+    private var latestRevision = 0L
     private val fatalFailure = AtomicReference<Throwable?>(null)
     private val thread = Thread(
         { drain(input) },
@@ -273,13 +284,19 @@ private class BoundedProcessLog(
         buildString {
             lines.forEachIndexed { index, line ->
                 if (index > 0) append('\n')
-                append(line)
+                append(line.value)
             }
             if (discardedLines > 0) {
                 if (isNotEmpty()) append('\n')
                 append("[older process log lines discarded]")
             }
         }
+    }
+
+    fun revision(): Long = synchronized(lock) { latestRevision }
+
+    fun containsMatchAfter(pattern: Regex, afterRevision: Long): Boolean = synchronized(lock) {
+        lines.any { line -> line.revision > afterRevision && pattern.containsMatchIn(line.value) }
     }
 
     fun summarySuffix(): String = text().takeIf(String::isNotBlank)?.let { "\n$it" }.orEmpty()
@@ -323,13 +340,19 @@ private class BoundedProcessLog(
             redactor.redact(bytes.toString(StandardCharsets.UTF_8).removeSuffix("\r"))
         }
         synchronized(lock) {
+            latestRevision += 1L
             if (lines.size == MAXIMUM_STORED_LINES) {
                 lines.removeFirst()
                 discardedLines += 1
             }
-            lines.addLast(line)
+            lines.addLast(ProcessLogLine(latestRevision, line))
         }
     }
+
+    private data class ProcessLogLine(
+        val revision: Long,
+        val value: String,
+    )
 
     private companion object {
         const val PROCESS_READ_BUFFER_BYTES = 8 * 1024

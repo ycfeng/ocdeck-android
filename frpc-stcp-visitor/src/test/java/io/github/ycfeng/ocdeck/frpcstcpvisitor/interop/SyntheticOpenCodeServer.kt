@@ -25,7 +25,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
-internal class SyntheticOpenCodeServer : AutoCloseable {
+internal class SyntheticOpenCodeServer(
+    private val afterInitialSseEventFlushed: (() -> Unit)? = null,
+) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
     private val workerSequence = AtomicInteger(0)
@@ -91,9 +93,19 @@ internal class SyntheticOpenCodeServer : AutoCloseable {
 
     fun requireHealthy() = throwIfFatal()
 
-    fun beginConcurrentTraffic(expectedRequests: Int): ConcurrentTrafficGate {
+    fun beginConcurrentTraffic(
+        expectedRequests: Int,
+        publishSseCheckpointOnSuccess: Boolean = false,
+    ): ConcurrentTrafficGate {
         if (closed.get()) throw InteropFailure("synthetic server was already closed")
-        val gate = ConcurrentTrafficGate(expectedRequests)
+        val gate = ConcurrentTrafficGate(
+            expectedRequests = expectedRequests,
+            onAllSuccessful = if (publishSseCheckpointOnSuccess) {
+                { publishSseCheckpoint() }
+            } else {
+                null
+            },
+        )
         if (!concurrentTrafficGate.compareAndSet(null, gate)) {
             throw InteropFailure("synthetic server already had an active traffic gate")
         }
@@ -162,6 +174,17 @@ internal class SyntheticOpenCodeServer : AutoCloseable {
                         "application/json; charset=utf-8",
                         HEALTH_BODY,
                     )
+                }
+                request.method == "GET" && request.path == "/global/health/traffic" -> {
+                    requireNoRequestBody(request)
+                    requireConcurrentTrafficGate().participate {
+                        sendResponse(
+                            output,
+                            200,
+                            "application/json; charset=utf-8",
+                            HEALTH_BODY,
+                        )
+                    }
                 }
                 request.method == "POST" && request.path == "/echo" -> {
                     val length = request.contentLength
@@ -288,16 +311,20 @@ internal class SyntheticOpenCodeServer : AutoCloseable {
     }
 
     private fun sendLiveSseResponse(output: OutputStream, firstEvent: ByteArray) {
+        val observedCheckpoint = sseCheckpoint.get()
         writeResponseHead(output, 200, "text/event-stream; charset=utf-8", contentLength = null)
         output.write(firstEvent)
         output.flush()
-        var observedCheckpoint = sseCheckpoint.get()
+        afterInitialSseEventFlushed?.invoke()
         while (!closed.get()) {
             sleepBounded(SSE_KEEPALIVE_INTERVAL_MILLIS)
             val currentCheckpoint = sseCheckpoint.get()
             if (currentCheckpoint != observedCheckpoint) {
                 output.write(sseCheckpointBody(currentCheckpoint))
-                observedCheckpoint = currentCheckpoint
+                output.flush()
+                // The checkpoint proves the stream overlapped the traffic gate; close it so
+                // completed profiles cannot retain synthetic-server workers.
+                return
             } else {
                 output.write(SSE_KEEPALIVE_BODY)
             }
@@ -365,10 +392,11 @@ internal class SyntheticOpenCodeServer : AutoCloseable {
 }
 
 internal object TunnelHttpProbe {
-    fun health(port: Int) {
+    fun health(port: Int, concurrentTraffic: Boolean = false) {
         withDeadlineSocket(port) { socket ->
             val output = socket.getOutputStream()
-            writeRequestHead(output, "GET", "/global/health", contentLength = null)
+            val path = if (concurrentTraffic) "/global/health/traffic" else "/global/health"
+            writeRequestHead(output, "GET", path, contentLength = null)
             output.flush()
             val response = readResponseHead(socket.getInputStream())
             if (response.status != 200 || !response.contentType.startsWith("application/json")) {
@@ -698,13 +726,19 @@ internal class LiveSseSession(
     }
 }
 
-internal class ConcurrentTrafficGate(expectedRequests: Int) {
+internal class ConcurrentTrafficGate(
+    expectedRequests: Int,
+    private val onAllSuccessful: (() -> Unit)? = null,
+) {
     private val expected = expectedRequests.also {
         if (it <= 0) throw InteropFailure("concurrent traffic gate expected count was invalid")
     }
     private val barrier = CyclicBarrier(expectedRequests)
     private val participants = AtomicInteger(0)
     private val completed = AtomicInteger(0)
+    private val successful = AtomicInteger(0)
+    private val completionCallbackStarted = AtomicBoolean(false)
+    private val completionCallbackSucceeded = AtomicBoolean(onAllSuccessful == null)
     private val failure = AtomicReference<InteropFailure?>(null)
 
     fun participate(block: () -> Unit) {
@@ -714,6 +748,7 @@ internal class ConcurrentTrafficGate(expectedRequests: Int) {
             failure.compareAndSet(null, overflow)
             throw overflow
         }
+        var requestSucceeded = false
         try {
             try {
                 barrier.await(OVERLAP_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
@@ -726,14 +761,26 @@ internal class ConcurrentTrafficGate(expectedRequests: Int) {
                 throw recordFailure("concurrent traffic did not overlap within its deadline")
             }
             block()
+            requestSucceeded = true
+        } catch (failure: Error) {
+            throw failure
+        } catch (failure: Exception) {
+            recordFailure("concurrent traffic request failed")
+            throw failure
         } finally {
-            completed.incrementAndGet()
+            if (requestSucceeded) successful.incrementAndGet()
+            val completedCount = completed.incrementAndGet()
+            if (completedCount == expected && successful.get() == expected && failure.get() == null) {
+                runCompletionCallback()
+            }
         }
     }
 
     fun requireSatisfied() {
         failure.get()?.let { throw it }
-        if (participants.get() != expected || completed.get() != expected) {
+        if (participants.get() != expected || completed.get() != expected || successful.get() != expected ||
+            !completionCallbackSucceeded.get()
+        ) {
             throw InteropFailure("concurrent traffic did not complete the required overlap")
         }
     }
@@ -743,7 +790,22 @@ internal class ConcurrentTrafficGate(expectedRequests: Int) {
     }
 
     override fun toString(): String =
-        "ConcurrentTrafficGate(expected=$expected, participants=${participants.get()}, completed=${completed.get()})"
+        "ConcurrentTrafficGate(expected=$expected, participants=${participants.get()}, " +
+            "completed=${completed.get()}, successful=${successful.get()})"
+
+    private fun runCompletionCallback() {
+        if (!completionCallbackStarted.compareAndSet(false, true)) {
+            throw recordFailure("concurrent traffic completion callback ownership was lost")
+        }
+        try {
+            onAllSuccessful?.invoke()
+            completionCallbackSucceeded.set(true)
+        } catch (failure: Error) {
+            throw failure
+        } catch (_: Exception) {
+            throw recordFailure("concurrent traffic completion callback failed")
+        }
+    }
 
     private fun recordFailure(message: String): InteropFailure {
         val candidate = InteropFailure(message)

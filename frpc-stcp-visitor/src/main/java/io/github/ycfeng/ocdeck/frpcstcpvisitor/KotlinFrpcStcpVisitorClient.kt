@@ -11,6 +11,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpRelayVisitorC
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpSessionControl
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelay
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelayCleanupPhase
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.ProductionFrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.SocketFrpLocalListenerFactory
 import java.net.BindException
@@ -250,6 +251,12 @@ class KotlinFrpcStcpVisitorClient private constructor(
         rejectedRelays = relayBudget.rejectedCount,
     )
 
+    internal suspend fun sessionCleanupDiagnostics(
+        sessionId: String,
+    ): KotlinFrpcSessionCleanupDiagnostics? = sessionsMutex.withLock {
+        sessions[sessionId]?.cleanupDiagnostics()
+    }
+
     private suspend fun requireSession(sessionId: String): KotlinFrpcRuntimeSession =
         findSession(sessionId) ?: throw runtimeFailure(KotlinFrpcStcpVisitorFailure.SESSION_NOT_FOUND)
 
@@ -302,12 +309,32 @@ internal data class KotlinFrpcRuntimeDiagnostics(
 )
 
 internal data class KotlinFrpcSessionCleanupDiagnostics(
+    val phase: KotlinFrpcSessionCleanupPhase,
     val activeOwnedJobs: Int,
     val activeListeners: Int,
     val activeRelays: Int,
+    val openingRelays: Int,
+    val relayingRelays: Int,
+    val resettingLeaseRelays: Int,
+    val resettingAdapterRelays: Int,
     val actorCompleted: Boolean,
     val controlCollectorCompleted: Boolean,
 )
+
+internal enum class KotlinFrpcSessionCleanupPhase {
+    ACTIVE,
+    STOP_REQUESTED,
+    WAITING_FOR_ACTOR,
+    ACTOR_INVALIDATING,
+    ACTOR_WAITING_FOR_CONTROL,
+    ACTOR_COMPLETE,
+    FINALIZING_JOBS,
+    FINALIZING_CONTROL,
+    FINALIZING_MAILBOX,
+    EMERGENCY,
+    REGISTRY_REMOVAL,
+    COMPLETE,
+}
 
 internal data class KotlinFrpcRuntimeLifecycleHooks(
     val beforeVisitorBind: suspend (Long, FrpControlIdentity) -> Unit = { _, _ -> },
@@ -352,6 +379,7 @@ private class KotlinFrpcRuntimeSession(
     private val cleanupCompletion = CompletableDeferred<Unit>()
     private val actorCompletion = CompletableDeferred<Throwable?>()
     private val actorBodyEntered = AtomicBoolean(false)
+    private val cleanupPhase = AtomicReference(KotlinFrpcSessionCleanupPhase.ACTIVE)
     private val actorCompletionFinalized = AtomicBoolean(false)
     private val control: FrpSessionControl = controlFactory.create(sessionConfig, scope, generation)
     private val mutableSnapshot = MutableStateFlow(RuntimeSnapshot.initial(sessionId))
@@ -431,6 +459,7 @@ private class KotlinFrpcRuntimeSession(
         stopRequested.set(true)
         mutableStopping.value = true
         if (cleanupStarted.compareAndSet(false, true)) {
+            cleanupPhase.set(KotlinFrpcSessionCleanupPhase.STOP_REQUESTED)
             cleanupScope.launch {
                 var selectedFatal: Throwable? = null
                 var emergencyCleanupRequired = actorJob.get() == null || !actorBodyEntered.get()
@@ -439,6 +468,7 @@ private class KotlinFrpcRuntimeSession(
                     if (actorJob.get()?.isActive != true || !actorBodyEntered.get()) {
                         emergencyCleanupRequired = true
                     } else {
+                        cleanupPhase.set(KotlinFrpcSessionCleanupPhase.WAITING_FOR_ACTOR)
                         mailbox.send(StopSessionCommand)
                         selectedFatal = actorCompletion.await()
                         emergencyCleanupRequired = selectedFatal != null || !stopCleanupCompleted.get()
@@ -474,6 +504,7 @@ private class KotlinFrpcRuntimeSession(
                         }
                     }
                     try {
+                        cleanupPhase.set(KotlinFrpcSessionCleanupPhase.REGISTRY_REMOVAL)
                         withContext(NonCancellable) {
                             lifecycleHooks.beforeSessionRegistryRemoval(cleanupDiagnostics())
                         }
@@ -495,6 +526,7 @@ private class KotlinFrpcRuntimeSession(
                     } catch (_: Exception) {
                         // Registry cleanup is best effort after all runtime ownership is invalidated.
                     }
+                    cleanupPhase.set(KotlinFrpcSessionCleanupPhase.COMPLETE)
                     if (selectedFatal == null) {
                         cleanupCompletion.complete(Unit)
                     } else {
@@ -1081,6 +1113,7 @@ private class KotlinFrpcRuntimeSession(
     }
 
     private suspend fun handleStopSession() {
+        cleanupPhase.set(KotlinFrpcSessionCleanupPhase.ACTOR_INVALIDATING)
         phase = PHASE_STOPPING
         currentIdentity = null
         lastFailure = null
@@ -1096,6 +1129,7 @@ private class KotlinFrpcRuntimeSession(
         } catch (_: Exception) {
             // Control shutdown remains owned and awaited below.
         }
+        cleanupPhase.set(KotlinFrpcSessionCleanupPhase.ACTOR_WAITING_FOR_CONTROL)
         try {
             control.awaitStopped()
         } catch (failure: CancellationException) {
@@ -1108,9 +1142,11 @@ private class KotlinFrpcRuntimeSession(
         phase = PHASE_CLOSED
         publishSnapshot()
         stopCleanupCompleted.set(true)
+        cleanupPhase.set(KotlinFrpcSessionCleanupPhase.ACTOR_COMPLETE)
     }
 
     private suspend fun emergencyCleanup() {
+        cleanupPhase.set(KotlinFrpcSessionCleanupPhase.EMERGENCY)
         withContext(NonCancellable) {
             var fatal: Throwable? = null
             fatal = preferRuntimeFatalOrNull(
@@ -1179,6 +1215,7 @@ private class KotlinFrpcRuntimeSession(
             var fatal: Throwable? = null
             controlCollector.get()?.cancel()
             ownerJob.cancel()
+            cleanupPhase.set(KotlinFrpcSessionCleanupPhase.FINALIZING_JOBS)
             try {
                 joinAllSessionJobs()
             } catch (failure: CancellationException) {
@@ -1187,6 +1224,7 @@ private class KotlinFrpcRuntimeSession(
                 fatal = preferRuntimeFatal(fatal, failure)
             }
             controlCollector.set(null)
+            cleanupPhase.set(KotlinFrpcSessionCleanupPhase.FINALIZING_CONTROL)
             try {
                 control.awaitStopped()
             } catch (failure: CancellationException) {
@@ -1196,6 +1234,7 @@ private class KotlinFrpcRuntimeSession(
             } catch (_: Exception) {
                 // Logical cleanup is complete even if transport shutdown reports ordinary I/O.
             }
+            cleanupPhase.set(KotlinFrpcSessionCleanupPhase.FINALIZING_MAILBOX)
             fatal = preferRuntimeFatalOrNull(
                 fatal,
                 closeMailboxAndDrain(runtimeFailure(KotlinFrpcStcpVisitorFailure.SESSION_CLOSED)),
@@ -1434,11 +1473,17 @@ private class KotlinFrpcRuntimeSession(
         return fatal
     }
 
-    private fun cleanupDiagnostics(): KotlinFrpcSessionCleanupDiagnostics = synchronized(resourceLock) {
+    fun cleanupDiagnostics(): KotlinFrpcSessionCleanupDiagnostics = synchronized(resourceLock) {
+        val relayPhases = ownedRelays.groupingBy { it.relay.cleanupPhase }.eachCount()
         KotlinFrpcSessionCleanupDiagnostics(
+            phase = cleanupPhase.get(),
             activeOwnedJobs = ownedJobs.count { !it.isCompleted },
             activeListeners = ownedListeners.size,
             activeRelays = ownedRelays.size,
+            openingRelays = relayPhases[FrpVisitorRelayCleanupPhase.OPENING] ?: 0,
+            relayingRelays = relayPhases[FrpVisitorRelayCleanupPhase.RELAYING] ?: 0,
+            resettingLeaseRelays = relayPhases[FrpVisitorRelayCleanupPhase.RESETTING_LEASE] ?: 0,
+            resettingAdapterRelays = relayPhases[FrpVisitorRelayCleanupPhase.RESETTING_ADAPTER] ?: 0,
             actorCompleted = actorJob.get()?.isCompleted == true,
             controlCollectorCompleted = controlCollector.get()?.isCompleted != false,
         )

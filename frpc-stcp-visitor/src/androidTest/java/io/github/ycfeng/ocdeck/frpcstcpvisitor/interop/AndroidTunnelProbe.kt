@@ -6,10 +6,12 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.Random
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -17,10 +19,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 internal object AndroidTunnelProbe {
-    fun health(port: Int) {
+    fun health(port: Int, concurrentTraffic: Boolean = false) {
         withDeadlineSocket(port) { socket ->
             val output = socket.getOutputStream()
-            writeRequestHead(output, "GET", "/global/health", contentLength = null)
+            val path = if (concurrentTraffic) "/global/health/traffic" else "/global/health"
+            writeRequestHead(output, "GET", path, contentLength = null)
             output.flush()
             val input = socket.getInputStream()
             val response = readResponseHead(input)
@@ -37,55 +40,62 @@ internal object AndroidTunnelProbe {
         }
     }
 
-    fun firstSseEvent(port: Int, path: String, expectedData: String) {
+    fun openSseSession(port: Int, path: String, expectedData: String): AndroidLiveSseSession {
         if (path != "/global/event" && path != "/event") throw AndroidTunnelProbeException()
-        withDeadlineSocket(port) { socket ->
+        val connection = AndroidDeadlineSocket.open(port, LIVE_SSE_HARD_TIMEOUT_MILLIS)
+        try {
+            val socket = connection.socket
             val output = socket.getOutputStream()
             writeRequestHead(output, "GET", path, contentLength = null)
             output.flush()
-            val input = socket.getInputStream()
-            val response = readResponseHead(input)
+            val response = readResponseHead(socket.getInputStream())
             if (response.status != 200 || !response.contentType.startsWith("text/event-stream") ||
                 response.contentLength != null
             ) {
                 throw AndroidTunnelProbeException()
             }
-            var event = "message"
-            val data = StringBuilder()
-            repeat(MAXIMUM_SSE_LINES) {
-                val line = readFlexibleLine(input, MAXIMUM_SSE_LINE_BYTES)
-                    ?: throw AndroidTunnelProbeException()
-                if (line.isEmpty()) {
-                    if (event != "ready" || data.toString() != expectedData) {
-                        throw AndroidTunnelProbeException()
-                    }
-                    return@withDeadlineSocket
-                }
-                when {
-                    line.startsWith("event:") -> event = line.substringAfter(':').trimStart()
-                    line.startsWith("data:") -> {
-                        if (data.isNotEmpty()) data.append('\n')
-                        data.append(line.substringAfter(':').trimStart())
-                        if (data.length > MAXIMUM_SSE_DATA_CHARS) throw AndroidTunnelProbeException()
-                    }
-                    line.startsWith(":") -> Unit
-                    else -> throw AndroidTunnelProbeException()
-                }
+            return AndroidLiveSseSession(connection).also { session ->
+                session.requireInitialReady(expectedData)
             }
+        } catch (failure: CancellationException) {
+            closeAfterFailedOpen(connection)
+            throw failure
+        } catch (failure: Error) {
+            closeAfterFailedOpen(connection)
+            throw failure
+        } catch (failure: AndroidTunnelProbeException) {
+            closeAfterFailedOpen(connection)
+            throw failure
+        } catch (_: Exception) {
+            closeAfterFailedOpen(connection)
             throw AndroidTunnelProbeException()
         }
     }
 
-    suspend fun concurrentFlowControlTraffic(port: Int) {
+    suspend fun concurrentFlowControlTraffic(
+        port: Int,
+        globalSse: AndroidLiveSseSession,
+        projectSse: AndroidLiveSseSession,
+    ) {
         val payload = deterministicBytes(ECHO_PAYLOAD_BYTES, ECHO_PAYLOAD_SEED)
         try {
             coroutineScope {
                 listOf(
+                    async(Dispatchers.IO) { health(port, concurrentTraffic = true) },
                     async(Dispatchers.IO) { echo(port, payload) },
                     async(Dispatchers.IO) { echo(port, payload) },
                     async(Dispatchers.IO) { largeDownload(port) },
                     async(Dispatchers.IO) { largeDownload(port) },
                 ).awaitAll()
+            }
+            val checkpoints = coroutineScope {
+                listOf(
+                    async(Dispatchers.IO) { globalSse.awaitCheckpoint(SSE_CHECKPOINT_TIMEOUT_MILLIS) },
+                    async(Dispatchers.IO) { projectSse.awaitCheckpoint(SSE_CHECKPOINT_TIMEOUT_MILLIS) },
+                ).awaitAll()
+            }
+            if (checkpoints.size != 2 || checkpoints[0] <= 0 || checkpoints[1] != checkpoints[0]) {
+                throw AndroidTunnelProbeException()
             }
         } finally {
             payload.fill(0)
@@ -234,6 +244,8 @@ internal object AndroidTunnelProbe {
         AndroidDeadlineSocket.open(port, PROBE_HARD_TIMEOUT_MILLIS).use { connection ->
             block(connection.socket)
         }
+    } catch (failure: CancellationException) {
+        throw failure
     } catch (failure: AndroidTunnelProbeException) {
         throw failure
     } catch (_: Exception) {
@@ -261,12 +273,19 @@ internal object AndroidTunnelProbe {
         }
     }
 
-    private val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+    private fun closeAfterFailedOpen(connection: AndroidDeadlineSocket) {
+        try {
+            connection.close()
+        } catch (_: Exception) {
+            // The original open failure remains authoritative.
+        }
+    }
+
     private val HTTP_HEADER_NAME = Regex("[a-z0-9!#$%&'*+.^_`|~-]+")
     private const val HEALTH_BODY = "{\"healthy\":true,\"version\":\"interop\"}"
-    private const val PROBE_CONNECT_TIMEOUT_MILLIS = 2_000
-    private const val PROBE_READ_TIMEOUT_MILLIS = 15_000
     private const val PROBE_HARD_TIMEOUT_MILLIS = 30_000L
+    private const val LIVE_SSE_HARD_TIMEOUT_MILLIS = 240_000L
+    private const val SSE_CHECKPOINT_TIMEOUT_MILLIS = 30_000L
     private const val MAXIMUM_STATUS_LINE_BYTES = 4 * 1024
     private const val MAXIMUM_HEADER_LINE_BYTES = 8 * 1024
     private const val MAXIMUM_HEADER_BYTES = 32 * 1024
@@ -274,9 +293,6 @@ internal object AndroidTunnelProbe {
     private const val MAXIMUM_SMALL_RESPONSE_BYTES = 64L * 1024L
     private const val MAXIMUM_ECHO_REQUEST_BYTES = 2 * 1024 * 1024
     private const val WRITE_CHUNK_BYTES = 16 * 1024
-    private const val MAXIMUM_SSE_LINE_BYTES = 8 * 1024
-    private const val MAXIMUM_SSE_LINES = 64
-    private const val MAXIMUM_SSE_DATA_CHARS = 32 * 1024
     private const val BODY_BUFFER_BYTES = 16 * 1024
     private const val ECHO_PAYLOAD_BYTES = 768 * 1024 + 37
     private const val ECHO_PAYLOAD_SEED = 0x5354435056495349L
@@ -285,14 +301,127 @@ internal object AndroidTunnelProbe {
     private val EXPECTED_LARGE_BODY_SHA256 = deterministicSha256(LARGE_BODY_BYTES, LARGE_BODY_SEED)
 }
 
+internal class AndroidLiveSseSession(
+    private val connection: AndroidDeadlineSocket,
+) : AutoCloseable {
+    private var totalLines = 0
+
+    fun requireInitialReady(expectedData: String) {
+        val event = readEvent(INITIAL_EVENT_TIMEOUT_MILLIS)
+        if (event.name != "ready" || event.data != expectedData) throw AndroidTunnelProbeException()
+    }
+
+    fun awaitCheckpoint(timeoutMillis: Long): Int {
+        val deadline = AndroidProbeDeadline.afterMillis(timeoutMillis)
+        while (!deadline.isExpired()) {
+            val event = readEvent(deadline.remainingMillis().coerceAtLeast(1L))
+            if (event.name == "checkpoint") return parsePositiveCheckpoint(event.data)
+            if (event.name != "message" || event.data.isNotEmpty()) throw AndroidTunnelProbeException()
+        }
+        throw AndroidTunnelProbeException()
+    }
+
+    fun awaitDisconnected(timeoutMillis: Long) {
+        val deadline = AndroidProbeDeadline.afterMillis(timeoutMillis)
+        val input = connection.socket.getInputStream()
+        while (!deadline.isExpired()) {
+            connection.throwIfTimedOut()
+            connection.socket.soTimeout = minOf(
+                SSE_READ_TIMEOUT_MILLIS,
+                deadline.remainingMillis().coerceAtLeast(1L).toInt(),
+            )
+            val line = try {
+                readFlexibleLine(input, MAXIMUM_SSE_LINE_BYTES)
+            } catch (_: SocketTimeoutException) {
+                continue
+            } catch (failure: AndroidTunnelProbeException) {
+                throw failure
+            } catch (_: Exception) {
+                connection.throwIfTimedOut()
+                return
+            }
+            if (line == null) return
+            recordLine()
+        }
+        throw AndroidTunnelProbeException()
+    }
+
+    override fun close() = connection.close()
+
+    override fun toString(): String = "AndroidLiveSseSession(open=${!connection.isClosed})"
+
+    private fun readEvent(timeoutMillis: Long): SseEvent {
+        val deadline = AndroidProbeDeadline.afterMillis(timeoutMillis)
+        val input = connection.socket.getInputStream()
+        var event = "message"
+        val data = StringBuilder()
+        while (!deadline.isExpired()) {
+            connection.throwIfTimedOut()
+            connection.socket.soTimeout = minOf(
+                SSE_READ_TIMEOUT_MILLIS,
+                deadline.remainingMillis().coerceAtLeast(1L).toInt(),
+            )
+            val line = try {
+                readFlexibleLine(input, MAXIMUM_SSE_LINE_BYTES)
+                    ?: throw AndroidTunnelProbeException()
+            } catch (_: SocketTimeoutException) {
+                continue
+            } catch (failure: AndroidTunnelProbeException) {
+                throw failure
+            } catch (_: Exception) {
+                connection.throwIfTimedOut()
+                throw AndroidTunnelProbeException()
+            }
+            recordLine()
+            if (line.isEmpty()) return SseEvent(event, data.toString())
+            when {
+                line.startsWith(":") -> Unit
+                line.startsWith("event:") -> event = line.substringAfter(':').trimStart()
+                line.startsWith("data:") -> {
+                    if (data.isNotEmpty()) data.append('\n')
+                    data.append(line.substringAfter(':').trimStart())
+                    if (data.length > MAXIMUM_SSE_DATA_CHARS) throw AndroidTunnelProbeException()
+                }
+                else -> throw AndroidTunnelProbeException()
+            }
+        }
+        throw AndroidTunnelProbeException()
+    }
+
+    private fun recordLine() {
+        totalLines += 1
+        if (totalLines > MAXIMUM_SSE_TOTAL_LINES) throw AndroidTunnelProbeException()
+    }
+
+    private data class SseEvent(
+        val name: String,
+        val data: String,
+    )
+
+    private companion object {
+        const val INITIAL_EVENT_TIMEOUT_MILLIS = 30_000L
+        const val SSE_READ_TIMEOUT_MILLIS = 500
+        const val MAXIMUM_SSE_LINE_BYTES = 8 * 1024
+        const val MAXIMUM_SSE_DATA_CHARS = 32 * 1024
+        const val MAXIMUM_SSE_TOTAL_LINES = 8_192
+    }
+}
+
 internal class AndroidTunnelProbeException : Exception()
 
-private class AndroidDeadlineSocket private constructor(
+internal class AndroidDeadlineSocket private constructor(
     val socket: Socket,
     private val timedOut: AtomicBoolean,
     private val watchdog: Thread,
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
+
+    val isClosed: Boolean
+        get() = closed.get()
+
+    fun throwIfTimedOut() {
+        if (timedOut.get()) throw AndroidTunnelProbeException()
+    }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -308,7 +437,8 @@ private class AndroidDeadlineSocket private constructor(
             Thread.currentThread().interrupt()
             throw AndroidTunnelProbeException()
         }
-        if (watchdog.isAlive || timedOut.get()) throw AndroidTunnelProbeException()
+        if (watchdog.isAlive) throw AndroidTunnelProbeException()
+        throwIfTimedOut()
     }
 
     companion object {
@@ -351,6 +481,30 @@ private class AndroidDeadlineSocket private constructor(
         private const val PROBE_READ_TIMEOUT_MILLIS = 15_000
         private const val WATCHDOG_JOIN_TIMEOUT_MILLIS = 1_000L
     }
+}
+
+private class AndroidProbeDeadline private constructor(
+    private val deadlineNanos: Long,
+) {
+    fun isExpired(): Boolean = System.nanoTime() - deadlineNanos >= 0L
+
+    fun remainingMillis(): Long =
+        java.util.concurrent.TimeUnit.NANOSECONDS.toMillis((deadlineNanos - System.nanoTime()).coerceAtLeast(0L))
+
+    companion object {
+        fun afterMillis(timeoutMillis: Long): AndroidProbeDeadline {
+            if (timeoutMillis <= 0L) throw AndroidTunnelProbeException()
+            val durationNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+            return AndroidProbeDeadline(System.nanoTime() + durationNanos)
+        }
+    }
+}
+
+private fun parsePositiveCheckpoint(value: String): Int {
+    if (value.isEmpty() || value.length > 10 || value.any { it !in '0'..'9' }) {
+        throw AndroidTunnelProbeException()
+    }
+    return value.toIntOrNull()?.takeIf { it > 0 } ?: throw AndroidTunnelProbeException()
 }
 
 private fun parseContentLength(value: String): Long {
