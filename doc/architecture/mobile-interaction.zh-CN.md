@@ -388,9 +388,9 @@ Android 端添加/编辑服务器表单使用互斥连接方式：`直连`、`SS
 
 SSH 转发启用后，`OpenCode 服务地址` 表示 SSH 远端机器可访问的 OpenCode 地址，例如 `http://127.0.0.1:4096`；App 实际连接地址改写为 `http://127.0.0.1:<本地转发端口>`。
 
-frpc STCP visitor 首版只支持本地端口模式：App 启动 STCP visitor，绑定 `127.0.0.1:<本地绑定端口>`，再访问该本地地址。真实 frp 协议实现通过 `:frpc-stcp-visitor` 模块封装 GoMobile AAR；仓库保存 `frpc-stcp-visitor-go/` wrapper、固定版本和可审计 downstream patch，AAR 由本地脚本或 CI 以不可变版本生成且不提交，并通过本地 Maven 仓库接入 Android 构建。Release 必须校验 AAR checksum、API signature、provenance、预期 ABI、stripped 状态和 16KB ELF 对齐；AAR 未集成时，UI 可保存配置，但连接时返回明确不可用错误。
+frpc STCP visitor 首版只支持本地端口模式：App 启动 STCP visitor，绑定 `127.0.0.1:<本地绑定端口>`，再访问该本地地址。`:frpc-stcp-visitor` 模块暴露统一的 backend-neutral client contract，保留六个 suspend 操作：`startSession`、`ensureVisitor`、`waitVisitorReady`、`stopVisitor`、`stopSession` 和 `getState`。构建期选择让 `debug`、`release` 固定使用 GoMobile backend，内部 `canary` 构建固定使用纯 Kotlin backend；不提供用户可见设置、持久化 selector，也不在活动 generation 内自动 fallback，切换 backend 必须完整停止旧 session。两个实现共享 listener ownership、readiness revision、generation、control epoch、取消、有界 I/O、类型化失败以及公共 `useEncryption`/`useCompression` 语义。活动 listener 对端口保持独占；完整停止后，Kotlin listener 只启用 address reuse、不启用 `SO_REUSEPORT`，因此已完成 relay 的连接处于 `TIME_WAIT` 时，下一 generation 仍能快速重绑同一端口，但 backend 或 generation 绝不能重叠运行。Kotlin `stopVisitor` 会等待本地 listener 与 relay I/O 停止；延迟的 best-effort Yamux reset 与 stream permit 释放继续由 session watcher 持有，并由 `stopSession` 在进入终态前 join。Kotlin library 会在 visitor 握手后通过有界、兼容 frp 的 AES-CFB/Snappy 流支持四种 payload 组合；当前 App schema 与 UI 不暴露这两个字段，继续提交其默认 `false` 值。
 
-生成 bridge class 缺失时抛出 `GoMobileBridgeUnavailableException`，bridge class、方法或 payload 不兼容时抛出 `GoMobileBridgeApiMismatchException`；两者都是类型化且不含 payload 的启动失败。STCP readiness 与 SSE 将其视为永久失败，不做反复重试；UI 映射为本地化语义错误，不显示反射细节。
+正式构建仍保留 GoMobile backend 期间，仓库继续保存 `frpc-stcp-visitor-go/` wrapper、固定版本和可审计 downstream patch。其不可变版本 AAR 由本地脚本或 CI 生成且不提交，并通过本地 Maven 仓库接入 Android 构建。Release 必须校验 AAR checksum、API signature、provenance、预期 ABI、stripped 状态和 16KB ELF 对齐。GoMobile 路径缺少生成的 bridge class 时抛出 `GoMobileBridgeUnavailableException`，bridge class、方法或 payload 不兼容时抛出 `GoMobileBridgeApiMismatchException`。这些失败与纯 Kotlin backend 失败都保持类型化且不含 payload；STCP readiness 与 SSE 将永久 setup failure 映射为本地化语义错误，不暴露反射、协议或敏感细节。所选 backend 不可用时，UI 可保存配置，但连接时必须返回明确不可用错误。
 
 STCP 不能把“配置已提交”当成“连接已就绪”。App 必须先等待当前 frps control epoch 下的真实 visitor listener bind，再通过本地隧道完成一次 `/global/health`，之后才允许项目 REST 和 SSE 使用该连接。首次健康检查、项目快照、全局 SSE 和项目 SSE 并发触发时共享同一个就绪流程，不应各自启动 visitor 或重复探针。
 
@@ -942,7 +942,7 @@ Composer 选择器只显示 `Build` 和 `Plan`，内部仍使用 `build` 和 `pl
 
 ### 18.1 人工 UI 验收矩阵
 
-现有 `app/src/androidTest` 只覆盖本地化独立窗口根，CI 仍没有 emulator/instrumentation job。因此最近项目排序交互仍需按以下矩阵做真机人工检查：
+现有 `app/src/androidTest` 只覆盖本地化独立窗口根。普通 CI 仍没有 App UI emulator/instrumentation job；独立手动 K6V workflow 只在 x86_64 模拟器自动化 STCP backend 互操作。因此最近项目排序和其余 UI/TalkBack 矩阵仍需按以下内容做真机人工检查：
 
 | 环境 | 检查项 | 预期结果 |
 | --- | --- | --- |
@@ -1065,15 +1065,16 @@ Repository 调用使用 `OpenCodeFailure` 分类失败，SSE 状态保存 `SseFa
 | Provider | 主体具备 | 真实安全投影列表/搜索、动态 API/OAuth 认证、断开、capability 刷新，以及分阶段的多模型/多 Header 自定义 Provider 持久化已接通；真实 Provider 兼容性、远程 loopback OAuth 拓扑和设备交互仍需验证 |
 | 模型设置 | 部分完成 | enabled/hidden 是按 server 保存的本机过滤偏好，不修改 OpenCode server config |
 | SSE | 主体具备 | identity content encoding、OkHttp Call 自定义流式 reader、200 + `text/event-stream` 协议门禁、空行 dispatch/EOF 丢弃、32 MiB 行/event 硬上限、owner lease、关闭终态、generation/source/transport 校验、指数退避、快照 single-flight、有界事件重放和应用级前台恢复已实现；仍需真实服务长时间断网、进程前后台和 STCP epoch 切换验证 |
-| STCP 并发与恢复 | 主体具备 | readiness、generation/control epoch 与 AAR 门禁已建立，仍需真实设备 native load 和 STCP 闭环验证 |
+| STCP 并发与恢复 | 主体具备 | readiness、generation/control epoch、AAR 门禁和第一阶段真实 Android GoMobile→Kotlin A/B harness 已建立，手动精确 SHA 的 API 26/API 36 x86_64 workflow 承载模拟器门禁；仍需物理目标 ABI、16KB 设备、完整 wire/payload/negative/restart 矩阵、网络/前后台切换、性能、资源泄漏和 soak 证据 |
 | 失败处理 | 主体具备 | Repository/SSE/快照链路保留类型化语义原因，映射到带操作 fallback 的本地化资源，并传播取消/JVM `Error` |
-| 移动 UI 与无障碍 | 主体具备 | 48dp 目标、匹配选择 role、本地化展开/折叠说明、非颜色状态提示、TalkBack 服务器/项目排序、浅色/深色对比度测试和大字体/IME 有界布局已实现；设备 instrumentation 尚未成为 CI 门禁 |
+| 移动 UI 与无障碍 | 主体具备 | 48dp 目标、匹配选择 role、本地化展开/折叠说明、非颜色状态提示、TalkBack 服务器/项目排序、浅色/深色对比度测试和大字体/IME 有界布局已实现；App UI 设备 instrumentation 尚未成为 CI 门禁 |
 | 安全与输入边界 | 主体具备 | Keystore、结构化/自由文本 Redactor、安全结构化摘要、Server URL 防 userinfo、私钥有界读取、附件 data URL/预算终检、Retrofit/file 独立 16 MiB encoded/decoded、session messages direct OkHttp 独立 64 MiB encoded/decoded 与 identity SSE 32 MiB 入站边界已具备；这些上限不等于 heap 峰值，其他 REST 大响应、native 返回值与真实设备链路仍需持续审计验证 |
 
 ## 21. 后续实现优先级
 
 | 优先级 | 内容 |
 | --- | --- |
+| 高 | 先取得并审查精确 SHA 的 API 26/API 36 K6V 通过报告，再把 Android STCP 证据扩展到物理 ARM/16KB 设备、wire/payload/restart 路径、性能、资源泄漏和 soak；完成前不得作出 Kotlin 默认决策 |
 | 高 | SSE 真实服务长时间断网、前后台切换、全局/项目重复事件及 STCP epoch 切换验证 |
 | 中 | 在支持的真实 Server/Provider 版本上验证 Provider 管理，重点覆盖远程 loopback OAuth、长回调取消和自定义配置 partial/unknown outcome |
 | 中 | 独立 Review route 产品决策与 session share |

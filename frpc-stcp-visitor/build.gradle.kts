@@ -3,6 +3,8 @@ import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Properties
 import java.util.zip.ZipFile
+import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.testing.Test
 
 plugins {
     alias(libs.plugins.android.library)
@@ -58,6 +60,12 @@ android {
 
     defaultConfig {
         minSdk = 26
+        testApplicationId = "io.github.ycfeng.ocdeck.frpcstcpvisitor.test"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    testOptions {
+        targetSdk = 36
     }
 
     compileOptions {
@@ -71,6 +79,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(libs.bcprov)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
@@ -80,6 +89,64 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+}
+
+val frpcInteropTest = tasks.register<JavaExec>("frpcInteropTest") {
+    group = "verification"
+    description = "Runs the pinned official-frp interoperability harness for the Kotlin STCP visitor."
+    dependsOn(
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcInteropHarness")
+    workingDir(rootProject.projectDir)
+    systemProperty(
+        "ocdeck.frp.interop.cacheDir",
+        gradle.gradleUserHomeDir.resolve("caches/ocdeck/frp-interop/v0.69.1").absolutePath,
+    )
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "512m"
+    doFirst {
+        classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+    }
+}
+
+val adbExecutable = androidComponents.sdkComponents.adb
+val androidInteropApkDirectory = layout.buildDirectory.dir("outputs/apk/androidTest/debug")
+
+tasks.register<JavaExec>("frpcAndroidInteropTest") {
+    group = "verification"
+    description = "Runs real GoMobile and Kotlin STCP visitors sequentially on one Android device."
+    dependsOn(
+        "checkGoMobileBridgeAar",
+        "assembleDebugAndroidTest",
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcAndroidInteropHost")
+    workingDir(rootProject.projectDir)
+    systemProperty(
+        "ocdeck.frp.interop.cacheDir",
+        gradle.gradleUserHomeDir.resolve("caches/ocdeck/frp-interop/v0.69.1").absolutePath,
+    )
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "512m"
+    doFirst {
+        classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+        systemProperty("ocdeck.frp.androidInterop.adb", adbExecutable.get().asFile.absolutePath)
+        systemProperty(
+            "ocdeck.frp.androidInterop.apkDirectory",
+            androidInteropApkDirectory.get().asFile.absolutePath,
+        )
+        providers.gradleProperty("ocdeck.frp.androidInterop.deviceSerial").orNull?.let { serial ->
+            systemProperty("ocdeck.frp.androidInterop.deviceSerial", serial)
+        }
+    }
 }
 
 tasks.register("checkGoMobileBridgeAar") {
@@ -112,7 +179,7 @@ tasks.register("checkGoMobileBridgeAar") {
 
         val provenance = parseJsonObject(goMobileBridgeProvenance)
         val expectedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-        check(provenance["schemaVersion"] == 1 && provenance["bridgeApiVersion"] == 2) {
+        check(provenance["schemaVersion"] == 2 && provenance["bridgeApiVersion"] == 2) {
             "GoMobile STCP visitor provenance schema or API version is invalid."
         }
         check(provenance["bridgeVersion"] == goMobileBridgeVersion) {
@@ -138,6 +205,10 @@ tasks.register("checkGoMobileBridgeAar") {
         }
         check(provenance["nativeAbis"] == expectedAbis && provenance["aarSha256"] == expectedSha) {
             "GoMobile STCP visitor provenance ABI list or AAR checksum is invalid."
+        }
+        val moduleGraphSha = provenance["moduleGraphSha256"] as? String
+        check(moduleGraphSha?.matches(Regex("[0-9a-f]{64}")) == true && provenance["moduleGraphLocalPathFree"] == true) {
+            "GoMobile STCP visitor provenance module graph proof is invalid."
         }
         check(goMobileBridgeFrpProvenance.readBytes().contentEquals(expectedFrpProvenance.readBytes())) {
             "GoMobile STCP visitor frp provenance does not match the generated patch provenance."
@@ -166,9 +237,18 @@ tasks.register("checkGoMobileBridgeAar") {
         ) { "GoMobile STCP visitor frp provenance added-file list is invalid." }
 
         val nativeMetadata = parseJsonObject(goMobileBridgeNative)
-        check((nativeMetadata["pageAlignment"] as? Number)?.toInt() == 16384 && nativeMetadata["stripped"] == true) {
+        check(
+            nativeMetadata["schemaVersion"] == 2 &&
+                (nativeMetadata["pageAlignment"] as? Number)?.toInt() == 16384 &&
+                nativeMetadata["stripped"] == true,
+        ) {
             "GoMobile STCP visitor native libraries are not verified as stripped and 16KB aligned."
         }
+        check(
+            nativeMetadata["moduleGraphSha256"] == moduleGraphSha &&
+                nativeMetadata["moduleGraphLocalPathFree"] == true &&
+                nativeMetadata["moduleGraphConsistentAcrossAbis"] == true,
+        ) { "GoMobile STCP visitor native module graph proof is invalid." }
         val libraries = (nativeMetadata["libraries"] as? List<*>)
             ?.map { it as? Map<*, *> ?: error("Invalid native library report entry.") }
             ?: error("GoMobile STCP visitor native validation is missing libraries.")

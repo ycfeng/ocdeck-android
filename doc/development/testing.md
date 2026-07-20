@@ -10,25 +10,32 @@ OC Deck uses several independent gates. Passing one layer does not imply that th
 
 | Layer | Current coverage |
 | --- | --- |
-| Kotlin/JVM unit tests | Paths and project-file URLs, recent-project ordering/recording/reorder rollback models, session windows, notification/channel policy, redaction, encoded/decoded Retrofit/direct and identity-SSE inbound boundaries, typed failures and localized UI mapping, safe value summaries, DTO tolerance, Store revisions, prompt/project-context state and recovery, Provider auth/OAuth and staged custom-config transactions, server credential transactions, SSH/STCP coordination, contrast, and feature helpers. |
-| Go race tests | The GoMobile wrapper and the generated patched frp client packages. |
+| Kotlin/JVM unit tests | Paths and project-file URLs, recent-project ordering/recording/reorder rollback models, session windows, notification/channel policy, redaction, encoded/decoded Retrofit/direct and identity-SSE inbound boundaries, typed failures and localized UI mapping, STCP backend factory selection, typed bind retry, safe value summaries, DTO tolerance, Store revisions, prompt/project-context state and recovery, Provider auth/OAuth and staged custom-config transactions, server credential transactions, SSH/STCP coordination and Kotlin/GoMobile bridge contracts, contrast, and feature helpers. |
+| Go race tests | The GoMobile wrapper, canonical STCP fixture oracle/check, and generated patched frp client packages. |
 | Third-party and legal audit | Pinned versions, dependency inventory, hashes, provenance, licenses, and release-script references. |
-| Bridge validation | AAR checksum, Java API signature, bridge/frp provenance, expected ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, and reproducibility. |
-| Android build | Unit tests for both Android modules and the Debug APK build. |
-| Android instrumentation tests | Compose window localization across Popup and modal bottom-sheet roots, including an in-place language change while a Popup remains open. |
+| Bridge validation | AAR and required sources JAR, checksum, Java API signature, bridge/frp provenance, four-ABI Go BuildInfo/module-graph proof, ELF machine, 16KB `PT_LOAD` alignment, stripped state, and same-platform cross-checkout reproducibility of the complete artifact/sidecar set. |
+| Android build | App unit tests and APK builds for both Debug and the internal Kotlin Canary, plus `:frpc-stcp-visitor` unit tests. |
+| Android instrumentation tests | Compose window localization across Popup and modal bottom-sheet roots, plus a test-only `:frpc-stcp-visitor` harness that runs the real GoMobile and Kotlin backends sequentially against one fixed-frp topology. |
 | Manual UI/accessibility validation | Compact screens, 200% font scale, IME overlap, project ordering in the picker and drawer, project-file selection, Provider auth/OAuth/Custom Provider flows, TalkBack semantics/actions, both themes, and real model-settings navigation. |
 | Release artifact validation | APK metadata, one signer, expected certificate fingerprint, ABI isolation, `zipalign -P 16`, AAR native-byte binding, embedded legal files, filenames, and checksums. |
 | Physical-device validation | Maintainer-recorded `0.1.0` release-gate validation passed physical-device native loading/startup, 16KB page-size native operation, and a real STCP loop covering `/global/health`, representative REST, global/project SSE, and controlled reconnect. Exact environment details are not published; future candidates must repeat these gates. |
 
-The `app/src/androidTest` suite currently covers localized independent-window roots, but CI has no emulator/instrumentation job. Recent-project drag ordering remains outside instrumentation coverage; its automated coverage is primarily the JVM reducer, recorder, ViewModel, and drawer-model tests listed below. Project selection, session navigation, broader Composer interactions and pickers, permission/question UI, large-text behavior, and TalkBack still need systematic device automation.
+The manual-only K6V workflow provides an x86_64 emulator gate for STCP backend interoperability, but ordinary CI still has no App UI emulator/instrumentation job. The `app/src/androidTest` suite covers localized independent-window roots. Recent-project drag ordering remains outside instrumentation coverage; its automated coverage is primarily the JVM reducer, recorder, ViewModel, and drawer-model tests listed below. Project selection, session navigation, broader Composer interactions and pickers, permission/question UI, large-text behavior, and TalkBack still need systematic device automation.
 
 ## Focused Test Inventory
 
 - `RetrofitInboundResponsePolicyTest` and `EncodedResponseLimitInterceptorTest` verify that every `OpenCodeApi` method declares `BOUNDED` or `EMPTY_SUCCESS`; missing policy fails before network proceed; encoded and decoded declared/unknown/understated lengths enforce their 16 MiB boundaries at `max + 1`; a real OkHttp gzip chain applies the encoded cap before Bridge decoding; non-2xx and successful Unit bodies close without reading; `/file/content` remains lazy; and requests without Retrofit `Invocation` pass outside the Retrofit interceptor.
 - `SessionMessagesTransportTest`, `SessionMessagesResponseReaderTest`, and `FileContentResponseReaderTest` cover body-free non-2xx failures, direct OkHttp callback-thread decode, encoded and decoded exact/unknown/underreported lengths, EOF verification, cancellation and callback races, the separate 64 MiB session-message limits, and `/file/content` reader-level decoded defense in depth.
-- `OpenCodeFailureTest`, `ErrorUiTextTest`, and `OpenCodeRepositoryFailureHandlingTest` cover semantic classification without reading `Throwable.message`, localized resource mapping with operation-specific fallback, Repository propagation, response-too-large behavior, and propagation of cancellation and JVM `Error`.
+- `OpenCodeFailureTest`, `ErrorUiTextTest`, and `OpenCodeRepositoryFailureHandlingTest` cover semantic classification without reading `Throwable.message`, including mapping `KotlinFrpcStcpVisitorFailure` enum values to App failures and local-port rejection; localized resource mapping with operation-specific fallback; Repository propagation; response-too-large behavior; and propagation of cancellation and JVM `Error`.
 - `BoundedSseReaderTest`, `OkHttpSseEventSourceFactoryTest`, `OpenCodeEventClientLifecycleTest`, and `ProjectSnapshotCoordinatorTest` cover explicit identity encoding, non-identity zero-read rejection, all line endings and EOF states, 32 MiB line/event limits, body-free status/MIME failures, cancellation, retry classification, terminal close, owner/generation/source/transport races, project/global authority handoff, bounded replay, and snapshot failure/recovery.
 - `FrpcStcpReadinessRetryClassifierTest` and `GoMobileFrpcStcpVisitorClientTest` cover transient versus permanent readiness failures, inbound-policy failures, typed unavailable/API-mismatch bridge errors, safe bridge summaries, API v2 JSON, revision/control epoch, `WaitVisitorReady`, and reflection cancellation/JVM `Error` propagation.
+- `FrpcStcpVisitorClientFactoryTest` runs in both App variants and verifies that Debug `BuildConfig` selects `GoMobileFrpcStcpVisitorClient`, Canary selects `KotlinFrpcStcpVisitorClient`, and the explicit factory can construct either backend without a runtime fallback.
+- `FrpcStcpVisitorManagerTest` covers shared generation/lease/readiness behavior plus conversion of `BindException` and typed Kotlin bind failures to `LocalPortInUse`, bounded predecessor bind retry, and rejection of non-bind typed failures even when their message contains bind-like text.
+- `KotlinFrpcStcpVisitorClientTest` and the internal control, crypto, protocol, transport, yamux, and compression tests cover typed runtime failures, revision/control-epoch readiness, listener ownership and rebinding, v1/v2 visitor handshakes, all four `useEncryption`/`useCompression` combinations, coalesced handshake/payload reads, bounded relay lifecycle, delayed best-effort reset without blocking `stopVisitor` after local shutdown, session-owned permit release, Snappy framing and malformed-input limits, cleanup, cancellation, and secret-free diagnostics.
+- `SocketFrpLocalListenerFactoryTest` opens and actively closes a real loopback relay, then verifies that a fully stopped Kotlin generation can immediately rebind the same port while an active listener still retains exclusive ownership.
+- `FrpcStcpVisitorClientDifferentialContractTest` runs the same six public operations against a scripted GoMobile Kotlin adapter seam and an injectable pure Kotlin runtime fixture, comparing normalized phase/revision/epoch/listener/bind semantics, idempotency, replacement, typed bind conflict, cancellation identity, and safe diagnostics. It is a host-JVM adapter/runtime contract test: it neither loads the native AAR nor replaces real-frps/device interoperability testing.
+- `FrpcStcpVisitorAndroidInteropTest`, launched through `frpcAndroidInteropTest`, runs the real generated GoMobile AAR and the pure Kotlin backend in separate instrumentation processes. It fully stops the first session before the second backend reuses the same bind port, then verifies public readiness/state semantics, `/global/health`, global/project SSE, two concurrent echoes, two larger-than-window downloads, terminal close, and port release without an active-generation fallback.
+- `FrpcStcpVisitorSerializationContractTest`, `FrpcStcpVisitorFixtureContractTest`, and `FrpcStcpVisitorManagerContractTest` cover the implementable suspend bridge API and stable DTO defaults, field names, `Long` values, tolerant JSON, shared Go/Kotlin bridge DTO JSON, and safe summaries; Kotlin loading and integrity validation of the versioned canonical STCP manifest and small wire/control/yamux/payload bytes, including Go Snappy raw/framed and AES-CFB-plus-Snappy cross-language vectors plus declared chunk-plan and mutation-recipe metadata; and manager validation of native-ready results, session identity, runtime and terminal recovery, control-epoch rollback, final ensured bind ports, cleanup/replacement, and secret-free diagnostics.
 - `SensitiveValueToStringTest` verifies that network, domain, Store, feature, and UI value summaries omit synthetic credentials, URLs/endpoints, aliases, paths, prompts, Base64, SSE payloads, and tool output while preserving normal value-object behavior.
 - `OpenCodeContrastTest` enforces light/dark 4.5:1 text contrast and 3:1 graphical contrast across theme text, semantic Diff/Markdown/syntax/chart colors, status indicators, attachment scrims, selection borders, and `ControlBorder`.
 - `SessionRunningIndicatorTest` covers the 4-by-4 corner mask, independent 1-2 second dot timing, bounded phase offsets, accessible alpha and scale ranges, visible frame changes, varied initial frames, and seamless common-loop continuity.
@@ -59,11 +66,50 @@ macOS/Linux:
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
+This remains the ordinary minimum for small App changes; every such change is not required to build Canary. Also run `:app:testCanaryUnitTest` and `:app:assembleCanary` when changing STCP backend selection, the pure Kotlin backend, shared STCP manager integration, or CI/Release variant validation. The full bridge and CI-equivalent gate below always runs both App variants.
+
 Run focused tests during development by naming a test class, for example:
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest --tests "io.github.ycfeng.ocdeck.core.security.RedactorTest"
 ```
+
+## Fixed-frp STCP Interoperability
+
+Run the explicit host-JVM interoperability harness when either STCP backend, shared protocol/runtime code, or its CI integration changes:
+
+```powershell
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+```bash
+./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+The task is intentionally separate from `testDebugUnitTest`: ordinary unit tests do not download or execute external programs. It selects the repository-pinned official frp `v0.69.1` asset for Linux, Windows, or macOS on amd64/arm64, verifies its SHA-256 before every extraction, applies bounded traversal/link-safe extraction, verifies `frpc --version` and `frps --version`, and caches only the verified archive and executables under the Gradle user home. These test-only binaries are not committed, packaged into an APK/AAR, staged, or published.
+
+The harness starts loopback-only official `frps`, an official provider `frpc`, and a bounded synthetic OpenCode HTTP/SSE server with per-run credentials and TLS material. It covers wire v1/v2 and all four encryption/compression combinations; two live SSE streams concurrent with REST plus multiple incompressible uploads and downloads larger than the yamux initial window; wrong token, wrong STCP secret, and bind conflict; and frps restart with existing SSE interruption, control-epoch advance, and concurrent REST/SSE recovery. Logs, temporary configuration, process lifetime, archive input, sockets, and cleanup are bounded and redacted. This host gate does not replace Android-device validation.
+
+## Android STCP A/B Interoperability
+
+Build the generated GoMobile AAR first, then start a new Gradle invocation so the configuration-time bridge dependency is present. With exactly one authorized emulator/device, or with an explicit serial, run:
+
+```powershell
+.\frpc-stcp-visitor-go\build-aar.ps1
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true "-Pocdeck.frp.androidInterop.deviceSerial=<serial>"
+```
+
+```bash
+bash frpc-stcp-visitor-go/build-aar.sh
+./gradlew --no-daemon :frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true \
+  "-Pocdeck.frp.androidInterop.deviceSerial=<serial>"
+```
+
+The host coordinator provisions the same hash-pinned official frp v0.69.1 tools as `frpcInteropTest`, starts loopback-only TLS `frps`, provider `frpc`, and the bounded synthetic server, then creates one owned dynamic `adb reverse` mapping. It refuses an ambiguous device set, remote adb-server routing, and a pre-existing test package. Synthetic credentials are streamed over bounded stdin into the test package's private files directory and are never passed as Gradle properties or instrumentation arguments. Results contain only fixed structural fields; cleanup removes only the package, private files, and reverse mapping owned by that run.
+
+GoMobile runs first in a fresh instrumentation process. After `stopVisitor`, `stopSession`, terminal-state verification, and listener-port release, Kotlin runs in a second process and must rebind the same port. The phase-one device scenario is intentionally `wire=v1`, encryption off, and compression off; the host JVM harness remains responsible for wire v1/v2, all four payload modes, typed negative cases, and restart recovery. Device evidence must record API level, ABI, and page size. This gate does not cover performance, soak, Doze, foreground/background transitions, network switching, physical arm devices, or 16KB page-size hardware.
+
+The manual-only `.github/workflows/frpc-kotlin-android-interop.yml` runs the exact candidate SHA on API 26 and API 36 x86_64 emulators. Its report status is bound to the complete matrix result, and each lane records the actual Android test APK and GoMobile bridge AAR SHA-256 values. It uploads bounded English/Chinese acceptance reports, consolidated JSON evidence, and `SHA256SUMS`; it has read-only repository permission, no signing Environment or secrets, and does not authorize switching the formal backend default. Physical-device and long-running K6V evidence remain separate requirements.
 
 With an emulator or device connected, run the instrumentation suite:
 
@@ -84,46 +130,65 @@ cd build/frp-v0.69.1-p1
 go test -race ./client/...
 ```
 
-Return to the repository root, audit community/documentation and third-party/legal metadata, build the AAR, and run the Android gate:
+The first Go race scope, run from `frpc-stcp-visitor-go/`, automatically executes the canonical fixture check against `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` through the fixed oracle in `frpc-stcp-visitor-go/internal/contractfixture/`. The current `k0-go-oracle-v5` manifest has 34 entries, including v1 `LoginResp`, v1/v2 work/visitor messages, Go Snappy raw/framed output, the 65,536/65,537-byte framing boundary, and AES-CFB-plus-Snappy payload-order vectors. `go run ./cmd/preparefrp` must run first, as shown above. The existing root race-test command remains the CI gate; do not add a separate fixture-check command.
+
+The protocol fixtures do not replace runtime lifecycle tests. Initial-login failure cleanup, reconnect propagation of the prior RunID, invalidation of stale readiness after disconnect, and retry after a stop timeout remain covered by the existing Go wrapper and patched frp tests in the two race-test scopes above. The pinned runtime tracker also ignores visitor callbacks whose epoch is not the active control epoch; any change to that guard must add a focused downstream regression test.
+
+Return to the repository root, audit community/documentation and third-party/legal metadata, run the cross-checkout bridge reproducibility gate, and run the Android gate:
 
 ```bash
 python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
-bash frpc-stcp-visitor-go/build-aar.sh
-./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+bash .github/scripts/verify-bridge-reproducibility.sh
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
+
+The Go race detector requires CGO and a supported C compiler. If that toolchain is unavailable on Windows, run both Go race scopes under WSL or Linux; ordinary Windows Go tests do not replace the race gate. PowerShell also does not stop on a failing native process by default, so the sequence below uses a small fail-fast wrapper.
 
 On Windows PowerShell, run the equivalent sequence from the repository root:
 
 ```powershell
+$ErrorActionPreference = 'Stop'
+function Invoke-NativeChecked {
+    param([scriptblock]$Command)
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native command failed with exit code $LASTEXITCODE"
+    }
+}
+
 Push-Location .\frpc-stcp-visitor-go
-go run ./cmd/preparefrp
-go test -race -modfile=build/frp-patched.mod ./...
+Invoke-NativeChecked { go run ./cmd/preparefrp }
+Invoke-NativeChecked { go test -race '-modfile=build/frp-patched.mod' ./... }
 Push-Location .\build\frp-v0.69.1-p1
-go test -race ./client/...
+Invoke-NativeChecked { go test -race ./client/... }
 Pop-Location
 Pop-Location
 
-python .github/scripts/audit-community.py
-python .github/scripts/audit-third-party.py
-.\frpc-stcp-visitor-go\build-aar.ps1
-.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+Invoke-NativeChecked { python .github/scripts/audit-community.py }
+Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
+Invoke-NativeChecked { .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest }
+Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
+Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true }
 ```
+
+The reproducibility scripts require a clean checkout. On the current host platform, they build the current checkout plus a detached worktree at a different absolute path, isolate `GOCACHE`, `GOMODCACHE`, and `GOPATH` for each build, and compare the complete AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native-sidecar set byte-for-byte. They remove the temporary checkout and caches but leave the primary outputs in the current checkout for the Gradle gate. This is not a Windows-versus-Linux byte-identity claim. CI and Release use the shell script; Windows developers may run the PowerShell counterpart.
 
 The pinned Go, x/mobile, Android API, and NDK versions must come from `bridge-versions.properties`.
 
-The Release workflow builds the bridge twice and rejects non-reproducible output. Changes to the Go wrapper, downstream frp patch, Android bridge module, bridge API, failure handling, or version metadata require the complete bridge gate rather than only Android unit tests. A Kotlin-only bridge API or failure-handling change may leave generated AAR bytes and `BRIDGE_VERSION` unchanged, but it does not waive any gate above. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
+Changes to the Go wrapper, downstream frp patch, Android bridge module, either STCP backend, App backend selection, bridge API, failure handling, or version metadata require the fixed-frp interoperability task and complete bridge gate rather than only Android unit tests. The Android gate validates Debug/GoMobile and Canary/Kotlin selection and assembly together. A Kotlin-only bridge API or failure-handling change may leave generated AAR bytes and `BRIDGE_VERSION` unchanged, but it does not waive any gate above. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
 
 ## Security and Boundary Tests
 
 - Use synthetic credentials and assert that thrown errors, aliases, `toString()` output, logs, and UI-safe messages do not reveal them.
-- Assert that Repository, SSE, and snapshot failures retain semantic types, that UI copy comes from localized resources rather than exception strings, and that cancellation and JVM `Error` propagate.
+- Assert that Repository, SSE, and snapshot failures retain semantic types, that Kotlin runtime failures are mapped from their enum rather than exception text, that bind-conflict retry never parses messages, that UI copy comes from localized resources rather than exception strings, and that cancellation and JVM `Error` propagate.
 - For Retrofit methods, verify the explicit inbound mode, separate encoded and decoded exact limits, `max + 1`, unknown and understated lengths, real gzip/Bridge ordering, body close behavior, non-2xx zero-read handling, successful Unit-body discard, and no-`Invocation` bypass.
 - Cover the Direct cleartext-credential matrix: normalized remote/LAN `http://` plus a nonblank OpenCode username and new or retained password requires advisory confirmation; HTTPS, syntactic loopback, incomplete Basic credentials, SSH, and STCP do not. Test confirm, cancel, duplicate confirmation, frozen-request behavior, and classification without DNS.
 - Cover Provider secret submission separately: a new API key or custom-header value over Direct non-loopback HTTP requires one frozen confirmation, while HTTPS, syntactic loopback, SSH, and STCP do not. Assert that API keys and header values never enter Android persistence, public UI state, raw response logs, or `toString()` output.
 - Test Provider auth method parsing with unknown entries before supported entries so original wire indexes cannot be renumbered. OAuth tests retain directory/workspace and method index, reject unsafe browser URLs, cover code and cancellable auto callbacks, and never automatically retry stateful authorize/callback operations.
 - Test Custom Provider's disabled-stage, optional credential write, final enable, disable-before-auth-cleanup, partial/unknown outcomes, and deep-merge deletion restrictions. Config projections retain only safe identities and header names.
-- Test bounded readers at the exact limit and at `max + 1`; do not create giant committed fixture files.
+- Generate exact-limit and `max + 1` bodies in test code. Keep committed canonical STCP contract files small, synthetic, and deterministic; do not create giant fixture files.
 - Exercise cancellation, callback races, late results, generation changes, and unknown commit outcomes for network and credential state machines.
 - For HTTP errors that must not consume a body, test that the body remains unread.
 - For tolerant DTOs, include unknown fields and malformed optional subtrees while preserving valid surrounding data.

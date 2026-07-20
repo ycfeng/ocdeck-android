@@ -29,9 +29,13 @@ This English checklist is canonical. The Chinese document is a complete convenie
 - [ ] `go run ./cmd/preparefrp` completed with pinned inputs.
 - [ ] Outer wrapper and generated patched frp `client/...` race tests passed.
 - [ ] Community/documentation and third-party/legal inventory audits passed.
-- [ ] The GoMobile AAR was built twice from the same inputs with identical SHA-256.
-- [ ] AAR checksum, exact Java API, bridge/frp provenance, expected ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, embedded legal files, and sidecars passed.
-- [ ] `:app:testDebugUnitTest`, `:frpc-stcp-visitor:testDebugUnitTest`, `:app:assembleDebug`, and the required bridge gate passed.
+- [ ] `:frpc-stcp-visitor:frpcInteropTest` passed on the exact candidate with the pinned official frp asset, including wire v1/v2, all four payload modes, concurrent bidirectional larger-than-window traffic, live global/project SSE, negative cases, and restart/control-epoch recovery.
+- [ ] On one host platform, the bridge reproducibility gate built the clean candidate checkout and a detached checkout at a different absolute path with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`; the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar matched byte-for-byte.
+- [ ] AAR checksum, exact Java API, bridge/frp provenance, four-ABI BuildInfo module identities/versions/sums, local-path-free and cross-ABI graph-digest proof, expected ABIs, ELF machine, 16KB `PT_LOAD` alignment, stripped state, embedded legal files, and sidecars passed.
+- [ ] `:app:testDebugUnitTest`, `:app:testCanaryUnitTest`, `:frpc-stcp-visitor:testDebugUnitTest`, `:app:assembleDebug`, `:app:assembleCanary`, and the required bridge gate passed; variant factory tests confirmed Debug/GoMobile and Canary/Kotlin selection.
+- [ ] If this candidate is being evaluated for K7/Kotlin-default assembly, the manual `K6V Android STCP Interop` workflow ran against its exact full commit SHA; both API 26 and API 36 x86_64 lanes passed and the bilingual acceptance report is `Pass`. Otherwise this item is explicitly recorded as not applicable.
+- [ ] The K6V report limitations were reviewed: emulator evidence does not replace physical target-ABI and 16KB native loading, Doze/network and foreground/background transitions, the full wire/payload/restart matrix, performance, resource-leak, or soak evidence required before a Kotlin-default decision.
+- [ ] Canary APKs remained verification outputs only; Release signing and release staging used only the GoMobile-default `assembleRelease` outputs.
 - [ ] Signed Release APK verification passed for metadata, one signer, expected certificate fingerprint, ABI isolation, `apksigner`, `zipalign -P 16`, native-byte binding, legal assets, filenames, and `SHA256SUMS`.
 
 ## Physical Device and Connection Gates
@@ -69,7 +73,7 @@ Maintainers recorded passing external evidence for the checked `0.1.0` native-lo
 ## Tag Publication
 
 - [ ] Create and push exactly `v${VERSION_NAME}` only after all blocking gates pass.
-- [ ] `preflight`, `prepare-notes`, and `build-release` succeeded for the tag-triggered run.
+- [ ] `preflight`, `prepare-notes`, `frpc-interop`, and `build-release` succeeded for the tag-triggered run; the interop job remained outside the protected signing Environment.
 - [ ] The prepared notes artifact contains the bilingual preamble, curated version file, and GitHub-generated notes in that order without a duplicate `## Changes` heading.
 - [ ] `publish` downloaded the prepared notes and verified assets instead of regenerating either.
 - [ ] A `0.x` version was marked prerelease; `1.0.0` and later follow the normal release rule.

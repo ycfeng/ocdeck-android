@@ -7,6 +7,8 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorClient
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcVisitorReadyResult
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineName
@@ -21,6 +23,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import java.net.BindException
 import kotlin.math.min
 
 class FrpcStcpVisitorManager(
@@ -29,6 +32,7 @@ class FrpcStcpVisitorManager(
     private val readinessPolicy: FrpcStcpReadinessPolicy = FrpcStcpReadinessPolicy(),
     private val retryClassifier: FrpcStcpReadinessRetryClassifier = DefaultFrpcStcpReadinessRetryClassifier,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val monotonicTimeMillis: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     private val stateMutex = Mutex()
     private val slots = mutableMapOf<String, ServerSlot>()
@@ -65,7 +69,7 @@ class FrpcStcpVisitorManager(
         val nativeState = try {
             client.getState(candidate.second.sessionId)
         } catch (cancelled: CancellationException) {
-            throw cancelled
+            throw cancelled.fatalCauseOrNull() ?: cancelled
         } catch (exception: Exception) {
             exception.fatalCauseOrNull()?.let { throw it }
             return false
@@ -255,9 +259,10 @@ class FrpcStcpVisitorManager(
                     scheduleCleanup(state)
                 }
             } catch (cancellation: CancellationException) {
+                val fatal = cancellation.fatalCauseOrNull() ?: cancellation
                 state.sessionAssigned.complete(null)
-                failGeneration(state, cancellation)
-                throw cancellation
+                failGeneration(state, fatal)
+                throw fatal
             } catch (error: Error) {
                 state.sessionAssigned.complete(null)
                 failGeneration(state, error)
@@ -311,7 +316,7 @@ class FrpcStcpVisitorManager(
                     ready = ready,
                     visitorName = tunnel.visitorName,
                     desiredRevision = tunnel.desiredRevision,
-                    minimumControlEpoch = tunnel.controlEpoch,
+                    minimumControlEpoch = maxOf(tunnel.controlEpoch, nativeState.controlEpoch),
                 )
                 ensureCurrent(state)
                 val refreshedTunnel = tunnel.copy(controlEpoch = ready.boundControlEpoch)
@@ -334,8 +339,9 @@ class FrpcStcpVisitorManager(
                     ),
                 )
             } catch (cancellation: CancellationException) {
-                failGeneration(state, cancellation)
-                throw cancellation
+                val fatal = cancellation.fatalCauseOrNull() ?: cancellation
+                failGeneration(state, fatal)
+                throw fatal
             } catch (error: Error) {
                 failGeneration(state, error)
                 throw error
@@ -356,51 +362,94 @@ class FrpcStcpVisitorManager(
         config: ServerFrpcStcpVisitorConfig,
         credentials: FrpcStcpVisitorCredentials,
     ): NativeVisitorReady {
-        var remainingBindRetryMillis = if (state.predecessorClosed != null) {
-            readinessPolicy.predecessorBindRetryTimeoutMillis
-        } else {
-            0
+        val firstBindConflict = try {
+            return checkNotNull(
+                ensureNativeVisitorAttempt(state, sessionId, visitorName, config, credentials),
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation.fatalCauseOrNull() ?: cancellation
+        } catch (exception: Exception) {
+            exception.fatalCauseOrNull()?.let { throw it }
+            if (!exception.isLocalPortConflict()) throw exception
+            exception
         }
+        val retryTimeoutMillis = readinessPolicy.predecessorBindRetryTimeoutMillis
+        if (state.predecessorClosed == null || retryTimeoutMillis <= 0) throw firstBindConflict
+
+        val retryDeadlineMillis = saturatingDeadlineMillis(monotonicTimeMillis(), retryTimeoutMillis)
+        var lastBindConflict = firstBindConflict
         var retryDelayMillis = readinessPolicy.initialRetryDelayMillis
-        while (true) {
-            ensureCurrent(state)
-            try {
-                val ensured = client.ensureVisitor(
-                    sessionId = sessionId,
-                    visitor = FrpcStcpVisitorConfig(
-                        name = visitorName,
-                        serverName = config.serverName.trim(),
-                        serverUser = config.serverUser?.takeIf { it.isNotBlank() },
-                        secretKey = requireNotNull(credentials.secretKey),
-                        bindAddr = LOCAL_BIND_ADDR,
-                        bindPort = config.bindPort,
-                    ),
-                )
-                val ready = client.waitVisitorReady(
-                    sessionId = sessionId,
-                    visitorName = visitorName,
-                    desiredRevision = ensured.desiredRevision,
-                    timeoutMillis = readinessPolicy.nativeReadyTimeoutMillis,
-                )
-                validateNativeReady(ready, visitorName, ensured.desiredRevision, minimumControlEpoch = 1)
-                return NativeVisitorReady(
-                    bindPort = ensured.bindPort,
-                    desiredRevision = ensured.desiredRevision,
-                    controlEpoch = ready.boundControlEpoch,
-                )
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (exception: Exception) {
-                exception.fatalCauseOrNull()?.let { throw it }
-                if (!exception.isLocalPortConflict() || remainingBindRetryMillis <= 0) {
-                    throw exception
-                }
-                val delayMillis = min(retryDelayMillis, remainingBindRetryMillis)
-                delay(delayMillis)
-                remainingBindRetryMillis -= delayMillis
+        val retried: NativeVisitorReady? = withTimeoutOrNull(retryTimeoutMillis) {
+            var ready: NativeVisitorReady? = null
+            var budgetExpired = false
+            while (ready == null && !budgetExpired) {
+                delay(retryDelayMillis)
                 retryDelayMillis = min(retryDelayMillis * 2, readinessPolicy.maxRetryDelayMillis)
+                try {
+                    val attempted = ensureNativeVisitorAttempt(
+                        state,
+                        sessionId,
+                        visitorName,
+                        config,
+                        credentials,
+                        retryDeadlineMillis,
+                    )
+                    if (attempted == null) budgetExpired = true else ready = attempted
+                } catch (cancellation: CancellationException) {
+                    throw cancellation.fatalCauseOrNull() ?: cancellation
+                } catch (exception: Exception) {
+                    exception.fatalCauseOrNull()?.let { throw it }
+                    if (!exception.isLocalPortConflict()) throw exception
+                    lastBindConflict = exception
+                }
             }
+            ready
         }
+        return retried ?: throw lastBindConflict
+    }
+
+    private suspend fun ensureNativeVisitorAttempt(
+        state: GenerationState,
+        sessionId: String,
+        visitorName: String,
+        config: ServerFrpcStcpVisitorConfig,
+        credentials: FrpcStcpVisitorCredentials,
+        retryDeadlineMillis: Long? = null,
+    ): NativeVisitorReady? {
+        ensureCurrent(state)
+        val ensured = client.ensureVisitor(
+            sessionId = sessionId,
+            visitor = FrpcStcpVisitorConfig(
+                name = visitorName,
+                serverName = config.serverName.trim(),
+                serverUser = config.serverUser?.takeIf { it.isNotBlank() },
+                secretKey = requireNotNull(credentials.secretKey),
+                bindAddr = LOCAL_BIND_ADDR,
+                bindPort = config.bindPort,
+            ),
+        )
+        val readyTimeoutMillis = if (retryDeadlineMillis == null) {
+            readinessPolicy.nativeReadyTimeoutMillis
+        } else {
+            val remainingBudgetMillis = remainingUntilDeadlineMillis(
+                retryDeadlineMillis,
+                monotonicTimeMillis(),
+            )
+            if (remainingBudgetMillis <= 0) return null
+            min(readinessPolicy.nativeReadyTimeoutMillis, remainingBudgetMillis).coerceAtLeast(1L)
+        }
+        val ready = client.waitVisitorReady(
+            sessionId = sessionId,
+            visitorName = visitorName,
+            desiredRevision = ensured.desiredRevision,
+            timeoutMillis = readyTimeoutMillis,
+        )
+        validateNativeReady(ready, visitorName, ensured.desiredRevision, minimumControlEpoch = 1)
+        return NativeVisitorReady(
+            bindPort = ensured.bindPort,
+            desiredRevision = ensured.desiredRevision,
+            controlEpoch = ready.boundControlEpoch,
+        )
     }
 
     private suspend fun awaitApplicationReadiness(
@@ -435,7 +484,7 @@ class FrpcStcpVisitorManager(
                 }
                 return health
             } catch (cancellation: CancellationException) {
-                throw cancellation
+                throw cancellation.fatalCauseOrNull() ?: cancellation
             } catch (exception: Exception) {
                 exception.fatalCauseOrNull()?.let { throw it }
                 if (!retryClassifier.isRetryable(exception)) {
@@ -550,7 +599,7 @@ class FrpcStcpVisitorManager(
                 try {
                     client.stopSession(sessionId)
                 } catch (cancelled: CancellationException) {
-                    throw cancelled
+                    throw cancelled.fatalCauseOrNull() ?: cancelled
                 } catch (exception: Exception) {
                     exception.fatalCauseOrNull()?.let { throw it }
                     // A stale cleanup failure must not block the next generation.
@@ -730,7 +779,8 @@ private data class EpochRefreshPayload(
 
 private fun FrpcStcpVisitorState.isReadyFor(tunnel: FrpcStcpVisitorTunnel): Boolean {
     val visitor = visitors[tunnel.visitorName] ?: return false
-    return phase == "open" &&
+    return sessionId == tunnel.sessionId &&
+        phase == "open" &&
         controlEpoch == tunnel.controlEpoch &&
         visitor.desiredRevision == tunnel.desiredRevision &&
         visitor.phase == "ready" &&
@@ -743,9 +793,17 @@ private fun Throwable.toLocalPortConflict(localPort: Int): LocalPortInUseExcepti
     return LocalPortInUseException(localPort, this)
 }
 
-private fun Throwable.isLocalPortConflict(): Boolean = generateSequence(this) { it.cause }
-    .any { throwable ->
-        throwable is java.net.BindException || throwable.message.orEmpty().lowercase().let { message ->
-            "address already in use" in message || "eaddrinuse" in message
-        }
-    }
+private fun Throwable.isLocalPortConflict(): Boolean = causeChain().any { throwable ->
+    throwable is BindException ||
+        throwable is KotlinFrpcStcpVisitorException &&
+        throwable.failure == KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT
+}
+
+private fun saturatingDeadlineMillis(startMillis: Long, timeoutMillis: Long): Long =
+    if (startMillis > Long.MAX_VALUE - timeoutMillis) Long.MAX_VALUE else startMillis + timeoutMillis
+
+private fun remainingUntilDeadlineMillis(deadlineMillis: Long, nowMillis: Long): Long {
+    if (nowMillis >= deadlineMillis) return 0
+    val remainingMillis = deadlineMillis - nowMillis
+    return if (remainingMillis < 0) Long.MAX_VALUE else remainingMillis
+}

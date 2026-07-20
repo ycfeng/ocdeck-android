@@ -5,7 +5,7 @@ This directory is the manually maintained source and license inventory for OC De
 - `components.toml` records shipped Android/JVM families, build tooling relevant to redistribution, native Go modules compiled into the GoMobile bridge, and bundled assets.
 - `sources/opencode-audio.json` maps every bundled AAC file to the fixed OpenCode source commit and records local SHA-256 values.
 - `sources/opencode-ui-assets.json` maps verified OpenCode-derived Android vectors to fixed upstream source symbols and records local SHA-256 values.
-- `sources/frp.json` records the fixed frp upstream commit, module hashes, downstream patch hash, and all modified or added files.
+- `sources/frp.json` records the fixed frp upstream commit, module hashes, downstream patch hash, all modified or added files, and the six hash-pinned official release archives used only by the explicit interoperability test harness.
 - `sources/gradle-wrapper.json` records the Gradle distribution and wrapper JAR hashes.
 - `licenses/` contains the license texts needed by the inventoried components, including licenses for code embedded inside a dependency JAR.
 - The human-readable distribution notice is `../THIRD_PARTY_NOTICES.txt`.
@@ -13,7 +13,7 @@ This directory is the manually maintained source and license inventory for OC De
 
 ## Audit Basis
 
-The current inventory was reviewed for OC Deck `0.2.0` and bridge `0.3.7-frp0.69.1-p1` on 2026-07-19 using:
+The current inventory was reviewed for OC Deck `0.2.0` and bridge `0.3.8-frp0.69.1-p1` on 2026-07-19 using:
 
 ```powershell
 .\gradlew.bat :app:dependencies --configuration releaseRuntimeClasspath --console=plain
@@ -23,11 +23,10 @@ Four Android Go dependency walks are performed for `android/arm64`, `android/arm
 
 ```powershell
 python .github/scripts/audit-third-party.py
-```
-
-```powershell
 Get-FileHash -Algorithm SHA256 -LiteralPath <path>
 ```
+
+The fixed `build/frp-patched.mod` dependency walks remain the inventory-audit and wrapper race-test basis. Formal AAR construction separately generates a stable, versioned local Go module proxy and module graph. `cmd/checkaar` reads each ABI's Go BuildInfo, verifies fixed module identities, versions, and sums, rejects local paths, and requires one module-graph digest across all four ABIs. Schema-2 bridge provenance and native metadata bind that proof.
 
 The AndroidX entry uses resolved artifact-family selectors rather than pretending that one Maven coordinate represents the whole Jetpack graph. The separately packaged DataStore external protobuf artifact is recorded under BSD-3-Clause rather than being folded into the usual AndroidX Apache-2.0 family. The Go entries list the union of modules reached by all four Android Go targets above. `github.com/wlynxg/anet` is not inventoried as distributed upstream code because the build replaces it with OC Deck's local `internal/anetcompat` implementation.
 

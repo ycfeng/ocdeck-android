@@ -2,6 +2,8 @@ package io.github.ycfeng.ocdeck.core.network
 
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.GoMobileBridgeApiMismatchException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.GoMobileBridgeUnavailableException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
 import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -48,6 +50,65 @@ class OpenCodeFailureTest {
                 IllegalStateException("wrapper", GoMobileBridgeApiMismatchException()),
             ),
         )
+    }
+
+    @Test
+    fun kotlinFrpcRuntimeFailuresMapExhaustivelyWithoutReadingMessages() {
+        val cases = mapOf(
+            KotlinFrpcStcpVisitorFailure.INVALID_CONFIGURATION to OpenCodeFailure.OperationRejected(),
+            KotlinFrpcStcpVisitorFailure.UNSUPPORTED_CONFIGURATION to OpenCodeFailure.OperationRejected(),
+            KotlinFrpcStcpVisitorFailure.CLIENT_CLOSED to OpenCodeFailure.TransportChanged,
+            KotlinFrpcStcpVisitorFailure.SESSION_LIMIT to OpenCodeFailure.OperationRejected(),
+            KotlinFrpcStcpVisitorFailure.SESSION_NOT_FOUND to OpenCodeFailure.TransportChanged,
+            KotlinFrpcStcpVisitorFailure.SESSION_CLOSED to OpenCodeFailure.TransportChanged,
+            KotlinFrpcStcpVisitorFailure.MAILBOX_FULL to OpenCodeFailure.OperationRejected(),
+            KotlinFrpcStcpVisitorFailure.VISITOR_LIMIT to OpenCodeFailure.OperationRejected(),
+            KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT to
+                OpenCodeFailure.OperationRejected(OpenCodeOperationRejectionReason.LocalPortInUse),
+            KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED to OpenCodeFailure.OperationRejected(),
+            KotlinFrpcStcpVisitorFailure.CONTROL_FAILED to OpenCodeFailure.Unknown,
+            KotlinFrpcStcpVisitorFailure.VISITOR_FAILED to OpenCodeFailure.TransportChanged,
+            KotlinFrpcStcpVisitorFailure.VISITOR_NOT_FOUND to OpenCodeFailure.TransportChanged,
+            KotlinFrpcStcpVisitorFailure.VISITOR_SUPERSEDED to OpenCodeFailure.TransportChanged,
+            KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT to OpenCodeFailure.Timeout,
+            KotlinFrpcStcpVisitorFailure.RELAY_LIMIT to OpenCodeFailure.OperationRejected(),
+            KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_FAILED to OpenCodeFailure.Unknown,
+            KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_TIMEOUT to OpenCodeFailure.Timeout,
+            KotlinFrpcStcpVisitorFailure.RELAY_FAILED to OpenCodeFailure.NetworkUnavailable,
+            KotlinFrpcStcpVisitorFailure.STOP_TIMEOUT to OpenCodeFailure.Timeout,
+        )
+        assertEquals(KotlinFrpcStcpVisitorFailure.entries.toSet(), cases.keys)
+
+        cases.forEach { (runtimeFailure, expected) ->
+            val typed = KotlinFrpcStcpVisitorException(runtimeFailure)
+            val wrapped = MessageAccessFailsException(typed)
+
+            assertEquals(expected, OpenCodeFailureClassifier.classify(typed))
+            assertEquals(expected, OpenCodeFailureClassifier.classify(wrapped))
+            assertEquals(expected, OpenCodeFailureClassifier.toRequestException(wrapped).failure)
+        }
+    }
+
+    @Test
+    fun requestFailurePrecedesNestedKotlinFrpcRuntimeFailure() {
+        val expected = OpenCodeFailure.InvalidResponse
+        val requestFailure = OpenCodeRequestException(
+            expected,
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.RELAY_FAILED),
+        )
+
+        assertEquals(expected, OpenCodeFailureClassifier.classify(requestFailure))
+    }
+
+    @Test
+    fun causeChainStopsAtIdentityCycle() {
+        val first = IllegalStateException()
+        val second = IllegalArgumentException()
+        first.initCause(second)
+        second.initCause(first)
+
+        assertEquals(listOf(first, second), first.causeChain())
+        assertEquals(OpenCodeFailure.Unknown, OpenCodeFailureClassifier.classify(first))
     }
 
     @Test
@@ -116,4 +177,28 @@ class OpenCodeFailureTest {
             }
         }
     }
+
+    @Test
+    fun jvmErrorPrecedesEarlierCancellationInCauseChain() {
+        val fatal = AssertionError("fatal secret")
+        val cancellation = CancellationException("cancel secret").apply { initCause(fatal) }
+        val wrapped = IllegalStateException("wrapper", cancellation)
+
+        listOf<(Throwable) -> Unit>(
+            { OpenCodeFailureClassifier.classify(it) },
+            { OpenCodeFailureClassifier.toRequestException(it) },
+        ).forEach { classify ->
+            try {
+                classify(wrapped)
+                fail("Nested JVM Error was not propagated")
+            } catch (actual: Throwable) {
+                assertTrue(actual === fatal)
+            }
+        }
+    }
+}
+
+private class MessageAccessFailsException(cause: Throwable) : RuntimeException(null, cause) {
+    override val message: String?
+        get() = throw AssertionError("Throwable.message must not be read")
 }

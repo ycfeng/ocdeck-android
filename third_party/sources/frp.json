@@ -11,6 +11,43 @@
   "license": "Apache-2.0",
   "licenseFile": "third_party/licenses/Apache-2.0.txt",
   "modifiedBy": "OC Deck contributors",
+  "interopHarnessReleaseAssets": {
+    "purpose": "Pinned official binaries downloaded only by the explicit frpcInteropTest and frpcAndroidInteropTest harnesses; they are not App, APK, AAR, release, or repository-distributed assets.",
+    "version": "v0.69.1",
+    "baseUrl": "https://github.com/fatedier/frp/releases/download/v0.69.1/",
+    "assets": [
+      {
+        "platform": "linux_amd64",
+        "file": "frp_0.69.1_linux_amd64.tar.gz",
+        "sha256": "7be257b72dbbc60bcb3e0e25a5afd1dfac7b63f897084864d3c956dd3d5674e1"
+      },
+      {
+        "platform": "linux_arm64",
+        "file": "frp_0.69.1_linux_arm64.tar.gz",
+        "sha256": "bbc0c75e896af3f292fb46ba09c844a04fa9b5ea3530c039c7af20637f836355"
+      },
+      {
+        "platform": "windows_amd64",
+        "file": "frp_0.69.1_windows_amd64.zip",
+        "sha256": "829ac915f8655d4d4e021b8db61b46c3445205ed80d32b04cda7fa89d87c46e0"
+      },
+      {
+        "platform": "windows_arm64",
+        "file": "frp_0.69.1_windows_arm64.zip",
+        "sha256": "9b88e6eefc5d9ea2a1d5869026287e269e3d1486ac5bb08f7b4d2b26bdd6166d"
+      },
+      {
+        "platform": "darwin_amd64",
+        "file": "frp_0.69.1_darwin_amd64.tar.gz",
+        "sha256": "2bc26d02100ef333f2712149ea5997dc530dc0eefac64f4be41cb0f49d032f40"
+      },
+      {
+        "platform": "darwin_arm64",
+        "file": "frp_0.69.1_darwin_arm64.tar.gz",
+        "sha256": "310012e2f1dcf3cdde2605d29b95340b686c94d1680a23711d58efeffc02f64e"
+      }
+    ]
+  },
   "patches": [
     {
       "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p1/0001-transport-readiness.patch",

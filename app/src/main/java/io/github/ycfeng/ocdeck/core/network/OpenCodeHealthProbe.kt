@@ -66,7 +66,7 @@ fun interface FrpcStcpReadinessRetryClassifier {
 object DefaultFrpcStcpReadinessRetryClassifier : FrpcStcpReadinessRetryClassifier {
     override fun isRetryable(throwable: Throwable): Boolean {
         val causes = throwable.causeChain()
-        causes.firstOrNull { it is kotlinx.coroutines.CancellationException || it is Error }?.let { throw it }
+        throwable.fatalCauseOrNull()?.let { throw it }
         if (
             causes.any {
                 it is InboundPayloadTooLargeException ||

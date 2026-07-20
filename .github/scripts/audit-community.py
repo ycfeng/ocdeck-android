@@ -271,24 +271,31 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(workflow, dict), "release workflow must be an object")
     jobs = workflow.get("jobs")
     require(isinstance(jobs, dict), "release workflow has no jobs")
-    expected_jobs = {"preflight", "prepare-notes", "build-release", "publish"}
+    expected_jobs = {"preflight", "prepare-notes", "frpc-interop", "build-release", "publish"}
     require(expected_jobs <= set(jobs), "release workflow omits required jobs")
 
     preflight_job = jobs["preflight"]
     prepare_job = jobs["prepare-notes"]
+    interop_job = jobs["frpc-interop"]
     build_job = jobs["build-release"]
     publish_job = jobs["publish"]
     require(isinstance(preflight_job, dict), "preflight job must be an object")
     require(isinstance(prepare_job, dict), "prepare-notes job must be an object")
+    require(isinstance(interop_job, dict), "frpc-interop job must be an object")
     require(isinstance(build_job, dict), "build-release job must be an object")
     require(isinstance(publish_job, dict), "publish job must be an object")
     require(prepare_job.get("needs") == "preflight", "prepare-notes must depend on preflight")
-    require(build_job.get("needs") == "preflight", "build-release must depend on preflight")
+    require(interop_job.get("needs") == "preflight", "frpc-interop must depend on preflight")
+    build_needs = build_job.get("needs")
+    require(isinstance(build_needs, list), "build-release needs must be a list")
+    require(set(build_needs) == {"preflight", "frpc-interop"}, "build-release has unexpected dependencies")
     publish_needs = publish_job.get("needs")
     require(isinstance(publish_needs, list), "publish needs must be a list")
     require(set(publish_needs) == {"preflight", "prepare-notes", "build-release"}, "publish has unexpected dependencies")
     require("environment" not in prepare_job, "prepare-notes must not access the release environment")
+    require("environment" not in interop_job, "frpc-interop must not access the release environment")
     require(prepare_job.get("permissions", {}).get("contents") == "write", "prepare-notes needs scoped contents: write")
+    require(interop_job.get("permissions", {}).get("contents") == "read", "frpc-interop must remain read-only")
     require(build_job.get("permissions", {}).get("contents") == "read", "build-release must remain read-only")
     require(publish_job.get("permissions", {}).get("contents") == "write", "publish needs scoped contents: write")
 
@@ -307,6 +314,163 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(version_check_run, str), "Check version and tag must use a run script")
     require("check-release-version.sh" in version_check_run, "preflight does not run the release version check")
     require("git fetch" not in version_check_run, "preflight must rely on authenticated checkout instead of an unauthenticated fetch")
+
+    reproducibility_run = step_named(build_job, "Verify reproducible GoMobile bridge").get("run")
+    require(isinstance(reproducibility_run, str), "bridge reproducibility gate must use a run script")
+    require(
+        reproducibility_run.strip() == "bash .github/scripts/verify-bridge-reproducibility.sh",
+        "release workflow does not use the canonical cross-checkout bridge reproducibility gate",
+    )
+
+    ci_workflow = load_yaml(".github/workflows/ci.yml")
+    require(isinstance(ci_workflow, dict), "CI workflow must be an object")
+    ci_jobs = ci_workflow.get("jobs")
+    require(isinstance(ci_jobs, dict), "CI workflow has no jobs")
+    ci_verify_job = ci_jobs.get("verify")
+    ci_interop_job = ci_jobs.get("frpc-interop")
+    require(isinstance(ci_verify_job, dict), "CI workflow has no verify job")
+    require(isinstance(ci_interop_job, dict), "CI workflow has no frpc-interop job")
+    require("environment" not in ci_interop_job, "CI frpc-interop must not access an environment")
+    ci_reproducibility_steps = [
+        step
+        for step in ci_verify_job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == "Verify reproducible GoMobile bridge"
+    ]
+    require(len(ci_reproducibility_steps) == 1, "CI workflow must contain exactly one bridge reproducibility gate")
+    ci_reproducibility_run = ci_reproducibility_steps[0].get("run")
+    require(isinstance(ci_reproducibility_run, str), "CI bridge reproducibility gate must use a run script")
+    require(
+        ci_reproducibility_run.strip() == "bash .github/scripts/verify-bridge-reproducibility.sh",
+        "CI workflow does not use the canonical cross-checkout bridge reproducibility gate",
+    )
+    release_interop_run = step_named(interop_job, "Run fixed-frp interoperability tests").get("run")
+    ci_interop_steps = [
+        step
+        for step in ci_interop_job.get("steps", [])
+        if isinstance(step, dict) and step.get("name") == "Run fixed-frp interoperability tests"
+    ]
+    require(len(ci_interop_steps) == 1, "CI workflow must contain exactly one fixed-frp interop gate")
+    ci_interop_run = ci_interop_steps[0].get("run")
+    expected_interop_run = "bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest"
+    require(release_interop_run == expected_interop_run, "Release frpc-interop does not use the canonical task")
+    require(ci_interop_run == expected_interop_run, "CI frpc-interop does not use the canonical task")
+    build_step_text = "\n".join(
+        str(step.get("run", "")) for step in build_job.get("steps", []) if isinstance(step, dict)
+    )
+    require("frpcInteropTest" not in build_step_text, "signed build-release must not launch downloaded frp binaries")
+
+    android_workflow_path = ".github/workflows/frpc-kotlin-android-interop.yml"
+    android_workflow_text = read_text(android_workflow_path)
+    android_workflow = load_yaml(android_workflow_path)
+    require(isinstance(android_workflow, dict), "Android interop workflow must be an object")
+    android_trigger = android_workflow.get("on", android_workflow.get(True))
+    require(isinstance(android_trigger, dict), "Android interop workflow trigger must be an object")
+    require(set(android_trigger) == {"workflow_dispatch"}, "Android interop workflow must be manual-only")
+    dispatch = android_trigger.get("workflow_dispatch")
+    require(isinstance(dispatch, dict), "Android interop workflow_dispatch must define inputs")
+    dispatch_inputs = dispatch.get("inputs")
+    require(isinstance(dispatch_inputs, dict), "Android interop workflow has no inputs")
+    candidate_input = dispatch_inputs.get("candidate_sha")
+    require(isinstance(candidate_input, dict), "Android interop workflow has no candidate_sha input")
+    require(candidate_input.get("required") is True, "Android interop candidate_sha must be required")
+    require(candidate_input.get("type") == "string", "Android interop candidate_sha must be a string")
+    require(
+        android_workflow.get("permissions") == {"contents": "read"},
+        "Android interop workflow must have only read-only contents permission",
+    )
+    require("secrets." not in android_workflow_text, "Android interop workflow must not access secrets")
+    require("environment:" not in android_workflow_text, "Android interop workflow must not access an Environment")
+
+    android_jobs = android_workflow.get("jobs")
+    require(isinstance(android_jobs, dict), "Android interop workflow has no jobs")
+    require(
+        set(android_jobs) == {"preflight", "android-interop", "acceptance-report"},
+        "Android interop workflow has unexpected jobs",
+    )
+    android_preflight = android_jobs["preflight"]
+    android_matrix_job = android_jobs["android-interop"]
+    android_report_job = android_jobs["acceptance-report"]
+    for name, job in android_jobs.items():
+        require(isinstance(job, dict), f"Android interop job must be an object: {name}")
+        require("environment" not in job, f"Android interop job must not access an Environment: {name}")
+        permissions = job.get("permissions")
+        if permissions is not None:
+            require(
+                permissions == {"contents": "read"},
+                f"Android interop job must have only read-only contents permission: {name}",
+            )
+        for step in job.get("steps", []):
+            if isinstance(step, dict) and isinstance(step.get("uses"), str):
+                require(
+                    re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[0-9a-f]{40}", step["uses"]) is not None,
+                    f"Android interop action must be pinned to a full commit SHA: {name}",
+                )
+    require(android_matrix_job.get("needs") == "preflight", "Android interop matrix must depend on preflight")
+    report_needs = android_report_job.get("needs")
+    require(isinstance(report_needs, list), "Android interop report needs must be a list")
+    require(
+        set(report_needs) == {"preflight", "android-interop"},
+        "Android interop report has unexpected dependencies",
+    )
+    matrix = android_matrix_job.get("strategy", {}).get("matrix", {})
+    require(matrix.get("api-level") == [26, 36], "Android interop emulator matrix must cover API 26 and 36")
+    require(android_matrix_job.get("strategy", {}).get("fail-fast") is False, "Android interop matrix must not fail fast")
+
+    def android_step_named(job: dict[str, Any], name: str) -> dict[str, Any]:
+        steps = job.get("steps")
+        require(isinstance(steps, list), f"Android interop job has no steps: {name}")
+        matches = [step for step in steps if isinstance(step, dict) and step.get("name") == name]
+        require(len(matches) == 1, f"Android interop workflow must contain exactly one step named {name!r}")
+        return matches[0]
+
+    android_checkout = android_step_named(android_preflight, "Check out exact candidate").get("with")
+    require(isinstance(android_checkout, dict), "Android interop preflight checkout must define inputs")
+    require(
+        android_checkout.get("ref") == "${{ inputs.candidate_sha }}",
+        "Android interop preflight must check out candidate_sha",
+    )
+    require(
+        android_checkout.get("persist-credentials") is False,
+        "Android interop checkout must not persist credentials",
+    )
+    identity_run = android_step_named(android_preflight, "Verify candidate and workflow identity").get("run")
+    require(isinstance(identity_run, str), "Android interop identity check must use a run script")
+    for token in ("GITHUB_SHA", "WORKFLOW_SHA", "git rev-parse HEAD", "HEAD^{tree}"):
+        require(token in identity_run, f"Android interop identity check omits {token}")
+    sdk_run = android_step_named(android_matrix_job, "Install Android SDK and emulator image").get("run")
+    require(isinstance(sdk_run, str), "Android interop SDK setup must use a run script")
+    require(
+        "system-images;android-${API_LEVEL};default;x86_64" in sdk_run,
+        "Android interop workflow does not use the canonical x86_64 system image",
+    )
+    emulator_run = android_step_named(android_matrix_job, "Create and start clean emulator").get("run")
+    require(isinstance(emulator_run, str), "Android interop emulator setup must use a run script")
+    for token in ("runner already has an emulator attached", "EMULATOR_PORT=5554", '-port "$EMULATOR_PORT"'):
+        require(token in emulator_run, f"Android interop emulator ownership check omits {token}")
+    bridge_run = android_step_named(android_matrix_job, "Build pinned GoMobile bridge").get("run")
+    require(bridge_run == "bash frpc-stcp-visitor-go/build-aar.sh", "Android interop workflow does not build the pinned bridge")
+    android_interop_run = android_step_named(
+        android_matrix_job,
+        "Run real GoMobile then Kotlin Android interop",
+    ).get("run")
+    require(isinstance(android_interop_run, str), "Android interop gate must use a run script")
+    for token in (
+        ":frpc-stcp-visitor:frpcAndroidInteropTest",
+        "-PrequireGoMobileBridge=true",
+        "ocdeck.frp.androidInterop.deviceSerial",
+    ):
+        require(token in android_interop_run, f"Android interop gate omits {token}")
+    report_run = android_step_named(android_report_job, "Render bilingual exact-SHA report").get("run")
+    require(isinstance(report_run, str), "Android interop report must use a run script")
+    require(
+        "render-frpc-android-interop-report.py" in report_run,
+        "Android interop workflow does not use the canonical report renderer",
+    )
+    require("--matrix-result" in report_run, "Android interop report does not bind matrix status")
+    evidence_run = android_step_named(android_matrix_job, "Write bounded lane evidence").get("run")
+    require(isinstance(evidence_run, str), "Android interop evidence step must use a run script")
+    for token in ("testApkSha256", "bridgeAarSha256", "/proc/self/smaps"):
+        require(token in evidence_run, f"Android interop evidence omits {token}")
 
     assemble = step_named(prepare_job, "Assemble release notes")
     assemble_run = assemble.get("run")

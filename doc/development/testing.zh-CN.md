@@ -10,25 +10,32 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 
 | 层级 | 当前覆盖 |
 | --- | --- |
-| Kotlin/JVM 单元测试 | 路径与项目文件 URL、最近项目顺序/记录/重排回滚模型、会话窗口、通知/channel 策略、脱敏、Retrofit/direct encoded/decoded 与 identity-SSE 入站边界、类型化失败与本地化 UI 映射、安全 value 摘要、DTO 容错、Store revision、prompt/项目上下文状态与恢复、Provider auth/OAuth 与分阶段 custom-config 事务、服务器凭据事务、SSH/STCP 协调、对比度和 feature helper。 |
-| Go race tests | GoMobile wrapper 与生成的 patched frp client 包。 |
+| Kotlin/JVM 单元测试 | 路径与项目文件 URL、最近项目顺序/记录/重排回滚模型、会话窗口、通知/channel 策略、脱敏、Retrofit/direct encoded/decoded 与 identity-SSE 入站边界、类型化失败与本地化 UI 映射、STCP backend factory 选择、类型化 bind 重试、安全 value 摘要、DTO 容错、Store revision、prompt/项目上下文状态与恢复、Provider auth/OAuth 与分阶段 custom-config 事务、服务器凭据事务、SSH/STCP 协调及 Kotlin/GoMobile bridge 契约、对比度和 feature helper。 |
+| Go race tests | GoMobile wrapper、canonical STCP fixture oracle/check 与生成的 patched frp client 包。 |
 | 第三方与法律审计 | 固定版本、依赖清单、哈希、provenance、许可证和发布脚本引用。 |
-| Bridge 校验 | AAR checksum、Java API signature、bridge/frp provenance、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态和可复现性。 |
-| Android 构建 | 两个 Android 模块的单元测试和 Debug APK 构建。 |
-| Android instrumentation 测试 | 覆盖 Popup 与 modal bottom sheet 独立 Compose 窗口根的本地化，包括 Popup 保持打开时的原地语言切换。 |
+| Bridge 校验 | AAR 与必需的 sources JAR、checksum、Java API signature、bridge/frp provenance、四 ABI Go BuildInfo/module graph 证明、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态，以及完整制品/sidecar 集合在同一平台跨 checkout 的可复现性。 |
+| Android 构建 | App 的 Debug 与内部 Kotlin Canary 单元测试和 APK 构建，以及 `:frpc-stcp-visitor` 单元测试。 |
+| Android instrumentation 测试 | 覆盖 Popup 与 modal bottom sheet 独立 Compose 窗口根的本地化，以及 `:frpc-stcp-visitor` 中依次对真实 GoMobile 与 Kotlin backend 运行同一固定 frp 拓扑的 test-only harness。 |
 | 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目选择页与 Drawer 排序、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
 | Release 制品校验 | APK metadata、单 signer、预期证书指纹、ABI 隔离、`zipalign -P 16`、AAR native 字节绑定、内嵌法律文件、文件名和 checksum。 |
 | 真机验证 | 维护者已记录 `0.1.0` 发布门禁通过真机 native load/启动、16KB page-size native 运行，以及覆盖 `/global/health`、代表性 REST、全局/项目 SSE 和受控重连的真实 STCP 闭环。具体环境信息未公开；后续候选版本仍须重复执行这些门禁。 |
 
-`app/src/androidTest` 测试集目前覆盖独立窗口根的本地化，但 CI 尚无 emulator/instrumentation job。最近项目拖拽排序仍不在 instrumentation 覆盖范围内；其自动化覆盖主要来自下文列出的 JVM reducer、recorder、ViewModel 和 Drawer model 测试。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
+手动触发的 K6V workflow 已为 STCP backend 互操作提供 x86_64 emulator 门禁，但普通 CI 仍没有 App UI emulator/instrumentation job。`app/src/androidTest` 测试集覆盖独立窗口根的本地化。最近项目拖拽排序仍不在 instrumentation 覆盖范围内；其自动化覆盖主要来自下文列出的 JVM reducer、recorder、ViewModel 和 Drawer model 测试。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
 
 ## 聚焦测试清单
 
 - `RetrofitInboundResponsePolicyTest` 与 `EncodedResponseLimitInterceptorTest` 验证每个 `OpenCodeApi` 方法声明 `BOUNDED` 或 `EMPTY_SUCCESS`；缺少策略时在网络请求前失败；encoded/decoded 已声明、未知和低报长度都在 `max + 1` 执行各自 16 MiB 边界；真实 OkHttp gzip chain 在 Bridge 解码前执行 encoded 上限；非 2xx 与成功 Unit body 不读取即关闭；`/file/content` 保持延迟读取；没有 Retrofit `Invocation` 的请求绕过 Retrofit interceptor。
 - `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`FileContentResponseReaderTest` 覆盖无 body 的非 2xx 失败、OkHttp callback 线程 direct decode、encoded/decoded 精确/未知/低报长度、EOF 验证、取消与 callback race、session messages 独立 64 MiB 边界，以及 `/file/content` reader 层 decoded 纵深防御。
-- `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest` 覆盖不读取 `Throwable.message` 的语义分类、带操作 fallback 的本地化资源映射、Repository 传播、response-too-large 行为，以及取消与 JVM `Error` 传播。
+- `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest` 覆盖不读取 `Throwable.message` 的语义分类，包括将 `KotlinFrpcStcpVisitorFailure` enum 映射为 App failure 和本地端口拒绝；带操作 fallback 的本地化资源映射、Repository 传播、response-too-large 行为，以及取消与 JVM `Error` 传播。
 - `BoundedSseReaderTest`、`OkHttpSseEventSourceFactoryTest`、`OpenCodeEventClientLifecycleTest`、`ProjectSnapshotCoordinatorTest` 覆盖显式 identity encoding、非 identity 零读取拒绝、所有换行与 EOF 状态、32 MiB 行/event 边界、无 body status/MIME 失败、取消、重试分类、关闭终态、owner/generation/source/transport 竞态、project/global 权威切换、有界重放和快照失败/恢复。
 - `FrpcStcpReadinessRetryClassifierTest` 与 `GoMobileFrpcStcpVisitorClientTest` 覆盖 readiness 瞬时/永久失败、入站策略失败、typed unavailable/API mismatch bridge 错误、安全 bridge 摘要、API v2 JSON、revision/control epoch、`WaitVisitorReady`，以及反射取消/JVM `Error` 传播。
+- `FrpcStcpVisitorClientFactoryTest` 在两个 App variant 中运行，验证 Debug `BuildConfig` 选择 `GoMobileFrpcStcpVisitorClient`、Canary 选择 `KotlinFrpcStcpVisitorClient`，且显式 factory 可构造任一 backend，不存在运行时 fallback。
+- `FrpcStcpVisitorManagerTest` 覆盖共享 generation/lease/readiness 行为，以及将 `BindException` 和类型化 Kotlin bind failure 转换为 `LocalPortInUse`、有界前序 generation bind 重试，并确认非 bind 类型即使 message 含有类似 bind 的文字也不会被误判。
+- `KotlinFrpcStcpVisitorClientTest` 及内部 control、crypto、protocol、transport、yamux、compression 测试覆盖类型化 runtime failure、revision/control epoch readiness、listener 所有权与重绑、v1/v2 visitor handshake、`useEncryption`/`useCompression` 四种组合、握手与 payload 合并读取、有界 relay 生命周期、本地停止后延迟的 best-effort reset 不阻塞 `stopVisitor`、session-owned permit 释放、Snappy framing 与损坏输入边界、清理、取消和无 secret 诊断。
+- `SocketFrpLocalListenerFactoryTest` 建立并主动关闭真实 loopback relay，随后验证完整停止的 Kotlin generation 可立即重绑同一端口，而活动 listener 仍保持独占所有权。
+- `FrpcStcpVisitorClientDifferentialContractTest` 对脚本化 GoMobile Kotlin adapter seam 和可注入纯 Kotlin runtime fixture 执行相同六个公共操作，比较归一化的 phase/revision/epoch/listener/bind 语义、幂等、替换、类型化 bind conflict、取消身份和安全诊断。它是 host-JVM adapter/runtime 契约测试，不加载 native AAR，也不替代真实 frps/设备互操作测试。
+- `FrpcStcpVisitorAndroidInteropTest` 由 `frpcAndroidInteropTest` 启动，在相互独立的 instrumentation 进程中运行真实生成的 GoMobile AAR 与纯 Kotlin backend。第一条 session 完整停止后，第二个 backend 复用同一 bind port；测试通过公共契约验证 readiness/state、`/global/health`、全局/项目 SSE、两条并发 echo、两条超窗口下载、终态关闭和端口释放，不存在活动 generation 内 fallback。
+- `FrpcStcpVisitorSerializationContractTest`、`FrpcStcpVisitorFixtureContractTest` 与 `FrpcStcpVisitorManagerContractTest` 覆盖可实现的 suspend bridge API，以及稳定的 DTO 默认值、字段名、`Long` 值、容错 JSON、Go/Kotlin 共享 bridge DTO JSON 和安全摘要；Kotlin 对带版本 canonical STCP manifest 及小型 wire/control/yamux/payload 字节的加载与完整性校验，包括 Go Snappy raw/framed、AES-CFB 加 Snappy 跨语言向量以及声明的分块方案和 mutation recipe metadata；以及 manager 对 native-ready 结果、session 身份、运行时与终态恢复、control epoch 回退、最终 ensure bind port、清理/替换和无 secret 诊断的校验。
 - `SensitiveValueToStringTest` 验证 network、domain、Store、feature 和 UI value 摘要不暴露人工凭据、URL/endpoint、alias、路径、prompt、Base64、SSE payload 或 tool output，同时保持普通 value object 行为。
 - `OpenCodeContrastTest` 对浅色/深色主题执行 4.5:1 文字与 3:1 图形对比度门禁，覆盖主题文字、语义化 Diff/Markdown/语法/图表颜色、状态指示、附件遮罩、选择边框和 `ControlBorder`。
 - `SessionRunningIndicatorTest` 覆盖 4×4 四角遮罩、每个点独立的 1–2 秒节奏、有界相位偏移、满足无障碍要求的透明度与缩放范围、可见帧变化、差异化初始帧和公共循环的无缝连续性。
@@ -59,11 +66,50 @@ macOS/Linux：
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
+这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建 Canary。修改 STCP backend 选择、纯 Kotlin backend、共享 STCP manager 集成或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest` 与 `:app:assembleCanary`。下方完整 bridge/等价 CI 门禁始终运行两个 App variant。
+
 开发期间可按测试类运行聚焦测试，例如：
 
 ```powershell
 .\gradlew.bat :app:testDebugUnitTest --tests "io.github.ycfeng.ocdeck.core.security.RedactorTest"
 ```
+
+## 固定 frp STCP 互操作
+
+修改任一 STCP backend、共享协议/runtime 代码或其 CI 集成时，运行显式 host-JVM 互操作 harness：
+
+```powershell
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+```bash
+./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+```
+
+该任务刻意与 `testDebugUnitTest` 分离：普通单元测试不会下载或执行外部程序。任务会为 Linux、Windows 或 macOS 的 amd64/arm64 选择仓库固定的官方 frp `v0.69.1` asset，每次解压前校验 SHA-256，执行有界且防路径穿越/link 的安全解压，校验 `frpc --version` 与 `frps --version`，并只在 Gradle user home 中缓存已校验的 archive 与 executable。这些测试专用二进制不会提交、打进 APK/AAR、暂存或发布。
+
+Harness 会启动仅监听 loopback 的官方 `frps`、官方 provider `frpc` 和有界合成 OpenCode HTTP/SSE server，并为每次运行生成一次性凭据与 TLS 材料。它覆盖 wire v1/v2 与 encryption/compression 四种组合；两条长期 SSE 与 REST、多条不可压缩且超过 yamux 初始窗口的上下行大流并发；错误 token、错误 STCP secret、bind 冲突；以及 frps 重启时既有 SSE 中断、control epoch 前进和并发 REST/SSE 恢复。日志、临时配置、进程生命周期、archive 输入、socket 与清理均有界且脱敏。该 host 门禁不能替代 Android 真机验证。
+
+## Android STCP A/B 互操作
+
+先生成 GoMobile AAR，再启动新的 Gradle invocation，使配置期 bridge 依赖可见。连接恰好一个已授权 emulator/设备，或显式指定 serial 后运行：
+
+```powershell
+.\frpc-stcp-visitor-go\build-aar.ps1
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true "-Pocdeck.frp.androidInterop.deviceSerial=<serial>"
+```
+
+```bash
+bash frpc-stcp-visitor-go/build-aar.sh
+./gradlew --no-daemon :frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true \
+  "-Pocdeck.frp.androidInterop.deviceSerial=<serial>"
+```
+
+Host coordinator 与 `frpcInteropTest` 共用经哈希固定的官方 frp v0.69.1 工具，启动仅监听 loopback 的 TLS `frps`、provider `frpc` 与有界合成 server，并创建一条由本次运行拥有的动态 `adb reverse` 映射。它会拒绝设备集合不明确、远程 adb-server 路由以及预先安装的测试 package。人工合成凭据通过有界 stdin 写入测试 package 私有 files 目录，绝不作为 Gradle property 或 instrumentation argument 传递。结果只包含固定结构字段；清理只移除本次运行拥有的 package、私有文件与 reverse 映射。
+
+GoMobile 首先在新的 instrumentation 进程中运行。完成 `stopVisitor`、`stopSession`、终态校验与 listener 端口释放后，Kotlin 在第二个进程中运行并必须重绑同一端口。第一阶段设备场景固定为 `wire=v1`、关闭加密和关闭压缩；wire v1/v2、四种 payload 模式、类型化负例与重启恢复仍由 host JVM harness 负责。设备证据必须记录 API level、ABI 和 page size。该门禁不覆盖性能、soak、Doze、前后台切换、网络切换、arm 真机或 16KB page-size 硬件。
+
+仅手动触发的 `.github/workflows/frpc-kotlin-android-interop.yml` 会在 API 26 与 API 36 x86_64 emulator 上验证精确候选 SHA。报告状态绑定完整 matrix 结果，每个 lane 还会记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。Workflow 会上传有界的中英文验收报告、合并 JSON 证据和 `SHA256SUMS`；它只有仓库只读权限，不使用签名 Environment 或 secret，也不授权切换正式默认 backend。真机与长期 K6V 证据仍是独立要求。
 
 连接 emulator 或设备后，运行 instrumentation 测试集：
 
@@ -83,46 +129,65 @@ cd build/frp-v0.69.1-p1
 go test -race ./client/...
 ```
 
-返回仓库根目录后，审计社区/文档与第三方/法律 metadata、构建 AAR 并运行 Android 门禁：
+第一组 Go race 范围从 `frpc-stcp-visitor-go/` 运行，通过 `frpc-stcp-visitor-go/internal/contractfixture/` 中的固定 oracle，自动对 `frpc-stcp-visitor/src/test/resources/io/github/ycfeng/ocdeck/frpcstcpvisitor/contract/v1/` 执行 canonical fixture check。当前 `k0-go-oracle-v5` manifest 包含 34 个条目，包括 v1 `LoginResp`、v1/v2 work/visitor 消息、Go Snappy raw/framed 输出、65,536/65,537 字节 framing 边界，以及 AES-CFB 加 Snappy payload 顺序向量。必须像上面所示先运行 `go run ./cmd/preparefrp`。现有根级 race-test 命令继续作为 CI 门禁；不要增加独立 fixture-check 命令。
+
+协议 fixture 不替代运行时生命周期测试。首登失败清理、重连时传递先前 RunID、断线后使旧 readiness 失效，以及 stop timeout 后重试，继续由上述两组 race-test 范围中的现有 Go wrapper 与 patched frp 测试覆盖。固定的 runtime tracker 还会忽略 epoch 不等于当前活动 control epoch 的 visitor callback；若修改这项 guard，必须新增聚焦的 downstream 回归测试。
+
+返回仓库根目录后，审计社区/文档与第三方/法律 metadata，运行跨 checkout bridge 可复现门禁，再运行 Android 门禁：
 
 ```bash
 python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
-bash frpc-stcp-visitor-go/build-aar.sh
-./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+bash .github/scripts/verify-bridge-reproducibility.sh
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
+
+Go race detector 需要 CGO 与受支持的 C 编译器。如果 Windows 上没有该工具链，必须在 WSL 或 Linux 中运行两组 Go race tests；Windows 普通 Go 测试不能替代 race 门禁。PowerShell 默认也不会在 native 进程失败时停止，因此下面使用一个小型 fail-fast wrapper。
 
 在 Windows PowerShell 中，从仓库根目录运行等价序列：
 
 ```powershell
+$ErrorActionPreference = 'Stop'
+function Invoke-NativeChecked {
+    param([scriptblock]$Command)
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native command failed with exit code $LASTEXITCODE"
+    }
+}
+
 Push-Location .\frpc-stcp-visitor-go
-go run ./cmd/preparefrp
-go test -race -modfile=build/frp-patched.mod ./...
+Invoke-NativeChecked { go run ./cmd/preparefrp }
+Invoke-NativeChecked { go test -race '-modfile=build/frp-patched.mod' ./... }
 Push-Location .\build\frp-v0.69.1-p1
-go test -race ./client/...
+Invoke-NativeChecked { go test -race ./client/... }
 Pop-Location
 Pop-Location
 
-python .github/scripts/audit-community.py
-python .github/scripts/audit-third-party.py
-.\frpc-stcp-visitor-go\build-aar.ps1
-.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+Invoke-NativeChecked { python .github/scripts/audit-community.py }
+Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
+Invoke-NativeChecked { .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest }
+Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
+Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true }
 ```
+
+可复现脚本要求干净 checkout。它们会在当前主机平台构建当前 checkout，以及位于不同绝对路径的 detached worktree；两个构建分别隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较完整的 AAR、必需 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 集合。脚本会删除临时 checkout 与 cache，但保留当前 checkout 中的主构建输出供 Gradle 门禁使用。这不代表 Windows 与 Linux 之间的字节一致性声明。CI 与 Release 使用 shell 脚本；Windows 开发者可运行对应 PowerShell 脚本。
 
 固定 Go、x/mobile、Android API 与 NDK 版本必须来自 `bridge-versions.properties`。
 
-Release workflow 会连续构建两次 bridge，并拒绝不可复现输出。修改 Go wrapper、downstream frp patch、Android bridge 模块、bridge API、失败处理或版本 metadata 时，必须执行完整 bridge 门禁，不能只运行 Android 单元测试。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行固定 frp 互操作任务与完整 bridge 门禁，不能只运行 Android 单元测试。Android 门禁会同时验证 Debug/GoMobile 与 Canary/Kotlin 的选择和装配。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
 
 ## 安全与边界测试
 
 - 使用人工合成凭据，并断言异常、alias、`toString()`、日志和 UI 安全文案都不会泄露它们。
-- 断言 Repository、SSE 和快照失败保留语义类型，UI 文案来自本地化资源而非异常字符串，并且取消与 JVM `Error` 原样传播。
+- 断言 Repository、SSE 和快照失败保留语义类型，Kotlin runtime failure 根据 enum 而非异常文本映射，bind conflict 重试绝不解析 message，UI 文案来自本地化资源而非异常字符串，并且取消与 JVM `Error` 原样传播。
 - 对 Retrofit 方法验证显式入站模式、独立 encoded/decoded 精确上限、`max + 1`、未知与低报长度、真实 gzip/Bridge 顺序、body 关闭行为、非 2xx 零读取、成功 Unit body 丢弃和无 `Invocation` 绕过。
 - 覆盖直连明文凭据矩阵：规范化后的远端/LAN `http://` 地址同时具备非空白 OpenCode 用户名和新密码或保留密码时需要提示确认；HTTPS、纯语法 loopback、不完整 Basic 凭据、SSH 和 STCP 不触发。测试确认、取消、重复确认、冻结请求语义和无 DNS 分类。
 - 单独覆盖 Provider secret 提交：通过 Direct 非本机回环 HTTP 发送新 API key 或自定义 Header value 需要一次冻结确认；HTTPS、纯语法 loopback、SSH 和 STCP 不触发。断言 API key/Header value 不进入 Android 持久化、公开 UI state、原始响应日志或 `toString()`。
 - Provider auth method 解析测试应在受支持项前放入未知项，确保原始 wire index 不被重编号。OAuth 测试保持 directory/workspace 与 method index，拒绝不安全浏览器 URL，覆盖 code 与可取消 auto callback，且不自动重试有状态 authorize/callback。
 - 测试 Custom Provider 的 disabled 暂存、可选凭据写入、最终启用、先停用后清理 auth、partial/unknown outcome 与 deep-merge 删除限制；config 投影只保留安全身份和 Header 名。
-- 有界 reader 应测试精确上限和 `max + 1`；不要提交巨大的 fixture 文件。
+- 精确上限和 `max + 1` body 应在测试代码中生成。已提交的 canonical STCP 契约文件必须保持小型、合成且确定性；不要创建巨大的 fixture 文件。
 - 网络和凭据状态机应覆盖取消、callback race、迟到结果、generation 变化和 unknown commit outcome。
 - 对规定不能读取 body 的 HTTP 错误，应测试 body 确实未被消费。
 - DTO 容错测试应加入未知字段和损坏的可选子树，同时保留周围有效数据。

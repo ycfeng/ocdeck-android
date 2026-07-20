@@ -37,6 +37,7 @@ Select one expected label. These labels must be created and configured in GitHub
 - [ ] `:app:testDebugUnitTest` passed. / 已通过。
 - [ ] `:frpc-stcp-visitor:testDebugUnitTest` passed. / 已通过。
 - [ ] `:app:assembleDebug` passed. / 已通过。
+- [ ] When this change affects STCP backend selection/Kotlin implementation or variant automation, `:app:testCanaryUnitTest` and `:app:assembleCanary` passed; unrelated ordinary changes may mark this not applicable below. / 改动涉及 STCP backend 选择/Kotlin 实现或 variant 自动化时，已通过这两个 Canary 任务；无关的普通改动可在下方说明不适用。
 - [ ] I listed any test not run and the reason below. / 我已在下方列出未运行的测试及原因。
 
 <!-- Commands run and results / 已运行命令与结果 -->
@@ -59,11 +60,11 @@ Select one expected label. These labels must be created and configured in GitHub
 
 ## Bridge Gate / Bridge 门禁
 
-- [ ] Not applicable; this change does not touch the bridge, patched frp, or bridge version inputs. / 不适用；本改动不涉及 bridge、patched frp 或 bridge 版本输入。
+- [ ] Not applicable; this change does not touch either STCP backend, App backend selection, the bridge, patched frp, or bridge version inputs. / 不适用；本改动不涉及任一 STCP backend、App backend 选择、bridge、patched frp 或 bridge 版本输入。
 - [ ] `go run ./cmd/preparefrp` passed in `frpc-stcp-visitor-go/`. / 已通过。
 - [ ] Wrapper and patched frp client `go test -race` gates passed. / wrapper 与 patched frp client 的竞态测试已通过。
 - [ ] `build-aar.sh` or `build-aar.ps1` passed. / 已通过。
-- [ ] `:frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true` passed. / 已通过。
+- [ ] The full Gradle gate passed: `:frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true`. / 已通过完整 Gradle 门禁。
 - [ ] A bridge byte change uses a new bridge version and Maven coordinate. / bridge 字节变化已使用新的 bridge 版本与 Maven 坐标。
 
 ## Documentation and Third Parties / 文档与第三方

@@ -1,6 +1,7 @@
 package io.github.ycfeng.ocdeck.app
 
 import android.content.Context
+import io.github.ycfeng.ocdeck.BuildConfig
 import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityRegistry
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeNotificationChannelRegistry
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeSystemNotifier
@@ -32,11 +33,22 @@ import io.github.ycfeng.ocdeck.data.server.ServerRepository
 import io.github.ycfeng.ocdeck.domain.prompt.OpenCodePromptSender
 import io.github.ycfeng.ocdeck.domain.prompt.PromptOperationGate
 import io.github.ycfeng.ocdeck.domain.prompt.SessionOperationCoordinator
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorClient
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.GoMobileFrpcStcpVisitorClient
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
+
+internal fun createFrpcStcpVisitorClient(
+    json: Json,
+    useKotlinBackend: Boolean,
+): FrpcStcpVisitorClient = if (useKotlinBackend) {
+    KotlinFrpcStcpVisitorClient()
+} else {
+    GoMobileFrpcStcpVisitorClient(json)
+}
 
 class AppContainer(context: Context) {
     private val applicationContext = context.applicationContext
@@ -66,7 +78,10 @@ class AppContainer(context: Context) {
     val serverPreferencesStore = ServerPreferencesStore(applicationContext, json)
     val openCodeApiFactory = OpenCodeApiFactory(json, redactor)
     val frpcStcpVisitorManager = FrpcStcpVisitorManager(
-        client = GoMobileFrpcStcpVisitorClient(json),
+        client = createFrpcStcpVisitorClient(
+            json = json,
+            useKotlinBackend = BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR,
+        ),
         healthProbeFactory = DefaultOpenCodeHealthProbeFactory(openCodeApiFactory),
     )
     val serverRepository = ServerRepository(

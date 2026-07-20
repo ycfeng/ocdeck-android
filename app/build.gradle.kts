@@ -1,4 +1,5 @@
 import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
+import com.android.build.api.variant.HostTestBuilder
 import java.net.URI
 import java.util.Properties
 import org.gradle.api.tasks.Sync
@@ -122,6 +123,7 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         buildConfigField("String", "PROJECT_URL", "\"$escapedProjectUrl\"")
+        buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -166,6 +168,13 @@ android {
     }
 
     buildTypes {
+        create("canary") {
+            initWith(getByName("debug"))
+            matchingFallbacks += "debug"
+            applicationIdSuffix = ".canary"
+            versionNameSuffix = "-canary"
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
+        }
         release {
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
@@ -203,6 +212,9 @@ tasks.matching {
 }
 
 androidComponents {
+    beforeVariants(selector().withBuildType("canary")) { variantBuilder ->
+        variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
+    }
     onVariants { variant ->
         variant.outputs.forEach { output ->
             val abi = output.filters.find { it.filterType == ABI }?.identifier

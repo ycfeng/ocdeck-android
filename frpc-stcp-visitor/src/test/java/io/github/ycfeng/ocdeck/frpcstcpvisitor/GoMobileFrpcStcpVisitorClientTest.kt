@@ -1,6 +1,13 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor
 
+import java.net.BindException
 import java.util.concurrent.CancellationException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -142,6 +149,286 @@ class GoMobileFrpcStcpVisitorClientTest {
         )
 
         assertTrue(bridge.ensuredVisitorJson!!.contains("\"bindPort\":4096"))
+    }
+
+    @Test
+    fun ensureAndWaitSanitizeKnownLegacyBindFailures() = runTest {
+        val ensureMarker = "ensure-bind-detail-leak-marker"
+        val waitMarker = "wait-bind-detail-leak-marker"
+        val bridge = FakeBridge().apply {
+            ensureFailure = Exception("listen failed: address already in use: $ensureMarker")
+            readyFailure = Exception("listener failed: EADDRINUSE: $waitMarker")
+        }
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        val ensureFailure = suspendFailureOf {
+            client.ensureVisitor(
+                sessionId = "session-1",
+                visitor = FrpcStcpVisitorConfig(
+                    name = "visitor-1",
+                    serverName = "opencode",
+                    secretKey = "secret-value",
+                ),
+            )
+        }
+        val waitFailure = suspendFailureOf {
+            client.waitVisitorReady("session-1", "visitor-1", 1, 1_000)
+        }
+
+        assertSanitizedBindFailure(ensureFailure, ensureMarker)
+        assertSanitizedBindFailure(waitFailure, waitMarker)
+    }
+
+    @Test
+    fun ensureAndWaitPreserveNonBindFailureIdentity() = runTest {
+        val ensureFailure = IdentityBridgeException("ordinary ensure failure", Unit)
+        val waitFailure = IdentityBridgeException("ordinary wait failure", Unit)
+        val bridge = FakeBridge().apply {
+            this.ensureFailure = ensureFailure
+            readyFailure = waitFailure
+        }
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        assertSame(
+            ensureFailure,
+            suspendFailureOf {
+                client.ensureVisitor(
+                    sessionId = "session-1",
+                    visitor = FrpcStcpVisitorConfig(
+                        name = "visitor-1",
+                        serverName = "opencode",
+                        secretKey = "secret-value",
+                    ),
+                )
+            },
+        )
+        assertSame(
+            waitFailure,
+            suspendFailureOf {
+                client.waitVisitorReady("session-1", "visitor-1", 1, 1_000)
+            },
+        )
+    }
+
+    @Test
+    fun nestedCancellationAndJvmErrorPrecedeLegacyBindTranslation() = runTest {
+        val cancellation = CancellationException("nested cancellation")
+        val error = BridgeTestJvmError(Unit)
+        val bridge = FakeBridge().apply {
+            ensureFailure = IdentityBridgeException("address already in use", Unit).apply {
+                initCause(cancellation)
+            }
+            readyFailure = IdentityBridgeException("EADDRINUSE", Unit).apply {
+                initCause(error)
+            }
+        }
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        assertSame(
+            cancellation,
+            suspendFailureOf {
+                client.ensureVisitor(
+                    sessionId = "session-1",
+                    visitor = FrpcStcpVisitorConfig(
+                        name = "visitor-1",
+                        serverName = "opencode",
+                        secretKey = "secret-value",
+                    ),
+                )
+            },
+        )
+        assertSame(
+            error,
+            suspendFailureOf {
+                client.waitVisitorReady("session-1", "visitor-1", 1, 1_000)
+            },
+        )
+    }
+
+    @Test
+    fun cyclicOrdinaryCauseChainTerminatesBeforeLegacyBindTranslation() = runTest {
+        val marker = "cyclic-bind-detail-leak-marker"
+        val first = IdentityBridgeException("address already in use: $marker", Unit)
+        val second = IdentityBridgeException("ordinary nested failure", Unit)
+        first.initCause(second)
+        second.initCause(first)
+        val bridge = FakeBridge().apply { ensureFailure = first }
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        val failure = suspendFailureOf {
+            client.ensureVisitor(
+                sessionId = "session-1",
+                visitor = FrpcStcpVisitorConfig(
+                    name = "visitor-1",
+                    serverName = "opencode",
+                    secretKey = "secret-value",
+                ),
+            )
+        }
+
+        assertSanitizedBindFailure(failure, marker)
+    }
+
+    @Test
+    fun ensureAndWaitPreserveCancellationAndJvmErrorIdentity() = runTest {
+        val ensureCancellation = BridgeTestCancellationException("ensure cancellation", Unit)
+        val ensureError = BridgeTestJvmError(Unit)
+        val waitCancellation = BridgeTestCancellationException("wait cancellation", Unit)
+        val waitError = BridgeTestJvmError(Unit)
+        val bridge = FakeBridge()
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        bridge.ensureFailure = ensureCancellation
+        assertSame(
+            ensureCancellation,
+            suspendFailureOf {
+                client.ensureVisitor(
+                    sessionId = "session-1",
+                    visitor = FrpcStcpVisitorConfig(
+                        name = "visitor-1",
+                        serverName = "opencode",
+                        secretKey = "secret-value",
+                    ),
+                )
+            },
+        )
+        bridge.ensureFailure = ensureError
+        assertSame(
+            ensureError,
+            suspendFailureOf {
+                client.ensureVisitor(
+                    sessionId = "session-1",
+                    visitor = FrpcStcpVisitorConfig(
+                        name = "visitor-1",
+                        serverName = "opencode",
+                        secretKey = "secret-value",
+                    ),
+                )
+            },
+        )
+        bridge.readyFailure = waitCancellation
+        assertSame(
+            waitCancellation,
+            suspendFailureOf {
+                client.waitVisitorReady("session-1", "visitor-1", 1, 1_000)
+            },
+        )
+        bridge.readyFailure = waitError
+        assertSame(
+            waitError,
+            suspendFailureOf {
+                client.waitVisitorReady("session-1", "visitor-1", 1, 1_000)
+            },
+        )
+    }
+
+    @Test
+    fun callerCancellationDoesNotHideConcurrentBridgeJvmError() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val fatal = BridgeTestJvmError(Unit)
+        val bridge = FakeBridge().apply {
+            beforeEnsure = {
+                entered.countDown()
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw AssertionError("Timed out waiting to release bridge failure")
+                }
+            }
+            ensureFailure = fatal
+        }
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        supervisorScope {
+            val call = async(start = CoroutineStart.UNDISPATCHED) {
+                client.ensureVisitor(
+                    sessionId = "session-1",
+                    visitor = FrpcStcpVisitorConfig(
+                        name = "visitor-1",
+                        serverName = "opencode",
+                        secretKey = "secret-value",
+                    ),
+                )
+            }
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                call.cancel(CancellationException("caller cancellation"))
+            } finally {
+                release.countDown()
+            }
+
+            assertSame(fatal, suspendFailureOf { call.await() })
+        }
+    }
+
+    @Test
+    fun callerCancellationPrecedesConcurrentOrdinaryAndLegacyBindFailures() = runBlocking {
+        listOf(
+            IdentityBridgeException("ordinary late failure", Unit),
+            IdentityBridgeException("address already in use", Unit),
+        ).forEach { bridgeFailure ->
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val cancellation = BridgeTestCancellationException("caller cancellation", Unit)
+            val bridge = FakeBridge().apply {
+                beforeEnsure = {
+                    entered.countDown()
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw AssertionError("Timed out waiting to release bridge failure")
+                    }
+                }
+                ensureFailure = bridgeFailure
+            }
+            val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+            supervisorScope {
+                val call = async(start = CoroutineStart.UNDISPATCHED) {
+                    client.ensureVisitor(
+                        sessionId = "session-1",
+                        visitor = FrpcStcpVisitorConfig(
+                            name = "visitor-1",
+                            serverName = "opencode",
+                            secretKey = "secret-value",
+                        ),
+                    )
+                }
+                try {
+                    assertTrue(entered.await(5, TimeUnit.SECONDS))
+                    call.cancel(cancellation)
+                } finally {
+                    release.countDown()
+                }
+
+                assertSame(cancellation, suspendFailureOf { call.await() })
+            }
+        }
+    }
+
+    @Test
+    fun nestedJvmErrorPrecedesEarlierCancellationInBridgeCauseChain() = runTest {
+        val fatal = BridgeTestJvmError(Unit)
+        val cancellation = BridgeTestCancellationException("nested cancellation", Unit).apply {
+            initCause(fatal)
+        }
+        val bridge = FakeBridge().apply {
+            ensureFailure = IdentityBridgeException("address already in use", Unit).apply {
+                initCause(cancellation)
+            }
+        }
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        assertSame(
+            fatal,
+            suspendFailureOf {
+                client.ensureVisitor(
+                    sessionId = "session-1",
+                    visitor = FrpcStcpVisitorConfig(
+                        name = "visitor-1",
+                        serverName = "opencode",
+                        secretKey = "secret-value",
+                    ),
+                )
+            },
+        )
     }
 
     @Test
@@ -411,6 +698,9 @@ class GoMobileFrpcStcpVisitorClientTest {
         val readyCalls = mutableListOf<ReadyCall>()
         val stoppedVisitors = mutableListOf<Pair<String, String>>()
         val stoppedSessions = mutableListOf<Pair<String, Long>>()
+        var ensureFailure: Throwable? = null
+        var readyFailure: Throwable? = null
+        var beforeEnsure: (() -> Unit)? = null
 
         override fun startSession(configJson: String): String {
             startedConfigJson = configJson
@@ -418,6 +708,8 @@ class GoMobileFrpcStcpVisitorClientTest {
         }
 
         override fun ensureVisitor(sessionId: String, visitorJson: String): String {
+            beforeEnsure?.invoke()
+            ensureFailure?.let { throw it }
             ensuredSessionId = sessionId
             ensuredVisitorJson = visitorJson
             return ensureJson
@@ -429,6 +721,7 @@ class GoMobileFrpcStcpVisitorClientTest {
             desiredRevision: Long,
             timeoutMillis: Long,
         ): String {
+            readyFailure?.let { throw it }
             readyCalls += ReadyCall(sessionId, visitorName, desiredRevision, timeoutMillis)
             return readyJson
         }
@@ -463,10 +756,31 @@ class GoMobileFrpcStcpVisitorClientTest {
         }
     }
 
+    private class IdentityBridgeException(
+        message: String,
+        @Suppress("UNUSED_PARAMETER") identity: Unit,
+    ) : Exception(message)
+
+    private class BridgeTestCancellationException(
+        message: String,
+        @Suppress("UNUSED_PARAMETER") identity: Unit,
+    ) : CancellationException(message)
+
+    private class BridgeTestJvmError(
+        @Suppress("UNUSED_PARAMETER") identity: Unit,
+    ) : Error()
+
     private fun assertOmits(summary: String, vararg sensitiveValues: String) {
         sensitiveValues.forEach { sensitiveValue ->
             assertFalse("Summary leaked sensitive data", summary.contains(sensitiveValue))
         }
+    }
+
+    private fun assertSanitizedBindFailure(failure: Throwable, sensitiveValue: String) {
+        assertTrue(failure is BindException)
+        assertNull(failure.message)
+        assertNull(failure.cause)
+        assertOmits(failure.toString(), sensitiveValue, "address already in use", "eaddrinuse")
     }
 
     private fun failureOf(block: () -> Unit): Throwable {
