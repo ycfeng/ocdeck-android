@@ -1381,6 +1381,7 @@ class KotlinFrpcStcpVisitorClientTest {
     fun relayCancellationAfterConsumedPumpNotificationDoesNotLoseCompletion() = runBlocking {
         val notificationReceived = CompletableDeferred<Unit>()
         val blockCoordinator = CompletableDeferred<Unit>()
+        val closeWriteRelease = CompletableDeferred<Unit>()
         val parentScope = newParentScope()
         val control = FakeSessionControl(
             generation = 1L,
@@ -1390,7 +1391,11 @@ class KotlinFrpcStcpVisitorClientTest {
         )
         val identity = control.open(epoch = 1L, transport = 1L)
         val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
-        val stream = ScriptedMuxStream(response)
+        val stream = ScriptedMuxStream(
+            inputBytes = response,
+            closeWriteRelease = closeWriteRelease,
+            closeWriteFailure = FrpTransportException(FrpTransportFailure.CLOSED),
+        )
         control.enqueueStream(stream)
         val relay = FrpVisitorRelay(
             visitorRevision = 1L,
@@ -1415,13 +1420,70 @@ class KotlinFrpcStcpVisitorClientTest {
         try {
             relay.start()
             withTimeout(5_000L) { notificationReceived.await() }
+            withTimeout(5_000L) { stream.closeWriteStarted.await() }
 
             relay.close()
+            closeWriteRelease.complete(Unit)
 
             withTimeout(1_000L) { relay.awaitStopped() }
             assertEquals(1, stream.resetCount.get())
         } finally {
             blockCoordinator.complete(Unit)
+            closeWriteRelease.complete(Unit)
+            relay.close()
+            control.releaseStop()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun relayCloseAfterOrdinaryFailureClassificationStillReportsRelayFailure() = runBlocking {
+        val failureClassified = CompletableDeferred<Unit>()
+        val releaseClassification = CompletableDeferred<Unit>()
+        val remoteReadRelease = CompletableDeferred<Unit>()
+        val parentScope = newParentScope()
+        val control = FakeSessionControl(
+            generation = 1L,
+            protocol = FrpWireProtocol.V1,
+            parentScope = parentScope,
+            stopRelease = null,
+        )
+        val identity = control.open(epoch = 1L, transport = 1L)
+        val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
+        val stream = ScriptedMuxStream(response, afterInputRelease = remoteReadRelease)
+        control.enqueueStream(stream)
+        val relay = FrpVisitorRelay(
+            visitorRevision = 1L,
+            listenerAttempt = 1L,
+            control = control,
+            identity = identity,
+            visitor = FrpRelayVisitorConfig(
+                serverName = "remote-service",
+                serverUser = "",
+                sessionUser = "",
+                secretKey = SYNTHETIC_SECRET,
+            ),
+            local = ZeroReadLocalConnection(),
+            parentScope = parentScope,
+            unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+            ioDispatcher = Dispatchers.IO,
+            afterOrdinaryPumpFailureClassified = {
+                failureClassified.complete(Unit)
+                releaseClassification.await()
+            },
+        )
+        try {
+            relay.start()
+            withTimeout(5_000L) { failureClassified.await() }
+
+            relay.close()
+            releaseClassification.complete(Unit)
+
+            val failure = captureRuntimeFailure { relay.awaitStopped() }
+            assertEquals(KotlinFrpcStcpVisitorFailure.RELAY_FAILED, failure.failure)
+        } finally {
+            releaseClassification.complete(Unit)
+            remoteReadRelease.complete(Unit)
             relay.close()
             control.releaseStop()
             parentScope.cancel()
@@ -2508,6 +2570,7 @@ private class ScriptedMuxStream(
     private val afterInputResult: Int = -1,
     private val afterInputFailure: Throwable? = null,
     private val closeWriteRelease: CompletableDeferred<Unit>? = null,
+    private val closeWriteFailure: Throwable? = null,
     private val resetRelease: CompletableDeferred<Unit>? = null,
     private val resetFailure: Throwable? = null,
 ) : FrpMuxStream {
@@ -2550,6 +2613,7 @@ private class ScriptedMuxStream(
         closeWriteRelease?.let { release ->
             withContext(NonCancellable) { release.await() }
         }
+        closeWriteFailure?.let { throw it }
     }
 
     override suspend fun reset() {

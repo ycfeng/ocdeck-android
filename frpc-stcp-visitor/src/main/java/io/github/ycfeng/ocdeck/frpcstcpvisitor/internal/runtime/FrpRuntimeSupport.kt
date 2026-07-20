@@ -336,6 +336,7 @@ internal class FrpVisitorRelay(
     private val unixTimeSource: FrpUnixTimeSource,
     private val ioDispatcher: CoroutineDispatcher,
     private val afterPumpOutcomeReceived: suspend () -> Unit = {},
+    private val afterOrdinaryPumpFailureClassified: suspend () -> Unit = {},
 ) {
     private val closeStarted = AtomicBoolean(false)
     private val activeLease = AtomicReference<FrpClientStreamLease?>()
@@ -718,7 +719,9 @@ internal class FrpVisitorRelay(
         } catch (failure: Error) {
             selectedFailure = preferRelayFatal(selectedFailure, failure)
         } catch (failure: Exception) {
-            selectedFailure = preferRelayFatal(selectedFailure, failure)
+            classifyOrdinaryRelayIoFailure(failure)?.let { classified ->
+                selectedFailure = preferRelayFatal(selectedFailure, classified)
+            }
         } finally {
             buffer.fill(0)
             remoteOutput?.let { output ->
@@ -729,12 +732,22 @@ internal class FrpVisitorRelay(
                 } catch (failure: Error) {
                     selectedFailure = preferRelayFatal(selectedFailure, failure)
                 } catch (failure: Exception) {
-                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                    classifyOrdinaryRelayIoFailure(failure)?.let { classified ->
+                        selectedFailure = preferRelayFatal(selectedFailure, classified)
+                    }
                 }
             }
         }
         selectedFailure?.let { throw it }
-        lease.stream.closeWrite()
+        try {
+            lease.stream.closeWrite()
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Error) {
+            throw failure
+        } catch (failure: Exception) {
+            classifyOrdinaryRelayIoFailure(failure)?.let { throw it }
+        }
     }
 
     private suspend fun copyRemoteToLocal(baseInput: InputStream) {
@@ -756,7 +769,9 @@ internal class FrpVisitorRelay(
         } catch (failure: Error) {
             selectedFailure = preferRelayFatal(selectedFailure, failure)
         } catch (failure: Exception) {
-            selectedFailure = preferRelayFatal(selectedFailure, failure)
+            classifyOrdinaryRelayIoFailure(failure)?.let { classified ->
+                selectedFailure = preferRelayFatal(selectedFailure, classified)
+            }
         } finally {
             buffer.fill(0)
             remoteInput?.let { input ->
@@ -767,12 +782,33 @@ internal class FrpVisitorRelay(
                 } catch (failure: Error) {
                     selectedFailure = preferRelayFatal(selectedFailure, failure)
                 } catch (failure: Exception) {
-                    selectedFailure = preferRelayFatal(selectedFailure, failure)
+                    classifyOrdinaryRelayIoFailure(failure)?.let { classified ->
+                        selectedFailure = preferRelayFatal(selectedFailure, classified)
+                    }
                 }
             }
         }
         selectedFailure?.let { throw it }
-        runInterruptible(ioDispatcher) { local.shutdownOutput() }
+        try {
+            runInterruptible(ioDispatcher) { local.shutdownOutput() }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Error) {
+            throw failure
+        } catch (failure: Exception) {
+            classifyOrdinaryRelayIoFailure(failure)?.let { throw it }
+        }
+    }
+
+    private suspend fun classifyOrdinaryRelayIoFailure(
+        failure: Exception,
+    ): KotlinFrpcStcpVisitorException? {
+        // Closing the local endpoint and lease can wake blocked I/O with an ordinary failure.
+        if (closeStarted.get()) return null
+        val classified = failure as? KotlinFrpcStcpVisitorException
+            ?: KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.RELAY_FAILED)
+        withContext(NonCancellable) { afterOrdinaryPumpFailureClassified() }
+        return classified
     }
 
     private fun createRemoteOutput(baseOutput: OutputStream): OutputStream {
