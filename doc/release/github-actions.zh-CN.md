@@ -21,7 +21,7 @@
 
 工作流不生成 universal APK、AAB 或 Play 上传制品。GitHub 侧载用户应下载与设备 ABI 对应的 APK。
 
-内部 `canary` 构建仅是验证 variant。它继承 Debug，使用 application ID suffix `.canary` 与 version name suffix `-canary`，并通过 `BuildConfig` 选择纯 Kotlin STCP backend。CI 与 Release 自动化会测试并 assemble Canary，但绝不应用 Release 签名，也不会暂存或发布 Canary APK；正式 `release` 继续默认使用 GoMobile。
+内部 `canary` 与 `kotlinRelease` 构建仅是验证 variant。Canary 继承 Debug，使用 application ID suffix `.canary` 与 version name suffix `-canary`，并通过 `BuildConfig` 选择纯 Kotlin STCP backend。Kotlin Release-Like 继承正式 Release 配置，使用 `.kotlinrelease` 与 `-kotlin-release` suffix，选择同一个 Kotlin backend，并使用标准 Android Debug 测试证书进行 Release-mode 真机测试。CI 与 Release 自动化会测试并 assemble 两个 variant，但绝不应用 Release 签名，也不会暂存或发布其 APK；正式 `release` 继续默认使用 GoMobile。
 
 应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.2.0` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
 
@@ -50,9 +50,9 @@ VERSION_NAME=0.2.0
 2. 在独立只读 job 中运行 `:frpc-stcp-visitor:frpcInteropTest`。任务只下载当前主机对应、由仓库固定并经哈希校验的官方 frp `v0.69.1` archive，安全解压 `frpc`/`frps`，并覆盖 wire v1/v2、四种 payload 模式、并发双向超窗口流、REST 与长期 global/project SSE、类型化负例、TLS 以及重启/control epoch 恢复。
 3. 运行外层 Go race tests，并在生成的 frp module 中单独运行 `client/...` race tests。
 4. 在 Ubuntu runner 上运行 canonical shell 可复现门禁。它会构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；校验法律/API/provenance/native metadata 和四 ABI 固定且无本地路径的 Go BuildInfo module graph；并逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
-5. 执行 bridge AAR 门禁、App 的 Debug 与 Canary 单元测试、`:frpc-stcp-visitor` 单元测试，以及 Debug 与 Canary APK 构建。
+5. 执行 bridge AAR 门禁、App 的 Debug、Canary 与 Kotlin Release-Like 单元测试、`:frpc-stcp-visitor` 单元测试，以及三个验证 APK 构建。
 
-Debug factory 测试确认 GoMobile 默认选择，Canary factory 测试确认纯 Kotlin 选择。由于两种实现位于同一个 Android library，Canary 仍可能打包 Go native 字节；门禁验证的是 App 实际装配，而不是断言安装包不存在 native 字节。
+Debug factory 测试确认 GoMobile 默认选择，Canary 与 Kotlin Release-Like factory 测试确认纯 Kotlin 选择。由于两种实现位于同一个 Android library，两个 Kotlin 验证 APK 都仍可能打包 Go native 字节；门禁验证的是 App 实际装配，而不是断言安装包不存在 native 字节。
 
 K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.workflow_sha` 与检出的 `HEAD` 指向同一 commit。该 workflow 进入默认分支后可直接手动触发。首次引入时，手动触发 `CI` 并设置 `run_frpc_android_interop=true`，同时可选填写精确 `candidate_sha`；留空时使用所触发 ref 的 SHA，并调用同一个分支内 reusable workflow。普通 push 与 Pull Request CI 绝不会调用该 job。每个模拟器 lane 先构建真实 GoMobile bridge，再在新的 Gradle invocation 中显式指定 suite 与新的 summary 目标运行 `:frpc-stcp-visitor:frpcAndroidInteropTest`。矩阵固定为：API 26 x86_64 使用只含 `success-v1-00` 的 `compat`；API 36 x86_64 使用 `full`，包含八个 wire v1/v2 × 加密关闭/开启 × 压缩关闭/开启成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。
 
@@ -60,7 +60,7 @@ K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.wor
 
 Preflight 会运行报告 renderer 单元测试。只有两份 lane evidence 都包含严格 Host summary，并精确匹配 suite、设备 metadata、有序 profile、scenario/wire/encryption/compression 参数、`gomobile,kotlin` 顺序、精确 checks 与等价性时，renderer 才通过，否则 fail closed。Gradle task success 不能替代 profile 证据。报告状态绑定这一完整契约；每份报告都设置 `authorizesKotlinDefault=false`，每个 lane 还记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。最终 artifact 包含中英文报告、规范化 evidence JSON 和 `SHA256SUMS`，不包含凭据、endpoint、私有路径、原始进程日志或测试配置。
 
-普通 CI 与 K6V workflow 都不持有 JKS、密码或仓库写权限。Debug 与 Canary APK 仅作为验证输出。Host 互操作 job 与 API 36 K6V `full` lane 在不同执行边界分别覆盖完整 wire/payload、负例与重启矩阵。x86_64 模拟器证据不能替代物理目标 ABI native load、16KB page-size 真机、App 的真实 Store/快照/reconciliation 链路、Doze 或网络切换、前后台、性能、资源泄漏与长期 soak 证据、正式稳定发布周期或发布设备 STCP 验证。K6V artifact 通过只代表可用于评估 K7，并不自动授权 Kotlin 默认装配。
+普通 CI 与 K6V workflow 都不持有 Release JKS、密码或仓库写权限。Debug、Canary 与 Kotlin Release-Like APK 仅作为验证输出；Kotlin Release-Like 只使用标准 Android Debug 测试证书。Host 互操作 job 与 API 36 K6V `full` lane 在不同执行边界分别覆盖完整 wire/payload、负例与重启矩阵。x86_64 模拟器证据不能替代物理目标 ABI native load、16KB page-size 真机、App 的真实 Store/快照/reconciliation 链路、Doze 或网络切换、前后台、性能、资源泄漏与长期 soak 证据、正式稳定发布周期或发布设备 STCP 验证。K6V artifact 通过只代表可用于评估 K7，并不自动授权 Kotlin 默认装配。
 
 ## 4. GitHub 仓库配置
 
@@ -150,14 +150,14 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 7. `preflight` 校验源码版本、tag、`origin/main` 祖先关系、最高版本规则和历史 `VERSION_CODE` 单调递增。
 8. `prepare-notes` 在不读取签名 secret 的情况下生成并上传最终 `release-notes.md`。真实 tag 会追加 GitHub 自动说明。
 9. `frpc-interop` 在无 release Environment 或签名材料的只读 job 中运行固定官方 frp host 矩阵。
-10. `preflight` 与 `frpc-interop` 均通过且 Environment 获批后，`build-release` 重新运行全部本地测试，包括 Debug/GoMobile 与 Canary/Kotlin App 验证，并使用 shell 可复现门禁，在同一个 Ubuntu runner 上构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，同时隔离 Go cache。完整 bridge 制品/sidecar 集合必须逐字节一致，随后单独运行 `assembleRelease`，仅对三个 GoMobile 默认的 Release APK 应用 Release 签名并核对固定证书指纹。
+10. `preflight` 与 `frpc-interop` 均通过且 Environment 获批后，`build-release` 重新运行全部本地测试，包括 Debug/GoMobile、Canary/Kotlin 与 Kotlin Release-Like/Kotlin App 验证，并使用 shell 可复现门禁，在同一个 Ubuntu runner 上构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，同时隔离 Go cache。完整 bridge 制品/sidecar 集合必须逐字节一致，随后单独运行 `assembleRelease`，仅对三个 GoMobile 默认的 Release APK 应用 Release 签名并核对固定证书指纹。
 11. `publish` 下载两组已验证 artifact，使用 `GITHUB_TOKEN` 和 `gh release create --verify-tag --notes-file`。所有 `0.x` 版本创建为 prerelease，从 `1.0.0` 开始创建普通 release。
 
 ## 8. 制品检查
 
-发布脚本只对 `release` 制品执行签名与发布校验；Debug 与 Canary 输出不会复制到发布 asset 集合。它还会校验：
+发布脚本只对 `release` 制品执行签名与发布校验；Debug、Canary 与 Kotlin Release-Like 输出不会复制到发布 asset 集合。它还会校验：
 
-- APK metadata 的 application ID `io.github.ycfeng.ocdeck`、Release variant、稳定 `versionName`、`versionCode`、目标 ABI 和文件名必须一致；公开 asset 集合会拒绝 `.canary` 身份与 `-canary` 版本。
+- APK metadata 的 application ID `io.github.ycfeng.ocdeck`、Release variant、稳定 `versionName`、`versionCode`、目标 ABI 和文件名必须一致；公开 asset 集合会拒绝 `.canary`/`.kotlinrelease` 身份与 `-canary`/`-kotlin-release` 版本。
 - 每个 APK 只有一个 signer，证书指纹与 `RELEASE_CERT_SHA256` 一致。
 - 每个 APK 通过 `apksigner` 和 16KB `zipalign`，只包含对应 ABI；其中 `libgojni.so` 的 SHA-256 与 AAR 对应 entry 完全一致。
 - APK native library 重新通过 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态检查。

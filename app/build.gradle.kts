@@ -180,6 +180,14 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
         }
+        create("kotlinRelease") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            applicationIdSuffix = ".kotlinrelease"
+            versionNameSuffix = "-kotlin-release"
+            signingConfig = signingConfigs.getByName("debug")
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
+        }
     }
 }
 
@@ -212,8 +220,10 @@ tasks.matching {
 }
 
 androidComponents {
-    beforeVariants(selector().withBuildType("canary")) { variantBuilder ->
-        variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
+    listOf("canary", "kotlinRelease").forEach { buildType ->
+        beforeVariants(selector().withBuildType(buildType)) { variantBuilder ->
+            variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
+        }
     }
     onVariants { variant ->
         variant.outputs.forEach { output ->

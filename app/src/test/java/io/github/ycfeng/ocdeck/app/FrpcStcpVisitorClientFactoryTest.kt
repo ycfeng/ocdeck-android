@@ -11,7 +11,8 @@ import org.junit.Test
 class FrpcStcpVisitorClientFactoryTest {
     @Test
     fun buildConfigSelectsBackendForCurrentVariant() {
-        val expectedKotlinBackend = BuildConfig.BUILD_TYPE == "canary"
+        val expectedKotlinBackend = BuildConfig.BUILD_TYPE == "canary" ||
+            BuildConfig.BUILD_TYPE == "kotlinRelease"
         assertEquals(expectedKotlinBackend, BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR)
 
         val expectedType = if (expectedKotlinBackend) {

@@ -32,10 +32,10 @@
 - [ ] 精确候选版本的 `:frpc-stcp-visitor:frpcInteropTest` 已使用固定官方 frp asset 通过，包括 wire v1/v2、四种 payload 模式、并发双向超窗口流、长期 global/project SSE、负例和重启/control epoch 恢复。
 - [ ] Bridge 可复现门禁已在同一主机平台构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，并隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 逐字节一致。
 - [ ] AAR checksum、精确 Java API、bridge/frp provenance、四 ABI BuildInfo module identity/version/sum、无本地路径与跨 ABI graph digest 证明、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
-- [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/GoMobile 与 Canary/Kotlin 选择。
+- [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleKotlinRelease` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/GoMobile、Canary/Kotlin 与 Kotlin Release-Like/Kotlin 选择。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已对其精确完整 commit SHA 运行 `K6V Android STCP Interop`：可直接手动触发，首次引入时也可通过人工显式启用的 CI reusable bootstrap。API 26 x86_64 `compat` lane 精确通过 `success-v1-00`；API 36 x86_64 `full` lane 通过全部八个 wire/加密/压缩成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。Renderer preflight tests 已通过，fail-closed 双语报告与规范化 evidence 完整校验 suite/profile identity、参数、`gomobile,kotlin` 顺序、精确 checks、等价性和 `authorizesKotlinDefault=false`，而不是依赖 Gradle task success。否则本项明确记录为不适用。
 - [ ] 已审查 K6V 报告限制：模拟器证据不能替代物理目标 ABI 与 16KB native load、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。
-- [ ] Canary APK 仅作为验证输出；Release 签名与发布暂存只使用 GoMobile 默认的 `assembleRelease` 输出。
+- [ ] Canary 与 Kotlin Release-Like APK 仅作为验证输出。Kotlin Release-Like 使用标准 Android Debug 测试证书进行物理设备 Release-mode 验证；Release 签名与发布暂存只使用 GoMobile 默认的 `assembleRelease` 输出。
 - [ ] 签名 Release APK 的 metadata、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、native 字节绑定、法律资产、文件名和 `SHA256SUMS` 校验已通过。
 
 ## 真机与连接门禁

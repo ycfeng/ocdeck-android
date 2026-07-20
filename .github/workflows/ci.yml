@@ -63,7 +63,7 @@ jobs:
         run: bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
 
   verify:
-    name: Test and build debug
+    name: Test and build verification APKs
     runs-on: ubuntu-24.04
     timeout-minutes: 90
 
@@ -134,9 +134,11 @@ jobs:
           :frpc-stcp-visitor:checkGoMobileBridgeAar
           :app:testDebugUnitTest
           :app:testCanaryUnitTest
+          :app:testKotlinReleaseUnitTest
           :frpc-stcp-visitor:testDebugUnitTest
           :app:assembleDebug
           :app:assembleCanary
+          :app:assembleKotlinRelease
           -PrequireGoMobileBridge=true
 
   k6v-android-interop-bootstrap:

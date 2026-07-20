@@ -264,9 +264,11 @@ jobs:
           :frpc-stcp-visitor:checkGoMobileBridgeAar
           :app:testDebugUnitTest
           :app:testCanaryUnitTest
+          :app:testKotlinReleaseUnitTest
           :frpc-stcp-visitor:testDebugUnitTest
           :app:assembleDebug
           :app:assembleCanary
+          :app:assembleKotlinRelease
           -PrequireGoMobileBridge=true
 
       - name: Decode release keystore
