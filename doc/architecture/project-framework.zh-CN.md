@@ -785,7 +785,7 @@ Existing session id
 ### 15.2 部分完成或仍需加固
 
 - identity-only SSE 自定义流式 reader、32 MiB 行/event 上限、owner lease、关闭终态、project/global 去重与 fallback、generation/source/单调 transport identity、revision 快照防覆盖、消息并发合并、dirty follow-up 校准和应用级前台恢复已实现；仍需真实服务长时间断网、系统前后台、通知 channel 升级和 STCP control epoch 切换的设备验证。
-- 纯 Kotlin payload encryption/compression、跨语言 fixture 和固定官方 frp host 专用门禁均已实现。Host 门禁覆盖 wire v1/v2、四种 payload 组合、并发双向超窗口流、REST 与同时存在的 global/project SSE、类型化认证/secret/bind 失败、TLS、既有 SSE 中断及重启/control epoch 恢复。第一阶段真实 Android A/B harness 与手动精确 SHA 的 API 26/API 36 x86_64 workflow 已覆盖真实 GoMobile 后 Kotlin 执行、TLS、REST/SSE、并发流量、完整停止和同端口重绑，但目前尚无远端精确 SHA workflow 通过记录。完整 Android wire/payload/negative/restart 覆盖、物理 ARM 与 16KB 设备、长期 soak、性能/资源证据、网络切换和前后台行为仍是独立门禁。
+- 纯 Kotlin payload encryption/compression、跨语言 fixture 和固定官方 frp host 专用门禁均已实现。Host 门禁覆盖 wire v1/v2、四种 payload 组合、并发双向超窗口流、REST 与同时存在的 global/project SSE、类型化认证/secret/bind 失败、TLS、既有 SSE 中断及重启/control epoch 恢复。第一阶段真实 Android A/B harness 与手动精确 SHA 的 API 26/API 36 x86_64 workflow 已覆盖真实 GoMobile 后 Kotlin 执行、TLS、REST/SSE、并发流量、完整停止和同端口重绑。候选 `459c2b57ebf465d6b933ea939f59fa739128ec59` 已在两个 4 KiB page emulator lane 通过，其双语报告已审阅并记录于[测试指南](../development/testing.zh-CN.md#android-stcp-ab-互操作)。完整 Android wire/payload/negative/restart 覆盖、物理 ARM 与 16KB 设备、长期 soak、性能/资源证据、网络切换和前后台行为仍是独立门禁。
 - 独立 Review route 仍为占位；当前可用 diff 位于会话详情 Changes tab。
 - Provider 管理仍需在支持的真实 Server/provider 版本上做兼容验证，重点包括远程 loopback OAuth 拓扑、真机长 callback 取消，以及 custom-config partial/unknown outcome；global-config deep merge 不提供字段或配置的物理删除。
 - 模型 enabled/hidden 仅是按 server 保存的本机过滤偏好，不代表修改 OpenCode server config。
@@ -817,7 +817,7 @@ Existing session id
 
 建议按以下顺序推进当前缺口：
 
-1. 先取得并审查精确 SHA 的 API 26/API 36 K6V 通过 artifact，再在物理目标 ABI 与 16KB 设备重复 host 矩阵中的关键 wire v1/v2、payload、并发 REST/SSE 和重启/control epoch 路径；收集性能、长期 soak 与资源证据后，才评估 Kotlin 默认装配。
+1. 第一阶段精确 SHA 的 API 26/API 36 K6V artifact 已审阅；下一步在物理目标 ABI 与 16KB 设备重复 host 矩阵中的关键 wire v1/v2、payload、并发 REST/SSE 和重启/control epoch 路径；收集性能、长期 soak 与资源证据后，才评估 Kotlin 默认装配。
 2. 在真实服务与设备上验证 SSE 长时间断网、系统前后台、全局/项目重复事件和 STCP control epoch 切换，并根据结果继续加固。
 3. 在支持的真实 Server/provider 版本与设备上验证 Provider 管理，重点覆盖远程 loopback OAuth、长 callback 取消，以及 custom-config 分阶段提交出现 partial/unknown outcome 后的恢复。
 4. 在真实紧凑设备上验证项目文件 picker 与纯上下文发送/reset，包括 route 切换、IME、200% 字体、TalkBack 和两种主题；设备测试门禁建立后补充 instrumentation 覆盖。
