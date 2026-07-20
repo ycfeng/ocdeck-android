@@ -171,6 +171,8 @@ jobs:
             exit 1
           }
           AVD_NAME="k6v-api-${API_LEVEL}"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/k6v-avd-${API_LEVEL}"
+          mkdir -p "$ANDROID_AVD_HOME"
           EMULATOR_PORT=5554
           SERIAL="emulator-${EMULATOR_PORT}"
           SYSTEM_IMAGE="system-images;android-${API_LEVEL};default;x86_64"
@@ -191,6 +193,10 @@ jobs:
             --name "$AVD_NAME" \
             --package "$SYSTEM_IMAGE" \
             --device pixel_2
+          "$EMULATOR" -list-avds | grep -Fxq "$AVD_NAME" || {
+            printf 'created AVD is not visible to the emulator\n' >&2
+            exit 1
+          }
           "$EMULATOR" \
             -avd "$AVD_NAME" \
             -port "$EMULATOR_PORT" \
