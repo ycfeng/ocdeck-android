@@ -632,7 +632,8 @@ private class FrpcInteropRunner {
         while (!deadline.isExpired()) {
             val available = try {
                 ServerSocket().use { socket ->
-                    socket.reuseAddress = false
+                    // Active listeners still block this bind, while reuse avoids TIME_WAIT false positives.
+                    socket.reuseAddress = true
                     socket.bind(InetSocketAddress(IPV4_LOOPBACK, port))
                 }
                 true

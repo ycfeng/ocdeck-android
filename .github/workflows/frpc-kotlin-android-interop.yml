@@ -163,8 +163,9 @@ jobs:
             exit 1
           }
           sudo chmod 0666 /dev/kvm
-          adb start-server
-          mapfile -t existing_emulators < <(adb devices | awk '$1 ~ /^emulator-/ { print $1 }')
+          ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
+          "$ADB" start-server
+          mapfile -t existing_emulators < <("$ADB" devices | awk '$1 ~ /^emulator-/ { print $1 }')
           [[ ${#existing_emulators[@]} -eq 0 ]] || {
             printf 'runner already has an emulator attached\n' >&2
             exit 1
@@ -201,27 +202,27 @@ jobs:
               printf 'owned emulator process exited before boot completed\n' >&2
               exit 1
             }
-            if adb devices | awk -v serial="$SERIAL" '$1 == serial && $2 == "device" { found=1 } END { exit !found }'; then
-              boot_completed=$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if "$ADB" devices | awk -v serial="$SERIAL" '$1 == serial && $2 == "device" { found=1 } END { exit !found }'; then
+              boot_completed=$("$ADB" -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
               if [[ "$boot_completed" == "1" ]]; then
                 break
               fi
             fi
             sleep 2
           done
-          [[ "$(adb -s "$SERIAL" shell getprop sys.boot_completed | tr -d '\r')" == "1" ]] || {
+          [[ "$("$ADB" -s "$SERIAL" shell getprop sys.boot_completed | tr -d '\r')" == "1" ]] || {
             printf 'emulator did not finish booting\n' >&2
             exit 1
           }
-          actual_api=$(adb -s "$SERIAL" shell getprop ro.build.version.sdk | tr -d '\r')
-          actual_abi=$(adb -s "$SERIAL" shell getprop ro.product.cpu.abi | tr -d '\r')
+          actual_api=$("$ADB" -s "$SERIAL" shell getprop ro.build.version.sdk | tr -d '\r')
+          actual_abi=$("$ADB" -s "$SERIAL" shell getprop ro.product.cpu.abi | tr -d '\r')
           [[ "$actual_api" == "$API_LEVEL" && "$actual_abi" == "x86_64" ]] || {
             printf 'emulator API or ABI does not match the requested lane\n' >&2
             exit 1
           }
-          adb -s "$SERIAL" shell settings put global window_animation_scale 0
-          adb -s "$SERIAL" shell settings put global transition_animation_scale 0
-          adb -s "$SERIAL" shell settings put global animator_duration_scale 0
+          "$ADB" -s "$SERIAL" shell settings put global window_animation_scale 0
+          "$ADB" -s "$SERIAL" shell settings put global transition_animation_scale 0
+          "$ADB" -s "$SERIAL" shell settings put global animator_duration_scale 0
           printf 'serial=%s\n' "$SERIAL" >> "$GITHUB_OUTPUT"
 
       - name: Run real GoMobile then Kotlin Android interop
@@ -465,8 +466,9 @@ jobs:
           DEVICE_SERIAL: ${{ steps.emulator.outputs.serial }}
           EMULATOR_PID: ${{ steps.emulator.outputs.emulator_pid }}
         run: |
+          ADB="$ANDROID_SDK_ROOT/platform-tools/adb"
           if [[ -n "$DEVICE_SERIAL" ]]; then
-            adb -s "$DEVICE_SERIAL" emu kill >/dev/null 2>&1 || true
+            "$ADB" -s "$DEVICE_SERIAL" emu kill >/dev/null 2>&1 || true
           fi
           if [[ -n "$EMULATOR_PID" ]]; then
             kill "$EMULATOR_PID" >/dev/null 2>&1 || true
