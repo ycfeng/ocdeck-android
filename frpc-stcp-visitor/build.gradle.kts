@@ -103,6 +103,7 @@ val frpcInteropTest = tasks.register<JavaExec>("frpcInteropTest") {
         "processDebugUnitTestJavaRes",
     )
     mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcInteropHarness")
+    classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
     workingDir(rootProject.projectDir)
     systemProperty(
         "ocdeck.frp.interop.cacheDir",
@@ -110,9 +111,6 @@ val frpcInteropTest = tasks.register<JavaExec>("frpcInteropTest") {
     )
     jvmArgs("-Dfile.encoding=UTF-8")
     maxHeapSize = "512m"
-    doFirst {
-        classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
-    }
 }
 
 val adbExecutable = androidComponents.sdkComponents.adb
@@ -129,6 +127,7 @@ tasks.register<JavaExec>("frpcAndroidInteropTest") {
         "processDebugUnitTestJavaRes",
     )
     mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcAndroidInteropHost")
+    classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
     workingDir(rootProject.projectDir)
     systemProperty(
         "ocdeck.frp.interop.cacheDir",
@@ -137,7 +136,6 @@ tasks.register<JavaExec>("frpcAndroidInteropTest") {
     jvmArgs("-Dfile.encoding=UTF-8")
     maxHeapSize = "512m"
     doFirst {
-        classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
         systemProperty("ocdeck.frp.androidInterop.adb", adbExecutable.get().asFile.absolutePath)
         systemProperty(
             "ocdeck.frp.androidInterop.apkDirectory",
