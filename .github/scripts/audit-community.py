@@ -328,9 +328,43 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(ci_jobs, dict), "CI workflow has no jobs")
     ci_verify_job = ci_jobs.get("verify")
     ci_interop_job = ci_jobs.get("frpc-interop")
+    ci_android_bootstrap_job = ci_jobs.get("k6v-android-interop-bootstrap")
     require(isinstance(ci_verify_job, dict), "CI workflow has no verify job")
     require(isinstance(ci_interop_job, dict), "CI workflow has no frpc-interop job")
+    require(isinstance(ci_android_bootstrap_job, dict), "CI workflow has no K6V Android bootstrap job")
     require("environment" not in ci_interop_job, "CI frpc-interop must not access an environment")
+    require("environment" not in ci_android_bootstrap_job, "CI K6V bootstrap must not access an environment")
+    require(
+        ci_android_bootstrap_job.get("uses") == "./.github/workflows/frpc-kotlin-android-interop.yml",
+        "CI K6V bootstrap must call the canonical reusable workflow",
+    )
+    require(
+        ci_android_bootstrap_job.get("permissions") == {"contents": "read"},
+        "CI K6V bootstrap must have only read-only contents permission",
+    )
+    require(
+        ci_android_bootstrap_job.get("if") == "${{ inputs.run_frpc_android_interop == true }}",
+        "CI K6V bootstrap must remain explicitly opt-in",
+    )
+    bootstrap_inputs = ci_android_bootstrap_job.get("with")
+    require(isinstance(bootstrap_inputs, dict), "CI K6V bootstrap must define reusable-workflow inputs")
+    require(
+        bootstrap_inputs.get("candidate_sha") == "${{ inputs.candidate_sha || github.sha }}",
+        "CI K6V bootstrap must bind the candidate to an explicit SHA or the dispatched ref SHA",
+    )
+    ci_trigger = ci_workflow.get("on", ci_workflow.get(True))
+    require(isinstance(ci_trigger, dict), "CI workflow trigger must be an object")
+    ci_dispatch = ci_trigger.get("workflow_dispatch")
+    require(isinstance(ci_dispatch, dict), "CI workflow_dispatch must define bootstrap inputs")
+    ci_dispatch_inputs = ci_dispatch.get("inputs")
+    require(isinstance(ci_dispatch_inputs, dict), "CI workflow_dispatch has no inputs")
+    run_android_input = ci_dispatch_inputs.get("run_frpc_android_interop")
+    require(isinstance(run_android_input, dict), "CI workflow_dispatch has no K6V opt-in input")
+    require(run_android_input.get("type") == "boolean", "CI K6V opt-in input must be boolean")
+    require(run_android_input.get("default") is False, "CI K6V bootstrap must default to disabled")
+    bootstrap_sha_input = ci_dispatch_inputs.get("candidate_sha")
+    require(isinstance(bootstrap_sha_input, dict), "CI workflow_dispatch has no candidate_sha input")
+    require(bootstrap_sha_input.get("type") == "string", "CI bootstrap candidate_sha must be a string")
     ci_reproducibility_steps = [
         step
         for step in ci_verify_job.get("steps", [])
@@ -365,7 +399,10 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(android_workflow, dict), "Android interop workflow must be an object")
     android_trigger = android_workflow.get("on", android_workflow.get(True))
     require(isinstance(android_trigger, dict), "Android interop workflow trigger must be an object")
-    require(set(android_trigger) == {"workflow_dispatch"}, "Android interop workflow must be manual-only")
+    require(
+        set(android_trigger) == {"workflow_dispatch", "workflow_call"},
+        "Android interop workflow must be directly manual or called only by the manual CI bootstrap",
+    )
     dispatch = android_trigger.get("workflow_dispatch")
     require(isinstance(dispatch, dict), "Android interop workflow_dispatch must define inputs")
     dispatch_inputs = dispatch.get("inputs")
@@ -374,6 +411,14 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(candidate_input, dict), "Android interop workflow has no candidate_sha input")
     require(candidate_input.get("required") is True, "Android interop candidate_sha must be required")
     require(candidate_input.get("type") == "string", "Android interop candidate_sha must be a string")
+    workflow_call = android_trigger.get("workflow_call")
+    require(isinstance(workflow_call, dict), "Android interop workflow_call must define inputs")
+    workflow_call_inputs = workflow_call.get("inputs")
+    require(isinstance(workflow_call_inputs, dict), "Android interop workflow_call has no inputs")
+    call_candidate_input = workflow_call_inputs.get("candidate_sha")
+    require(isinstance(call_candidate_input, dict), "Android interop workflow_call has no candidate_sha input")
+    require(call_candidate_input.get("required") is True, "Reusable Android candidate_sha must be required")
+    require(call_candidate_input.get("type") == "string", "Reusable Android candidate_sha must be a string")
     require(
         android_workflow.get("permissions") == {"contents": "read"},
         "Android interop workflow must have only read-only contents permission",

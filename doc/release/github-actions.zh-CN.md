@@ -8,8 +8,8 @@
 
 仓库使用三条 GitHub Actions 工作流：
 
-- `.github/workflows/ci.yml`：在 `main` push、面向 `main` 的 Pull Request 和手动触发时运行，不读取发布签名材料。
-- `.github/workflows/frpc-kotlin-android-interop.yml`：手动、精确 SHA 的 Android STCP backend K6V 门禁。它在 API 26 与 API 36 x86_64 模拟器上顺序运行真实 GoMobile AAR 和纯 Kotlin client，全程只读，并在不读取签名材料的情况下生成有界双语验收报告 artifact。
+- `.github/workflows/ci.yml`：在 `main` push、面向 `main` 的 Pull Request 和手动触发时运行，不读取发布签名材料。手动 dispatch 可显式启用分支内 reusable K6V workflow；push 与 Pull Request 运行绝不会自动启用该 bootstrap。
+- `.github/workflows/frpc-kotlin-android-interop.yml`：显式请求、精确 SHA 的 Android STCP backend K6V 门禁。该 workflow 进入默认分支后支持直接手动触发，首次引入时也可通过只读 reusable call bootstrap。它在 API 26 与 API 36 x86_64 模拟器上顺序运行真实 GoMobile AAR 和纯 Kotlin client，并在不读取签名材料的情况下生成有界双语验收报告 artifact。
 - `.github/workflows/release.yml`：稳定版本 tag 或手动 dry-run 触发。它先在不读取签名 secret 的情况下准备发布说明并运行固定 frp 互操作，再使用受保护的 `release` Environment 构建并校验签名制品；只有 tag 触发时才创建 GitHub Release。
 
 首版公开制品固定为：
@@ -54,7 +54,7 @@ VERSION_NAME=0.2.0
 
 Debug factory 测试确认 GoMobile 默认选择，Canary factory 测试确认纯 Kotlin 选择。由于两种实现位于同一个 Android library，Canary 仍可能打包 Go native 字节；门禁验证的是 App 实际装配，而不是断言安装包不存在 native 字节。
 
-手动 K6V workflow 要求输入的小写 40 字符 `candidate_sha`、`github.sha`、`github.workflow_sha` 与检出的 `HEAD` 指向同一 commit。每个模拟器 lane 先构建真实 GoMobile bridge，再在新的 Gradle invocation 中运行 `:frpc-stcp-visitor:frpcAndroidInteropTest`。GoMobile 与 Kotlin 分别在独立 instrumentation 进程中执行；GoMobile 必须先完整停止、报告 `Closed` 并释放 listener，Kotlin 才可复用同一个 bind port。第一阶段覆盖强制 TLS、`/global/health`、global/project SSE、两次 echo 和两次超过流控窗口的大下载，固定使用 wire v1 且关闭 payload encryption/compression。报告状态绑定完整 matrix 结果，每个 lane 还会记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。最终 artifact 包含中英文报告、规范化 evidence JSON 和 `SHA256SUMS`，不包含凭据、endpoint、私有路径、原始进程日志或测试配置。
+K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.workflow_sha` 与检出的 `HEAD` 指向同一 commit。该 workflow 进入默认分支后可直接手动触发。首次引入时，手动触发 `CI` 并设置 `run_frpc_android_interop=true`，同时可选填写精确 `candidate_sha`；留空时使用所触发 ref 的 SHA，并调用同一个分支内 reusable workflow。普通 push 与 Pull Request CI 绝不会调用该 job。每个模拟器 lane 先构建真实 GoMobile bridge，再在新的 Gradle invocation 中运行 `:frpc-stcp-visitor:frpcAndroidInteropTest`。GoMobile 与 Kotlin 分别在独立 instrumentation 进程中执行；GoMobile 必须先完整停止、报告 `Closed` 并释放 listener，Kotlin 才可复用同一个 bind port。第一阶段覆盖强制 TLS、`/global/health`、global/project SSE、两次 echo 和两次超过流控窗口的大下载，固定使用 wire v1 且关闭 payload encryption/compression。报告状态绑定完整 matrix 结果，每个 lane 还会记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。最终 artifact 包含中英文报告、规范化 evidence JSON 和 `SHA256SUMS`，不包含凭据、endpoint、私有路径、原始进程日志或测试配置。
 
 普通 CI 与 K6V workflow 都不持有 JKS、密码或仓库写权限。Debug 与 Canary APK 仅作为验证输出。Host 互操作 job 覆盖完整 wire/payload、负例与重启矩阵，K6V 则补充真实 Android backend 执行。其 x86_64 模拟器证据不能替代物理目标 ABI native load、16KB page-size 真机、Doze 或网络切换、前后台、性能、soak 或发布设备 STCP 验证。K6V artifact 通过只代表可用于评估 K7，并不自动授权 Kotlin 默认装配。
 
@@ -98,7 +98,7 @@ keytool -list -v -keystore /secure/path/release.jks -alias your-alias
 - 默认分支设为 `main`，通过分支保护或 ruleset 要求 Pull Request 和 CI 通过。
 - 使用 tag ruleset 限制 `v*` tag 的创建、更新和删除。
 - 工作流默认 `GITHUB_TOKEN` 权限保持 `contents: read`。
-- 手动 K6V Android 互操作 workflow 保持 `contents: read`，位于所有 Environment 之外，不读取仓库或 Environment secret。必须使用精确候选 SHA，并将报告 artifact 作为该候选专属证据保存；在它仍是手动且无路径过滤的门禁期间，不把它当作普通 required check。
+- K6V 直接入口与 CI reusable bootstrap 都保持 `contents: read`，位于所有 Environment 之外，不读取仓库或 Environment secret。CI bootstrap 必须继续由人工显式启用，绝不能在 push 或 Pull Request 事件中运行。必须使用精确候选 SHA，并将报告 artifact 作为该候选专属证据保存；在它仍是人工请求且无路径过滤的门禁期间，不把它当作普通 required check。
 - `prepare-notes` 只授予 `contents: write`，因为 GitHub generate-notes REST endpoint 要求该权限。此 job 不进入 `release` Environment、不读取签名 secret，也不创建或修改 release/ref。
 - `frpc-interop` 保持 `contents: read` 且位于 `release` Environment 之外；它只能下载经哈希固定的官方 frp 测试 asset，并且必须在签名 job 开始前完成。
 - `publish` 只授予 `contents: write`，且不读取签名 secret。

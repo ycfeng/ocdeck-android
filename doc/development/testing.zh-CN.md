@@ -20,7 +20,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 | Release 制品校验 | APK metadata、单 signer、预期证书指纹、ABI 隔离、`zipalign -P 16`、AAR native 字节绑定、内嵌法律文件、文件名和 checksum。 |
 | 真机验证 | 维护者已记录 `0.1.0` 发布门禁通过真机 native load/启动、16KB page-size native 运行，以及覆盖 `/global/health`、代表性 REST、全局/项目 SSE 和受控重连的真实 STCP 闭环。具体环境信息未公开；后续候选版本仍须重复执行这些门禁。 |
 
-手动触发的 K6V workflow 已为 STCP backend 互操作提供 x86_64 emulator 门禁，但普通 CI 仍没有 App UI emulator/instrumentation job。`app/src/androidTest` 测试集覆盖独立窗口根的本地化。最近项目拖拽排序仍不在 instrumentation 覆盖范围内；其自动化覆盖主要来自下文列出的 JVM reducer、recorder、ViewModel 和 Drawer model 测试。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
+显式请求的 K6V workflow 已为 STCP backend 互操作提供 x86_64 emulator 门禁，但普通 CI 仍没有 App UI emulator/instrumentation job。K6V workflow 进入默认分支后可直接手动触发；首次引入该 workflow 时，可通过手动 CI dispatch 显式启用同一个分支内 reusable workflow。Push 与 Pull Request CI 绝不会自动启用该 bootstrap。`app/src/androidTest` 测试集覆盖独立窗口根的本地化。最近项目拖拽排序仍不在 instrumentation 覆盖范围内；其自动化覆盖主要来自下文列出的 JVM reducer、recorder、ViewModel 和 Drawer model 测试。项目选择、会话导航、更广泛的 Composer 交互与 picker、permission/question UI、大字体行为与 TalkBack 仍需系统化设备自动化测试。
 
 ## 聚焦测试清单
 
@@ -109,7 +109,7 @@ Host coordinator 与 `frpcInteropTest` 共用经哈希固定的官方 frp v0.69.
 
 GoMobile 首先在新的 instrumentation 进程中运行。完成 `stopVisitor`、`stopSession`、终态校验与 listener 端口释放后，Kotlin 在第二个进程中运行并必须重绑同一端口。第一阶段设备场景固定为 `wire=v1`、关闭加密和关闭压缩；wire v1/v2、四种 payload 模式、类型化负例与重启恢复仍由 host JVM harness 负责。设备证据必须记录 API level、ABI 和 page size。该门禁不覆盖性能、soak、Doze、前后台切换、网络切换、arm 真机或 16KB page-size 硬件。
 
-仅手动触发的 `.github/workflows/frpc-kotlin-android-interop.yml` 会在 API 26 与 API 36 x86_64 emulator 上验证精确候选 SHA。报告状态绑定完整 matrix 结果，每个 lane 还会记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。Workflow 会上传有界的中英文验收报告、合并 JSON 证据和 `SHA256SUMS`；它只有仓库只读权限，不使用签名 Environment 或 secret，也不授权切换正式默认 backend。真机与长期 K6V 证据仍是独立要求。
+显式请求的 `.github/workflows/frpc-kotlin-android-interop.yml` 会在 API 26 与 API 36 x86_64 emulator 上验证精确候选 SHA。它同时支持直接 `workflow_dispatch` 与只读 `workflow_call`；后者仅在手动 CI dispatch 设置 `run_frpc_android_interop=true` 时使用，用于该 workflow 尚未进入默认分支时调用分支内版本。CI 的可选 `candidate_sha` 默认采用所触发 ref 的 SHA，push/PR CI 绝不会调用 K6V。报告状态绑定完整 matrix 结果，每个 lane 还会记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。Workflow 会上传有界的中英文验收报告、合并 JSON 证据和 `SHA256SUMS`；它只有仓库只读权限，不使用签名 Environment 或 secret，也不授权切换正式默认 backend。真机与长期 K6V 证据仍是独立要求。
 
 连接 emulator 或设备后，运行 instrumentation 测试集：
 

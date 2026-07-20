@@ -8,6 +8,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      run_frpc_android_interop:
+        description: Run the exact-SHA K6V Android emulator matrix
+        required: false
+        default: false
+        type: boolean
+      candidate_sha:
+        description: Optional exact SHA; defaults to the dispatched ref SHA
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -128,3 +138,12 @@ jobs:
           :app:assembleDebug
           :app:assembleCanary
           -PrequireGoMobileBridge=true
+
+  k6v-android-interop-bootstrap:
+    name: Run exact-SHA K6V Android interoperability
+    if: ${{ inputs.run_frpc_android_interop == true }}
+    uses: ./.github/workflows/frpc-kotlin-android-interop.yml
+    with:
+      candidate_sha: ${{ inputs.candidate_sha || github.sha }}
+    permissions:
+      contents: read
