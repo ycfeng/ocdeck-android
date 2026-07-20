@@ -1065,7 +1065,7 @@ Repository 调用使用 `OpenCodeFailure` 分类失败，SSE 状态保存 `SseFa
 | Provider | 主体具备 | 真实安全投影列表/搜索、动态 API/OAuth 认证、断开、capability 刷新，以及分阶段的多模型/多 Header 自定义 Provider 持久化已接通；真实 Provider 兼容性、远程 loopback OAuth 拓扑和设备交互仍需验证 |
 | 模型设置 | 部分完成 | enabled/hidden 是按 server 保存的本机过滤偏好，不修改 OpenCode server config |
 | SSE | 主体具备 | identity content encoding、OkHttp Call 自定义流式 reader、200 + `text/event-stream` 协议门禁、空行 dispatch/EOF 丢弃、32 MiB 行/event 硬上限、owner lease、关闭终态、generation/source/transport 校验、指数退避、快照 single-flight、有界事件重放和应用级前台恢复已实现；仍需真实服务长时间断网、进程前后台和 STCP epoch 切换验证 |
-| STCP 并发与恢复 | 主体具备 | readiness、generation/control epoch、AAR 门禁和扩展后的真实 Android GoMobile→Kotlin A/B 自动化均已实现。固定 API 26 x86_64 `compat` lane 只含 `success-v1-00`；API 36 x86_64 `full` lane 包含精确 12-profile wire/payload/negative/restart 矩阵，并由严格 Host summary 校验 backend 顺序、参数、checks 与等价性。这两条 lane 仍等待新的精确 SHA workflow artifact。候选 `459c2b57ebf465d6b933ea939f59fa739128ec59` 与 run 29716724485 仅是旧第一阶段历史证据，不能证明当前 `full` suite；仍需物理目标 ABI、16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak 和正式稳定发布周期证据 |
+| STCP 并发与恢复 | 主体具备 | readiness、generation/control epoch、AAR 门禁和扩展后的真实 Android GoMobile→Kotlin A/B 自动化均已实现。固定 API 26 x86_64 `compat` lane 只含 `success-v1-00`；API 36 x86_64 `full` lane 包含精确 12-profile wire/payload/negative/restart 矩阵，并由严格 Host summary 校验 backend 顺序、参数、语义结果、checks 与等价性。精确候选 `c474ccd18769544a3d7a08facf4147dfe6305bee` 已在 [run 29754014231](https://github.com/ycfeng/ocdeck-android/actions/runs/29754014231) 通过两条 lane 及 fail-closed 双语报告。仍需物理目标 ABI、16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak 和正式稳定发布周期证据；emulator 报告不授权 Kotlin 默认装配 |
 | 失败处理 | 主体具备 | Repository/SSE/快照链路保留类型化语义原因，映射到带操作 fallback 的本地化资源，并传播取消/JVM `Error` |
 | 移动 UI 与无障碍 | 主体具备 | 48dp 目标、匹配选择 role、本地化展开/折叠说明、非颜色状态提示、TalkBack 服务器/项目排序、浅色/深色对比度测试和大字体/IME 有界布局已实现；App UI 设备 instrumentation 尚未成为 CI 门禁 |
 | 安全与输入边界 | 主体具备 | Keystore、结构化/自由文本 Redactor、安全结构化摘要、Server URL 防 userinfo、私钥有界读取、附件 data URL/预算终检、Retrofit/file 独立 16 MiB encoded/decoded、session messages direct OkHttp 独立 64 MiB encoded/decoded 与 identity SSE 32 MiB 入站边界已具备；这些上限不等于 heap 峰值，其他 REST 大响应、native 返回值与真实设备链路仍需持续审计验证 |
@@ -1074,7 +1074,7 @@ Repository 调用使用 `OpenCodeFailure` 分类失败，SSE 状态保存 `SseFa
 
 | 优先级 | 内容 |
 | --- | --- |
-| 高 | 获取并审查已实现 API 26 `compat`/API 36 `full` K6V workflow 的新精确 SHA 通过证据，随后验证物理 ARM/16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak 和正式稳定发布周期；完成前不得作出 Kotlin 默认决策 |
+| 高 | 以已记录的精确 SHA API 26 `compat`/API 36 `full` K6V 通过结果作为 emulator 基线，验证物理 ARM/16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak 和正式稳定发布周期；完成前不得作出 Kotlin 默认决策 |
 | 高 | SSE 真实服务长时间断网、前后台切换、全局/项目重复事件及 STCP epoch 切换验证 |
 | 中 | 在支持的真实 Server/Provider 版本上验证 Provider 管理，重点覆盖远程 loopback OAuth、长回调取消和自定义配置 partial/unknown outcome |
 | 中 | 独立 Review route 产品决策与 session share |

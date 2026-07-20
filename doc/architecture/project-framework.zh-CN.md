@@ -785,7 +785,7 @@ Existing session id
 ### 15.2 部分完成或仍需加固
 
 - identity-only SSE 自定义流式 reader、32 MiB 行/event 上限、owner lease、关闭终态、project/global 去重与 fallback、generation/source/单调 transport identity、revision 快照防覆盖、消息并发合并、dirty follow-up 校准和应用级前台恢复已实现；仍需真实服务长时间断网、系统前后台、通知 channel 升级和 STCP control epoch 切换的设备验证。
-- 纯 Kotlin payload encryption/compression、跨语言 fixture、固定官方 frp host 专用门禁和扩展后的真实 Android A/B 自动化均已实现。Android harness 现在固定 API 26 使用只含 `success-v1-00` 的 `compat`，API 36 使用精确 12-profile wire/payload/negative/restart 矩阵的 `full`。每个 profile 都先运行 GoMobile，校验完整 stop/`Closed`/端口释放，再在独立 instrumentation 进程中让 Kotlin 使用同一端口；成功 profile 在 global/project SSE 在线时执行 health、两次 echo 与两次大于 Yamux 窗口的下载，并要求同一 checkpoint；重启 profile 验证既有 SSE 中断、control unavailable、`frps` 与 provider 恢复屏障、control epoch 严格增加，以及恢复后的 REST/SSE/大流量。严格 Host summary 证明 profile 参数、backend 顺序、checks 与等价性，不把 Gradle success 当作证据。该自动化仍等待新的精确候选 API 26/API 36 workflow artifact。候选 `459c2b57ebf465d6b933ea939f59fa739128ec59` 与 [run 29716724485](https://github.com/ycfeng/ocdeck-android/actions/runs/29716724485) 仅是旧第一阶段历史证据，不能证明当前 `full` suite。物理 ARM 与 16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏证据、长期 soak 和正式稳定发布周期仍是独立门禁。
+- 纯 Kotlin payload encryption/compression、跨语言 fixture、固定官方 frp host 专用门禁和扩展后的真实 Android A/B 自动化均已实现。Android harness 固定 API 26 使用只含 `success-v1-00` 的 `compat`，API 36 使用精确 12-profile wire/payload/negative/restart 矩阵的 `full`。每个 profile 都先运行 GoMobile，校验完整 stop/`Closed`/端口释放，再在独立 instrumentation 进程中让 Kotlin 使用同一端口；成功 profile 在 global/project SSE 在线时执行 health、两次 echo 与两次大于 Yamux 窗口的下载，并要求同一 checkpoint；重启 profile 验证既有 SSE 中断、control unavailable、`frps` 与 provider 恢复屏障、control epoch 严格增加，以及恢复后的 REST/SSE/大流量。严格 Host summary 证明 profile 参数、backend 顺序、语义结果、checks 与等价性，不把 Gradle success 当作证据。精确候选 `c474ccd18769544a3d7a08facf4147dfe6305bee` 已在 [run 29754014231](https://github.com/ycfeng/ocdeck-android/actions/runs/29754014231) 通过两条 lane 及 fail-closed 双语报告。物理 ARM 与 16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏证据、长期 soak 和正式稳定发布周期仍是独立门禁；emulator 报告明确不授权 Kotlin 默认装配。
 - 独立 Review route 仍为占位；当前可用 diff 位于会话详情 Changes tab。
 - Provider 管理仍需在支持的真实 Server/provider 版本上做兼容验证，重点包括远程 loopback OAuth 拓扑、真机长 callback 取消，以及 custom-config partial/unknown outcome；global-config deep merge 不提供字段或配置的物理删除。
 - 模型 enabled/hidden 仅是按 server 保存的本机过滤偏好，不代表修改 OpenCode server config。
@@ -817,7 +817,7 @@ Existing session id
 
 建议按以下顺序推进当前缺口：
 
-1. 对新的精确候选运行已实现的固定 API 26 `compat`/API 36 `full` K6V workflow，并审查完整、fail-closed 的结构化 artifact；旧第一阶段 artifact 不能满足该门禁。随后在评估 Kotlin 默认装配前验证物理目标 ABI 与 16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak 和正式稳定发布周期。
+1. 以已记录的精确 SHA API 26 `compat`/API 36 `full` K6V 通过结果作为 emulator 基线，在评估 Kotlin 默认装配前验证物理目标 ABI 与 16KB 设备、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak 和正式稳定发布周期。
 2. 在真实服务与设备上验证 SSE 长时间断网、系统前后台、全局/项目重复事件和 STCP control epoch 切换，并根据结果继续加固。
 3. 在支持的真实 Server/provider 版本与设备上验证 Provider 管理，重点覆盖远程 loopback OAuth、长 callback 取消，以及 custom-config 分阶段提交出现 partial/unknown outcome 后的恢复。
 4. 在真实紧凑设备上验证项目文件 picker 与纯上下文发送/reset，包括 route 切换、IME、200% 字体、TalkBack 和两种主题；设备测试门禁建立后补充 instrumentation 覆盖。
