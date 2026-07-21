@@ -164,14 +164,6 @@ internal fun ProjectDrawerHost(
         }
     }
 
-    BackHandler(enabled = isFilePanelOpen) {
-        if (fileViewModel?.uiState?.value?.page == ProjectFileBrowserPage.Content) {
-            fileViewModel.showTree()
-        } else {
-            closeFilePanel()
-        }
-    }
-
     DisposableEffect(routeKey, fileViewModel) {
         onDispose { fileViewModel?.onPanelClosed() }
     }
@@ -550,6 +542,29 @@ internal fun ProjectDrawerHost(
                     }
                 }
             }
+        }
+    }
+
+    ProjectFilePanelBackHandler(
+        isOpen = isFilePanelOpen,
+        currentPage = { fileViewModel?.uiState?.value?.page },
+        onShowTree = { fileViewModel?.showTree() },
+        onClose = closeFilePanel,
+    )
+}
+
+@Composable
+internal fun ProjectFilePanelBackHandler(
+    isOpen: Boolean,
+    currentPage: () -> ProjectFileBrowserPage?,
+    onShowTree: () -> Unit,
+    onClose: () -> Unit,
+) {
+    BackHandler(enabled = isOpen) {
+        if (currentPage() == ProjectFileBrowserPage.Content) {
+            onShowTree()
+        } else {
+            onClose()
         }
     }
 }
