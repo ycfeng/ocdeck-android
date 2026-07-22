@@ -2,7 +2,6 @@ package io.github.ycfeng.ocdeck.core.network
 
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
@@ -89,7 +88,6 @@ private class SessionMessagesCallback(
     private val callbackClaimed = AtomicBoolean()
     private val completed = AtomicBoolean()
     private val cancelledByOwner = AtomicBoolean()
-    private val activeBody = AtomicReference<ResponseBody?>()
 
     override fun onFailure(call: Call, e: IOException) {
         if (!callbackClaimed.compareAndSet(false, true)) return
@@ -112,13 +110,8 @@ private class SessionMessagesCallback(
                     throw SessionMessagesHttpException(currentResponse.code)
                 }
                 val body = currentResponse.body
-                activeBody.set(body)
                 if (completed.get()) throw OwnerCancelledSessionMessagesCallException()
-                try {
-                    body.readSessionMessages(json, maxBytes)
-                } finally {
-                    activeBody.compareAndSet(body, null)
-                }
+                body.readSessionMessages(json, maxBytes)
             }
             completeSuccess(messages)
         } catch (_: OwnerCancelledSessionMessagesCallException) {
@@ -131,8 +124,9 @@ private class SessionMessagesCallback(
     fun cancelByOwner() {
         cancelledByOwner.set(true)
         if (completed.compareAndSet(false, true)) {
+            // Let response.use close the body on the callback thread after cancel interrupts its read.
+            // Closing here races Okio's active read and may also perform network cleanup on the main thread.
             call.cancel()
-            activeBody.getAndSet(null)?.close()
         }
     }
 
