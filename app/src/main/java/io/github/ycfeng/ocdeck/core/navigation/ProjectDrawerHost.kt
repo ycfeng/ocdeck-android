@@ -506,6 +506,7 @@ internal fun ProjectDrawerHost(
                     ) {
                         ProjectFilePanel(
                             state = fileState,
+                            projectDirectory = activeProject.directory,
                             onSearchQueryChanged = fileViewModel::onSearchQueryChanged,
                             onToggleDirectory = fileViewModel::toggleDirectory,
                             onRetryDirectory = fileViewModel::retryDirectory,
