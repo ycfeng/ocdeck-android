@@ -20,15 +20,15 @@
 
 工作流不生成 universal APK、AAB 或 Play 上传制品。GitHub 侧载用户应下载与设备 ABI 对应的 APK。
 
-应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.2.0` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
+应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.2.1` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
 
 ## 2. 版本规则
 
 应用版本的唯一源码位于根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=5
-VERSION_NAME=0.2.0
+VERSION_CODE=6
+VERSION_NAME=0.2.1
 ```
 
 要求：

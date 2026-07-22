@@ -2,9 +2,9 @@
 
 [简体中文](PRIVACY.zh-CN.md)
 
-Last updated: 2026-07-19
+Last updated: 2026-07-22
 
-This document describes the current OC Deck `0.2.0` codebase. It is not a promise that every future build, distribution channel, OpenCode Server, model provider, Android device, or network operator behaves the same way.
+This document describes the current OC Deck `0.2.1` codebase. It is not a promise that every future build, distribution channel, OpenCode Server, model provider, Android device, or network operator behaves the same way.
 
 ## OC Deck Services and Telemetry
 
@@ -30,6 +30,10 @@ When the user selects a phone-local attachment, OC Deck reads the selected conte
 
 Server project-file browsing and selection use the OpenCode Server's filesystem APIs, not Android local storage. When the user adds a server project file to Composer context, OC Deck keeps only its validated project-relative path in the in-memory draft and sends a `file://` reference to the configured OpenCode Server. The server may then read and expand that file for the prompt. OC Deck does not read the selected project file into an Android local attachment or Base64-encode it. A draft can contain at most 10 server project-file contexts.
 
+## System Clipboard
+
+When the user explicitly opens a project-file row's copy menu, OC Deck can place a file or directory name, validated project-relative path, or normalized absolute server path on the Android system clipboard. This action does not copy file contents or make an additional network request. Project paths may reveal sensitive server filesystem details, and Android or the device vendor may show clipboard previews or expose clipboard contents according to platform and device policy. Review copied text before sharing it.
+
 ## Notifications and Sounds
 
 If enabled and permitted by Android, OC Deck can create local system notifications for agent, permission, or error events and can play bundled notification sounds. Notification text is designed to use localized and redacted summaries, but session titles or other non-secret context may still be visible on the lock screen depending on Android and user settings. Users should configure lock-screen privacy appropriately.
@@ -42,7 +46,7 @@ Debug builds may produce diagnostic logs. Network logging is intended to be disa
 
 ## User Choices
 
-Users can choose which server to connect to, whether to configure SSH or STCP, whether to select local attachments or server project-file contexts, and whether to enable notifications or sounds. Remote data access, correction, retention, and deletion are controlled by the relevant OpenCode Server or provider and must be handled with that operator.
+Users can choose which server to connect to, whether to configure SSH or STCP, whether to select local attachments or server project-file contexts, whether to copy project names or paths to the system clipboard, and whether to enable notifications or sounds. Remote data access, correction, retention, and deletion are controlled by the relevant OpenCode Server or provider and must be handled with that operator.
 
 ## Changes
 

@@ -4,7 +4,7 @@
 
 OC Deck is a native Android client for [OpenCode](https://github.com/anomalyco/opencode). It connects to an OpenCode Server that you operate or trust. Note: OC Deck is not built by, endorsed by, or affiliated with the OpenCode project or Anomaly.
 
-> **Pre-1.0 warning:** version `0.2.0` is under active development. Features, storage formats, network behavior, and compatibility may change. Keep backups of important work and avoid relying on OC Deck as the only way to access a server.
+> **Pre-1.0 warning:** version `0.2.1` is under active development. Features, storage formats, network behavior, and compatibility may change. Keep backups of important work and avoid relying on OC Deck as the only way to access a server.
 
 ## Requirements
 
@@ -19,7 +19,7 @@ OC Deck is a native Android client for [OpenCode](https://github.com/anomalyco/o
 - Global and project SSE synchronization with reconnect and snapshot reconciliation
 - Provider catalog/search, dynamic API/OAuth authentication, disconnect, capability refresh, and staged custom-provider persistence on OpenCode Server
 - Slash commands, agent mentions, agent/model/variant pickers, local-device attachments, and server project-file context selection
-- Read-only server project file browsing, search, text highlighting, and image preview
+- Read-only server project file browsing, search, text highlighting, image preview, and long-press copying of file or directory names and paths
 - Permission and question handling, context usage, and Git/session diff in the session Changes tab
 - English and Simplified Chinese UI, theme preferences, Android notifications, notification sounds, and background-run guidance
 
@@ -85,7 +85,7 @@ Debug builds can compile without a generated GoMobile AAR, but STCP is unavailab
 
 ## Screenshots
 
-The reviewed screenshots included in the `0.2.0` project facade use constructed demonstration data and contain no real server, project, session, or credential information.
+The reviewed screenshots included in the `0.2.1` project facade use constructed demonstration data and contain no real server, project, session, or credential information.
 
 | Light theme | Dark theme |
 | --- | --- |

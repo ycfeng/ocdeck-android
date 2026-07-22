@@ -13,7 +13,23 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the `0.2.0` release. / 尚无超出 `0.2.0` 发布范围的变更。
+No changes have been assigned beyond the `0.2.1` release. / 尚无超出 `0.2.1` 发布范围的变更。
+
+## [0.2.1] - 2026-07-22
+
+### Added / 新增
+
+- Added a long-press copy menu to project file and directory rows in Browse and Pick modes. It can copy the name, project-relative path, or normalized absolute server path without opening, expanding, previewing, or selecting the row. / 在项目文件浏览与选择模式的文件和目录行中新增长按复制菜单，可复制名称、项目相对路径或规范化的服务端绝对路径，且不会打开、展开、预览或选择该行。
+
+### Changed / 变更
+
+- Project-drawer destination actions now commit once before the drawer close animation, covering project selection, Open Project, Settings, New Session, and session selection while preventing repeated navigation during closing. / 项目抽屉中的目标操作现在会在关闭动画前只提交一次，覆盖项目选择、打开项目、设置、新建会话和会话选择，并避免关闭过程中重复触发导航。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.8-frp0.69.1-p1` because the AAR embeds the `0.2.1` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.1` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.8-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Fixed project switching from session details through the project drawer so the current project returns to its project home and another project no longer leaves the previous session detail as the immediate Back destination. / 修复从会话详情通过项目抽屉切换项目时的返回栈，使当前项目回到项目首页，切换到其他项目后也不再把之前的会话详情留作紧接着的返回目标。
+- Fixed system Back handling while the project-file panel is open. Back now returns from file preview to the tree, closes the panel on the next press, and only then reaches the underlying project or session screen. / 修复项目文件面板打开时的系统返回处理：返回键现在会先从文件预览回到文件树，再关闭面板，之后才到达底层项目页或会话页。
 
 ## [0.2.0] - 2026-07-19
 
