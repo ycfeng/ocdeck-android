@@ -72,6 +72,15 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
+
+    buildTypes {
+        create("canary") {
+            initWith(getByName("debug"))
+        }
+        create("kotlinRelease") {
+            initWith(getByName("release"))
+        }
+    }
 }
 
 kotlin {
@@ -84,7 +93,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     if (goMobileBridgeAar.exists()) {
-        implementation("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
+        debugRuntimeOnly("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
+        releaseRuntimeOnly("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
     }
 
     testImplementation(libs.junit)

@@ -67,7 +67,7 @@ macOS/Linux:
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
-This remains the ordinary minimum for small App changes; every such change is not required to build Canary or Kotlin Release-Like. Also run `:app:testCanaryUnitTest`, `:app:testKotlinReleaseUnitTest`, `:app:assembleCanary`, and `:app:assembleKotlinRelease` when changing STCP backend selection, the pure Kotlin backend, shared STCP manager integration, or CI/Release variant validation. The full bridge and CI-equivalent gate below always runs all three App verification variants.
+This remains the ordinary minimum for small App changes; every such change is not required to build Canary or Kotlin Release-Like. Also run `:app:testCanaryUnitTest`, `:app:testKotlinReleaseUnitTest`, `:app:assembleCanary`, `:app:assembleKotlinRelease`, and `:app:verifyPureKotlinPackaging` when changing STCP backend selection, the pure Kotlin backend, shared STCP manager integration, or CI/Release variant validation. The packaging task resolves both Kotlin runtime classpaths and inspects every ABI APK, rejecting the GoMobile bridge module or any `libgojni.so` entry. The full bridge and CI-equivalent gate below always runs all three App verification variants.
 
 Run focused tests during development by naming a test class, for example:
 
@@ -158,7 +158,7 @@ python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
 bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
 bash .github/scripts/verify-bridge-reproducibility.sh
-./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease -PrequireGoMobileBridge=true
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
 The Go race detector requires CGO and a supported C compiler. If that toolchain is unavailable on Windows, run both Go race scopes under WSL or Linux; ordinary Windows Go tests do not replace the race gate. PowerShell also does not stop on a failing native process by default, so the sequence below uses a small fail-fast wrapper.
@@ -187,14 +187,14 @@ Invoke-NativeChecked { python .github/scripts/audit-community.py }
 Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
 Invoke-NativeChecked { .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest }
 Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
-Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease -PrequireGoMobileBridge=true }
+Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true }
 ```
 
 The reproducibility scripts require a clean checkout. On the current host platform, they build the current checkout plus a detached worktree at a different absolute path, isolate `GOCACHE`, `GOMODCACHE`, and `GOPATH` for each build, and compare the complete AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native-sidecar set byte-for-byte. They remove the temporary checkout and caches but leave the primary outputs in the current checkout for the Gradle gate. This is not a Windows-versus-Linux byte-identity claim. CI and Release use the shell script; Windows developers may run the PowerShell counterpart.
 
 The pinned Go, x/mobile, Android API, and NDK versions must come from `bridge-versions.properties`.
 
-Changes to the Go wrapper, downstream frp patch, Android bridge module, either STCP backend, App backend selection, bridge API, failure handling, or version metadata require the fixed-frp interoperability task and complete bridge gate rather than only Android unit tests. The Android gate validates Debug/GoMobile, Canary/Kotlin, and Kotlin Release-Like/Kotlin selection and assembly together. A Kotlin-only bridge API or failure-handling change may leave generated AAR bytes and `BRIDGE_VERSION` unchanged, but it does not waive any gate above. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
+Changes to the Go wrapper, downstream frp patch, Android bridge module, either STCP backend, App backend selection, bridge API, failure handling, or version metadata require the fixed-frp interoperability task and complete bridge gate rather than only Android unit tests. The Android gate validates Debug/GoMobile selection and assembly, Canary/Kotlin and Kotlin Release-Like/Kotlin selection, and bridge-free runtime/APK packaging for both Kotlin variants. A Kotlin-only bridge API or failure-handling change may leave generated AAR bytes and `BRIDGE_VERSION` unchanged, but it does not waive any gate above. Increment `BRIDGE_VERSION` whenever native or generated AAR bytes change.
 
 ## Security and Boundary Tests
 

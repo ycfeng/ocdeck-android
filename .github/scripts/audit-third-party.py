@@ -207,15 +207,18 @@ def audit_versions(
     )
 
     bridge_build = read_text(ROOT / "frpc-stcp-visitor/build.gradle.kts")
-    dependency_prefix = one_match(
-        r'implementation\("([^"]+):\$goMobileBridgeVersion"\)',
+    bridge_dependencies = re.findall(
+        r'^\s*(\w+)\("([^"]+):\$goMobileBridgeVersion"\)',
         bridge_build,
-        "GoMobile bridge dependency coordinate",
+        re.MULTILINE,
     )
     require_equal(
-        dependency_prefix,
-        f"{application_id}:{artifact_id}",
-        "GoMobile bridge dependency coordinate",
+        bridge_dependencies,
+        [
+            ("debugRuntimeOnly", f"{application_id}:{artifact_id}"),
+            ("releaseRuntimeOnly", f"{application_id}:{artifact_id}"),
+        ],
+        "GoMobile bridge variant dependencies",
     )
     for script_name in ("build-aar.sh", "build-aar.ps1"):
         script = read_text(GO_ROOT / script_name)

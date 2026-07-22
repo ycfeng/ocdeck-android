@@ -136,7 +136,7 @@ STCP backend 仅在 App 构建时通过 `BuildConfig` 固定选择：
 - `canary` 继承 `debug`，增加 application ID suffix `.canary` 与 version name suffix `-canary`，设置 `USE_KOTLIN_FRPC_STCP_VISITOR=true`，实例化 `KotlinFrpcStcpVisitorClient`。
 - `kotlinRelease` 继承正式 `release` 配置，增加 application ID suffix `.kotlinrelease` 与 version name suffix `-kotlin-release`，使用标准 Android Debug 测试证书，设置 `USE_KOTLIN_FRPC_STCP_VISITOR=true`，实例化 `KotlinFrpcStcpVisitorClient`。它仅用于 Release 模式真机验证，绝不接受 Release 签名、暂存或发布。
 - 这不是用户设置，不产生持久化/schema 状态，也不存在 backend 之间的运行时 fallback。
-- 两种实现都位于 `:frpc-stcp-visitor`，因此 Canary 与 Kotlin Release-Like APK 仍可能打包 Go native library；保证的是 `AppContainer` 实际选择的 client 实例，而不是安装包中不存在另一实现的字节。
+- 两种实现都位于 `:frpc-stcp-visitor`，但 library 为 Canary 与 Kotlin Release-Like 提供不带 GoMobile runtime dependency 的精确同名 variant。其 runtime classpath 与 APK 必须排除 bridge 和 `libgojni.so`；专用打包门禁会独立于 `AppContainer` factory 选择测试强制执行这一约束。
 
 ## 4. 工程结构
 
@@ -248,7 +248,7 @@ frpc-stcp-visitor-go/
 
 Canonical `.github/scripts/verify-bridge-reproducibility.sh` 与 `.ps1` 门禁要求干净 checkout。它们会在同一主机平台分别构建当前 checkout 和位于不同绝对路径的 detached worktree，为两个构建隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，再逐字节比较 AAR、sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。临时 checkout 与 cache 会被删除，主构建输出会保留供 Gradle 门禁使用；CI 与 Release 使用 shell 版本。这不构成跨操作系统字节一致性声明。App 打包会将 `libgojni.so` 排除在 Android Gradle Plugin 后续 strip transform 之外，使 Release APK 保留这些已验证的 AAR 字节；APK 门禁仍会重新校验 hash、ELF metadata、对齐和 stripped 状态。GoMobile 的 `-javapkg` 前缀对应反射入口 `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`。`internal/anetcompat` 用标准库网络接口函数替换 `github.com/wlynxg/anet`，并在主 module 显式继承 frp 的 yamux replacement。
 
-未生成 AAR 时 Android Debug 仍可编译，但其 GoMobile STCP 路径会在运行时返回明确不可用错误。Canary 与 Kotlin Release-Like 选择 Kotlin backend，不过共享 library 在 AAR 存在时仍可能打包 Go native 字节。正式 Release 的 `preReleaseBuild` 必须执行 `checkGoMobileBridgeAar`，逐字节校验 AAR checksum、固定 API signature、内外 bridge/frp provenance、法律文本、许可证、native metadata 和 AAR 内各 ABI `libgojni.so` 哈希。`-PrequireGoMobileBridge=true` 将同一 AAR 门禁应用到完整 Debug/Canary/KotlinRelease CI 验证。静态门禁通过后，正式发布前仍必须在目标 ABI 和 16KB page-size 设备上完成真实 GoMobile native load 与 STCP 闭环验证；不可发布 Kotlin Release-Like APK 提供独立的纯 Kotlin Release 模式真机验证路径，但不改变正式 backend 默认值。
+未生成 AAR 时 Android Debug 仍可编译，但其 GoMobile STCP 路径会在运行时返回明确不可用错误。生成 bridge 只作为 library Debug 与 Release variant 的 runtime-only dependency。Canary 与 Kotlin Release-Like 会解析无 bridge 的精确同名 library variant，因此无需 AAR 即可构建，并且即使 AAR 存在也必须保持不包含 bridge 和 `libgojni.so`。正式 Release 的 `preReleaseBuild` 必须执行 `checkGoMobileBridgeAar`，逐字节校验 AAR checksum、固定 API signature、内外 bridge/frp provenance、法律文本、许可证、native metadata 和 AAR 内各 ABI `libgojni.so` 哈希。`-PrequireGoMobileBridge=true` 会把同一 AAR 完整性门禁应用到完整 Debug/Canary/KotlinRelease CI 调用，但不会把 bridge 加入任一 Kotlin variant。`verifyPureKotlinPackaging` 会独立验证两个 Kotlin runtime classpath 与每个 ABI APK。静态门禁通过后，正式发布前仍必须在目标 ABI 和 16KB page-size 设备上完成真实 GoMobile native load 与 STCP 闭环验证；不可发布 Kotlin Release-Like APK 提供独立的纯 Kotlin Release 模式真机验证路径，但不改变正式 backend 默认值。
 
 GoMobile Kotlin adapter 使用 `GoMobileBridgeUnavailableException` 表示生成类缺失，使用 `GoMobileBridgeApiMismatchException` 表示类、方法或 payload 不兼容。Readiness 与 SSE 将这些启动失败归类为永久失败，不做无限重试。仅修改 Kotlin bridge API 或失败处理时仍需执行完整 bridge 门禁，但生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
 
@@ -759,7 +759,7 @@ Existing session id
 - `./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug`
 - `./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest` 显式以固定官方 frp v0.69.1 覆盖 wire v1/v2、四种 payload 模式、并发超窗口流、REST/SSE、类型化负例和重启/epoch 恢复；普通单元测试不会启动该 harness。
 - Android A/B 验证必须先在独立 invocation 中构建 GoMobile AAR，再运行 `./gradlew --no-daemon :frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true -Pocdeck.frp.androidInterop.deviceSerial=<serial> -Pocdeck.frp.androidInterop.suite=full`。显式 suite 为必填项，且必须是 `compat` 或 `full`；需要验收 summary 时还应传入 `-Pocdeck.frp.androidInterop.summaryFile=<new-path>`，目标必须尚不存在。Harness 复用固定官方 frp provisioner，并通过有界 adb stdin 将合成凭据写入测试私有文件，而不是通过 Gradle 或 instrumentation argument 传递。
-- 完整 bridge/CI Android 门禁为 `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease -PrequireGoMobileBridge=true`。
+- 完整 bridge/CI Android 门禁为 `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true`。
 - `go run ./cmd/preparefrp`、`go test -race -modfile=build/frp-patched.mod ./...`，以及在 patched frp module 中执行 `go test -race ./client/...`。
 - `.github/scripts/verify-bridge-reproducibility.sh` 或 Windows 下的 `.ps1` 必须使用 `bridge-versions.properties` 的固定 Go/x-mobile/Android API/NDK 版本；CI 与 Release 使用 shell 版本。
 - 仅修改 Kotlin bridge API 或失败处理时，即使生成 AAR 字节和 `BRIDGE_VERSION` 不变，也必须运行该完整门禁；native 或生成 AAR 字节发生任何变化时必须递增 `BRIDGE_VERSION`。

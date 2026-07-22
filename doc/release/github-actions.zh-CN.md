@@ -50,9 +50,9 @@ VERSION_NAME=0.2.0
 2. 在独立只读 job 中运行 `:frpc-stcp-visitor:frpcInteropTest`。任务只下载当前主机对应、由仓库固定并经哈希校验的官方 frp `v0.69.1` archive，安全解压 `frpc`/`frps`，并覆盖 wire v1/v2、四种 payload 模式、并发双向超窗口流、REST 与长期 global/project SSE、类型化负例、TLS 以及重启/control epoch 恢复。
 3. 运行外层 Go race tests，并在生成的 frp module 中单独运行 `client/...` race tests。
 4. 在 Ubuntu runner 上运行 canonical shell 可复现门禁。它会构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；校验法律/API/provenance/native metadata 和四 ABI 固定且无本地路径的 Go BuildInfo module graph；并逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
-5. 执行 bridge AAR 门禁、App 的 Debug、Canary 与 Kotlin Release-Like 单元测试、`:frpc-stcp-visitor` 单元测试，以及三个验证 APK 构建。
+5. 生成 bridge 前，先构建并测试 Canary 与 Kotlin Release-Like，并运行 `verifyPureKotlinPackaging`，证明干净 checkout 中两个 Kotlin variant 都不需要 GoMobile AAR。生成 bridge 后，再执行 bridge AAR 门禁、App 的 Debug、Canary 与 Kotlin Release-Like 单元测试、`:frpc-stcp-visitor` 单元测试、三个验证 APK 构建，并再次运行同一打包门禁。
 
-Debug factory 测试确认 GoMobile 默认选择，Canary 与 Kotlin Release-Like factory 测试确认纯 Kotlin 选择。由于两种实现位于同一个 Android library，两个 Kotlin 验证 APK 都仍可能打包 Go native 字节；门禁验证的是 App 实际装配，而不是断言安装包不存在 native 字节。
+Debug factory 测试确认 GoMobile 默认选择，Canary 与 Kotlin Release-Like factory 测试确认纯 Kotlin 选择。两个 Kotlin variant 都会解析无 bridge 的精确同名 library variant。打包门禁会拒绝任一 runtime classpath 中的 GoMobile bridge，并拒绝每个 Kotlin 验证 APK 中的 `libgojni.so`，包括生成 AAR 已可用后的再次验证。
 
 K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.workflow_sha` 与检出的 `HEAD` 指向同一 commit。该 workflow 进入默认分支后可直接手动触发。首次引入时，手动触发 `CI` 并设置 `run_frpc_android_interop=true`，同时可选填写精确 `candidate_sha`；留空时使用所触发 ref 的 SHA，并调用同一个分支内 reusable workflow。普通 push 与 Pull Request CI 绝不会调用该 job。每个模拟器 lane 先构建真实 GoMobile bridge，再在新的 Gradle invocation 中显式指定 suite 与新的 summary 目标运行 `:frpc-stcp-visitor:frpcAndroidInteropTest`。矩阵固定为：API 26 x86_64 使用只含 `success-v1-00` 的 `compat`；API 36 x86_64 使用 `full`，包含八个 wire v1/v2 × 加密关闭/开启 × 压缩关闭/开启成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。
 

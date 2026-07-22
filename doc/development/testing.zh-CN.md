@@ -67,7 +67,7 @@ macOS/Linux：
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
-这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建 Canary 或 Kotlin Release-Like。修改 STCP backend 选择、纯 Kotlin backend、共享 STCP manager 集成或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary` 与 `:app:assembleKotlinRelease`。下方完整 bridge/等价 CI 门禁始终运行三个 App 验证 variant。
+这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建 Canary 或 Kotlin Release-Like。修改 STCP backend 选择、纯 Kotlin backend、共享 STCP manager 集成或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleKotlinRelease` 与 `:app:verifyPureKotlinPackaging`。打包任务会解析两个 Kotlin runtime classpath 并检查每个 ABI APK，拒绝 GoMobile bridge module 或任何 `libgojni.so` 条目。下方完整 bridge/等价 CI 门禁始终运行三个 App 验证 variant。
 
 开发期间可按测试类运行聚焦测试，例如：
 
@@ -157,7 +157,7 @@ python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
 bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
 bash .github/scripts/verify-bridge-reproducibility.sh
-./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease -PrequireGoMobileBridge=true
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
 Go race detector 需要 CGO 与受支持的 C 编译器。如果 Windows 上没有该工具链，必须在 WSL 或 Linux 中运行两组 Go race tests；Windows 普通 Go 测试不能替代 race 门禁。PowerShell 默认也不会在 native 进程失败时停止，因此下面使用一个小型 fail-fast wrapper。
@@ -186,14 +186,14 @@ Invoke-NativeChecked { python .github/scripts/audit-community.py }
 Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
 Invoke-NativeChecked { .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest }
 Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
-Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease -PrequireGoMobileBridge=true }
+Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true }
 ```
 
 可复现脚本要求干净 checkout。它们会在当前主机平台构建当前 checkout，以及位于不同绝对路径的 detached worktree；两个构建分别隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较完整的 AAR、必需 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 集合。脚本会删除临时 checkout 与 cache，但保留当前 checkout 中的主构建输出供 Gradle 门禁使用。这不代表 Windows 与 Linux 之间的字节一致性声明。CI 与 Release 使用 shell 脚本；Windows 开发者可运行对应 PowerShell 脚本。
 
 固定 Go、x/mobile、Android API 与 NDK 版本必须来自 `bridge-versions.properties`。
 
-修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行固定 frp 互操作任务与完整 bridge 门禁，不能只运行 Android 单元测试。Android 门禁会同时验证 Debug/GoMobile、Canary/Kotlin 与 Kotlin Release-Like/Kotlin 的选择和装配。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行固定 frp 互操作任务与完整 bridge 门禁，不能只运行 Android 单元测试。Android 门禁会验证 Debug/GoMobile 的选择与装配、Canary/Kotlin 与 Kotlin Release-Like/Kotlin 的选择，以及两个 Kotlin variant 的无 bridge runtime/APK 打包。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
 
 ## 安全与边界测试
 

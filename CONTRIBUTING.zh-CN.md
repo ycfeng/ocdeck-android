@@ -50,7 +50,7 @@
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
-这是普通基线，不要求每项文档、UI 或小型 App 改动都构建 Canary 或 Kotlin Release-Like。改动涉及 STCP backend 选择、纯 Kotlin backend、`AppContainer` STCP 装配、共享 manager 集成或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary` 与 `:app:assembleKotlinRelease`。
+这是普通基线，不要求每项文档、UI 或小型 App 改动都构建 Canary 或 Kotlin Release-Like。改动涉及 STCP backend 选择、纯 Kotlin backend、`AppContainer` STCP 装配、共享 manager 集成或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleKotlinRelease` 与 `:app:verifyPureKotlinPackaging`。
 
 ## 架构规则
 
@@ -92,10 +92,10 @@ frpc-stcp-visitor-go: go test -race -modfile=build/frp-patched.mod ./...
 frpc-stcp-visitor-go/build/frp-v0.69.1-p1: go test -race ./client/...
 仓库根目录: bash frpc-stcp-visitor-go/build-aar.sh
 仓库根目录: ./gradlew :frpc-stcp-visitor:frpcInteropTest
-仓库根目录: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease -PrequireGoMobileBridge=true
+仓库根目录: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。`frpcInteropTest` 只会显式下载当前主机对应、经哈希固定的官方 frp release asset，保存在 Gradle cache 中，并在发布签名 environment 之外运行；普通单元测试不会启动它。完整 Android 门禁会同时验证 Debug/GoMobile、Canary/Kotlin 与 Kotlin Release-Like/Kotlin 装配，两个 Kotlin 验证 APK 都不会因此成为发布制品。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。bridge 字节发生变化时必须递增 bridge 版本；不得在同一 Maven 坐标下发布不同字节。
+Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。`frpcInteropTest` 只会显式下载当前主机对应、经哈希固定的官方 frp release asset，保存在 Gradle cache 中，并在发布签名 environment 之外运行；普通单元测试不会启动它。完整 Android 门禁会验证 Debug/GoMobile 装配，并验证无 bridge 的 Canary/Kotlin 与 Kotlin Release-Like/Kotlin runtime classpath 和 APK；两个 Kotlin 验证 APK 都不会因此成为发布制品。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。bridge 字节发生变化时必须递增 bridge 版本；不得在同一 Maven 坐标下发布不同字节。
 
 ## 敏感信息与测试 Fixture
 

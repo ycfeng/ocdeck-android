@@ -269,6 +269,7 @@ jobs:
           :app:assembleDebug
           :app:assembleCanary
           :app:assembleKotlinRelease
+          :app:verifyPureKotlinPackaging
           -PrequireGoMobileBridge=true
 
       - name: Decode release keystore

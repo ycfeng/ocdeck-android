@@ -2,6 +2,8 @@ import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
 import com.android.build.api.variant.HostTestBuilder
 import java.net.URI
 import java.util.Properties
+import java.util.zip.ZipFile
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.tasks.Sync
 
 plugins {
@@ -58,6 +60,9 @@ val escapedProjectUrl = projectUrl.replace("\\", "\\\\").replace("\"", "\\\"")
 val generatedLegalTextDirectory = layout.buildDirectory.dir("generated/legalText")
 val generatedLegalAssetsDirectory = layout.buildDirectory.dir("generated/legalAssets")
 val thirdPartyLicenseDirectory = rootProject.layout.projectDirectory.dir("third_party/licenses")
+val pureKotlinBuildTypes = listOf("canary", "kotlinRelease")
+val goMobileBridgeGroup = "io.github.ycfeng.ocdeck"
+val goMobileBridgeModule = "frpc-stcp-visitor-gobridge"
 val generateThirdPartyLicenseBundle = tasks.register("generateThirdPartyLicenseBundle") {
     val outputFile = generatedLegalTextDirectory.map { it.file("THIRD_PARTY_LICENSES.txt") }
     inputs.dir(thirdPartyLicenseDirectory)
@@ -220,7 +225,7 @@ tasks.matching {
 }
 
 androidComponents {
-    listOf("canary", "kotlinRelease").forEach { buildType ->
+    pureKotlinBuildTypes.forEach { buildType ->
         beforeVariants(selector().withBuildType(buildType)) { variantBuilder ->
             variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
         }
@@ -239,6 +244,58 @@ androidComponents {
             )
         }
     }
+}
+
+val pureKotlinPackagingTasks = pureKotlinBuildTypes.map { buildType ->
+    val variantName = buildType.replaceFirstChar(Char::uppercase)
+    tasks.register("verify${variantName}Packaging") {
+        group = "verification"
+        description = "Verifies that $buildType APKs contain no GoMobile runtime artifacts."
+        dependsOn("assemble$variantName")
+
+        doLast {
+            val bridgeComponents = configurations.getByName("${buildType}RuntimeClasspath")
+                .incoming.resolutionResult.allComponents
+                .map { it.id }
+                .filterIsInstance<ModuleComponentIdentifier>()
+                .filter { it.group == goMobileBridgeGroup && it.module == goMobileBridgeModule }
+            check(bridgeComponents.isEmpty()) {
+                "$buildType runtime classpath contains the GoMobile bridge: " +
+                    bridgeComponents.joinToString { it.displayName }
+            }
+
+            val apkDirectory = layout.buildDirectory.dir("outputs/apk/$buildType").get().asFile
+            val apks = apkDirectory.listFiles { file -> file.isFile && file.extension == "apk" }
+                ?.sortedBy(File::getName)
+                .orEmpty()
+            check(apks.size == 3) {
+                "Expected three ABI-split $buildType APKs in ${apkDirectory.absolutePath}, found ${apks.size}."
+            }
+
+            val nativeEntries = buildList {
+                apks.forEach { apk ->
+                    ZipFile(apk).use { archive ->
+                        val entries = archive.entries()
+                        while (entries.hasMoreElements()) {
+                            val entry = entries.nextElement()
+                            if (entry.name.endsWith("/libgojni.so")) {
+                                add("${apk.name}!/${entry.name}")
+                            }
+                        }
+                    }
+                }
+            }
+            check(nativeEntries.isEmpty()) {
+                "$buildType APKs contain GoMobile native libraries: ${nativeEntries.joinToString()}"
+            }
+        }
+    }
+}
+
+tasks.register("verifyPureKotlinPackaging") {
+    group = "verification"
+    description = "Verifies that Canary and Kotlin Release-Like APKs exclude the GoMobile runtime."
+    dependsOn(pureKotlinPackagingTasks)
 }
 
 kotlin {

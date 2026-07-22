@@ -140,7 +140,7 @@
 
 Windows 使用 `gradlew.bat`。
 
-- 修改 `frpc-stcp-visitor-go/`、`:frpc-stcp-visitor`、frp patch、bridge API/依赖或 bridge 版本时，还必须执行 CI 等价门禁：`go run ./cmd/preparefrp`；wrapper 与 patched frp client 的 `go test -race`；`build-aar.sh` 或 `build-aar.ps1`；`:frpc-stcp-visitor:frpcInteropTest`；`:frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`；`:frpc-stcp-visitor:testDebugUnitTest`；`:app:testDebugUnitTest`；`:app:testCanaryUnitTest`；`:app:testKotlinReleaseUnitTest`；`:app:assembleDebug`；`:app:assembleCanary`；以及 `:app:assembleKotlinRelease`。互操作任务只下载仓库固定并经哈希校验的官方 frp 二进制，且必须在任何发布签名 environment 之外运行。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节和 `BRIDGE_VERSION` 可以保持不变，但仍不能省略完整门禁；native/AAR 字节变化时必须递增 `BRIDGE_VERSION`。
+- 修改 `frpc-stcp-visitor-go/`、`:frpc-stcp-visitor`、frp patch、bridge API/依赖或 bridge 版本时，还必须执行 CI 等价门禁：`go run ./cmd/preparefrp`；wrapper 与 patched frp client 的 `go test -race`；`build-aar.sh` 或 `build-aar.ps1`；`:frpc-stcp-visitor:frpcInteropTest`；`:frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`；`:frpc-stcp-visitor:testDebugUnitTest`；`:app:testDebugUnitTest`；`:app:testCanaryUnitTest`；`:app:testKotlinReleaseUnitTest`；`:app:assembleDebug`；`:app:assembleCanary`；`:app:assembleKotlinRelease`；以及 `:app:verifyPureKotlinPackaging`。打包门禁要求 Canary 与 Kotlin Release-Like 的 runtime classpath 及全部 ABI APK 都排除 GoMobile bridge 和 `libgojni.so`。互操作任务只下载仓库固定并经哈希校验的官方 frp 二进制，且必须在任何发布签名 environment 之外运行。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节和 `BRIDGE_VERSION` 可以保持不变，但仍不能省略完整门禁；native/AAR 字节变化时必须递增 `BRIDGE_VERSION`。
 - Bridge 门禁必须继续验证 checksum、Java API signature、bridge/frp provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和同输入可复现性。
 - 仅修改文档或社区治理文件时应运行 `python .github/scripts/audit-community.py`；只有改动影响代码、构建、发布或第三方校验时才增加更广泛测试。
 
