@@ -372,7 +372,7 @@ Hilt 引入条件：
 - `OpenCodeApi`：Retrofit interface，承载 REST 接口。
 - `RetrofitInboundResponsePolicyInterceptor`：要求每个 `OpenCodeApi` 方法显式声明响应模式，为有界请求附加 encoded-body network interceptor tag，对 decoded 成功实体施加边界，并丢弃不应进入 Retrofit converter 的 body。
 - `EncodedResponseLimitInterceptor`：network interceptor，在 OkHttp 执行 `Content-Encoding` 解码前限制 tagged response-body octets。
-- `OpenCodeApiFactory`：根据 `ServerConfig` 创建 API 实例，并为 `ServerConnection` 同时提供共享 OkHttp client 的窄 `SessionMessagesTransport`，以及单独有界为十分钟的 Provider OAuth callback client。
+- `OpenCodeApiFactory`：根据 `ServerConfig` 创建自持有的 API client bundle；每个 bundle 包含 REST/session-message 共用的 OkHttp client、单独有界为十分钟的 Provider OAuth callback client，并支持显式幂等清理。
 - `SessionMessagesTransport`：直接请求会话消息；非 2xx 不读取 body，2xx 同时使用 64 MiB encoded response-body policy，并在 OkHttp callback 线程执行 64 MiB 有界 decoded 流式 JSON decode。
 - `OpenCodeEventClient`：基于 OkHttp `Call` 和自定义流式 SSE reader 管理全局和项目事件流。
 - `OpenCodeErrorParser`：统一解析 HTTP 错误、网络错误、服务端错误体。
@@ -395,6 +395,8 @@ STCP 连接使用双层就绪判据：
 `FrpcStcpVisitorManager` 按 server config epoch 和单调 tunnel generation 管理状态。首次进入同一 generation 的 REST、健康检查、全局 SSE 和项目 SSE 共享一个 single-flight；全局状态锁只保护状态转换，backend I/O、HTTP、重试 delay 和 stop 均在锁外。成功只按 generation 缓存，失败不缓存并精确停止该 generation 保存的 session，不能按 serverId 误关后来建立的新隧道。配置或 Keystore 中 token/secret 的值变化会使旧 lease 失效，即使 credential key 未变化也必须新建 generation。GoMobile 与 Kotlin client 共享这些 config lease、generation、readiness、health probe、清理规则和 REST/SSE 屏障，不因 backend 选择改变。
 
 已 Ready 的 generation 在后续 `getConnection()` 时读取 native runtime state。相同 control epoch 且 listener 仍 ready 时直接复用，不重复 health；frps 重连、listener 重绑或 control epoch 变化时，同一 generation 内共享一次 `WaitVisitorReady + /global/health` 恢复。返回连接前再次读取 native state，并复验精确 generation/control epoch 与 manager 当前状态；该复验只作用于 STCP，直连和 SSH 不增加专用屏障。旧 epoch 的迟到结果不能覆盖新 generation。`ServerRepository.getConnection()` 是 REST 与 SSE 的统一屏障，因此项目快照和 EventSource 都不得在 readiness 完成前启动。
+
+`ServerRepository` 按服务器持有一份 HTTP client bundle，并在重新验证 transport readiness 后供重复及并发的 `getConnection()` 调用复用。缓存 key 包含规范化后的服务器/认证快照、effective URL、Repository config epoch，以及 STCP generation/control epoch。配置提交、结果不确定的 mutation、服务器删除或更新的 STCP transport identity 都会替换并显式关闭旧 bundle。即使 loopback URL 相同，也绝不跨 server ID 或 transport identity 共用 bundle。每次调用仍返回新的轻量 `ServerConnection` 视图，因此一次性的 readiness health evidence 不会被缓存，消费者也不能关闭共享 client。
 
 application readiness 使用独立短超时 profile 和整体时间预算。仅重试连接拒绝、reset、EOF、timeout、HTTP 408/425/429/5xx 和 `healthy == false`；401/403/404、TLS/hostname、序列化和配置错误快速失败。首次显式健康检查复用 readiness 的 health evidence，避免连续请求两次 `/global/health`；已经 Ready 的 generation 上手动健康检查仍执行一次 fresh health。
 
