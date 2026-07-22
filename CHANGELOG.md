@@ -13,7 +13,18 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the `0.2.1` release. / 尚无超出 `0.2.1` 发布范围的变更。
+No changes have been assigned beyond the `0.2.2` release. / 尚无超出 `0.2.2` 发布范围的变更。
+
+## [0.2.2] - 2026-07-23
+
+### Changed / 变更
+
+- Incremented the immutable GoMobile bridge coordinate to `0.3.9-frp0.69.1-p1` because the AAR embeds the `0.2.2` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.2` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.9-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Project-file response bodies are now read and decoded on the configured I/O dispatcher instead of the UI thread, preventing large valid file previews from blocking Compose interaction. / 项目文件响应体现在会在配置的 I/O dispatcher 上读取和解码，而不是占用 UI 线程，避免较大的有效文件预览阻塞 Compose 交互。
+- Cancelling an in-flight session-message load now interrupts the OkHttp call without concurrently closing its response body from the cancelling thread. The callback thread retains sole ownership of body cleanup, avoiding an Okio read/close race and network cleanup on the UI thread. / 取消进行中的会话消息加载时，现在只中断 OkHttp call，不再由取消线程并发关闭响应体；响应体清理由 callback 线程独占，避免 Okio 读写关闭竞态及在 UI 线程执行网络清理。
 
 ## [0.2.1] - 2026-07-22
 
