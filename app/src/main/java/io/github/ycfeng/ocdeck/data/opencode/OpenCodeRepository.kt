@@ -84,8 +84,11 @@ import io.github.ycfeng.ocdeck.domain.prompt.PromptAttachment
 import io.github.ycfeng.ocdeck.domain.prompt.PromptGateway
 import io.github.ycfeng.ocdeck.domain.prompt.ProjectFileContext
 import io.github.ycfeng.ocdeck.domain.prompt.SessionRevertGateway
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -113,6 +116,7 @@ class OpenCodeRepository(
     private val projectFilePathNormalizer: ProjectFilePathNormalizer,
     private val json: Json,
     private val redactor: Redactor,
+    private val fileContentDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : PromptGateway, SessionRevertGateway, ProjectSnapshotLoader, SessionListWindowLoader {
     private val promptCapabilityRevision = AtomicLong()
     private val projectFileUrlBuilder = ProjectFileUrlBuilder(pathNormalizer, projectFilePathNormalizer)
@@ -462,9 +466,11 @@ class OpenCodeRepository(
         )
         val api = serverRepository.getConnection(serverId).api
         try {
-            api.getFileContent(directory = normalizedDirectory, path = normalizedPath)
-                .readFileContentDto(json)
-                .toDomain(normalizedPath)
+            withContext(fileContentDispatcher) {
+                api.getFileContent(directory = normalizedDirectory, path = normalizedPath)
+                    .readFileContentDto(json)
+                    .toDomain(normalizedPath)
+            }
         } catch (_: InboundPayloadTooLargeException) {
             OpenCodeFileContent.TooLarge(normalizedPath)
         }

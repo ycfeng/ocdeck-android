@@ -97,6 +97,7 @@ class AppContainer(context: Context) {
         projectFilePathNormalizer = projectFilePathNormalizer,
         json = json,
         redactor = redactor,
+        fileContentDispatcher = Dispatchers.IO,
     )
     val openCodeProviderRepository = OpenCodeProviderRepository(
         serverRepository = serverRepository,
