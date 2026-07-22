@@ -22,19 +22,25 @@ class ProjectFilePanelBackHandlerTest {
 
     @Test
     fun backConsumesPreviewAndPanelBeforeUnderlyingContent() {
-        var isOpen by mutableStateOf(true)
+        var isOpen by mutableStateOf(false)
         var page by mutableStateOf(ProjectFileBrowserPage.Content)
         var underlyingBackCount = 0
 
         composeRule.setContent {
             BackHandler { underlyingBackCount += 1 }
-            ProjectFilePanelBackHandler(
-                isOpen = isOpen,
-                currentPage = { page },
-                onShowTree = { page = ProjectFileBrowserPage.Tree },
-                onClose = { isOpen = false },
-            )
+            if (isOpen) {
+                ProjectFilePanelBackHandler(
+                    currentPage = { page },
+                    onShowTree = { page = ProjectFileBrowserPage.Tree },
+                    onClose = { isOpen = false },
+                )
+            }
         }
+
+        composeRule.runOnIdle {
+            isOpen = true
+        }
+        composeRule.waitForIdle()
 
         pressBack()
         assertEquals(ProjectFileBrowserPage.Tree, page)

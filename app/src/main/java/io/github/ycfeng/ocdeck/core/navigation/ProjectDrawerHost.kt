@@ -469,6 +469,11 @@ internal fun ProjectDrawerHost(
             }
 
             if (isFilePanelOpen && activeProject != null && fileViewModel != null) {
+                ProjectFilePanelBackHandler(
+                    currentPage = { fileViewModel.uiState.value.page },
+                    onShowTree = fileViewModel::showTree,
+                    onClose = closeFilePanel,
+                )
                 val closeDescription = stringResource(R.string.a11y_close)
                 val pickerRequest = filePickerRequest
                 val paneDescription = stringResource(
@@ -545,22 +550,15 @@ internal fun ProjectDrawerHost(
         }
     }
 
-    ProjectFilePanelBackHandler(
-        isOpen = isFilePanelOpen,
-        currentPage = { fileViewModel?.uiState?.value?.page },
-        onShowTree = { fileViewModel?.showTree() },
-        onClose = closeFilePanel,
-    )
 }
 
 @Composable
 internal fun ProjectFilePanelBackHandler(
-    isOpen: Boolean,
     currentPage: () -> ProjectFileBrowserPage?,
     onShowTree: () -> Unit,
     onClose: () -> Unit,
 ) {
-    BackHandler(enabled = isOpen) {
+    BackHandler {
         if (currentPage() == ProjectFileBrowserPage.Content) {
             onShowTree()
         } else {
