@@ -47,6 +47,8 @@ fun sha256(input: InputStream): String {
 
 fun sha256(file: File): String = sha256(file.inputStream())
 
+fun normalizeTextLineEndings(text: String): String = text.replace("\r\n", "\n").replace('\r', '\n')
+
 fun parseJsonObject(file: File): Map<*, *> {
     val parsed = JsonSlurper().parse(file)
     check(parsed is Map<*, *>) { "Expected a JSON object in ${file.absolutePath}" }
@@ -130,8 +132,8 @@ tasks.register("checkGoMobileBridgeAar") {
         check(sha256(goMobileBridgeAar) == expectedSha) {
             "GoMobile STCP visitor AAR checksum does not match its immutable artifact metadata."
         }
-        val publishedApi = goMobileBridgeApi.readText().replace("\r\n", "\n").replace('\r', '\n')
-        val committedApi = expectedBridgeApi.readText().replace("\r\n", "\n").replace('\r', '\n')
+        val publishedApi = normalizeTextLineEndings(goMobileBridgeApi.readText())
+        val committedApi = normalizeTextLineEndings(expectedBridgeApi.readText())
         check(publishedApi == committedApi) {
             "GoMobile STCP visitor API does not exactly match the committed signature."
         }
@@ -238,7 +240,8 @@ tasks.register("checkGoMobileBridgeAar") {
                 }
             expectedMetadataFiles.forEach { (path, source) ->
                 val entry = archive.getEntry(path) ?: error("GoMobile STCP visitor AAR is missing $path.")
-                check(archive.getInputStream(entry).readBytes().contentEquals(source.readBytes())) {
+                val embeddedText = archive.getInputStream(entry).bufferedReader().use { it.readText() }
+                check(normalizeTextLineEndings(embeddedText) == normalizeTextLineEndings(source.readText())) {
                     "GoMobile STCP visitor AAR metadata does not match $source."
                 }
             }
