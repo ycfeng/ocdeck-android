@@ -34,11 +34,13 @@
 - [ ] AAR checksum、精确 Java API、bridge/frp provenance、四 ABI BuildInfo module identity/version/sum、无本地路径与跨 ABI graph digest 证明、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
 - [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleKotlinRelease`、`:app:verifyPureKotlinPackaging` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/GoMobile、Canary/Kotlin 与 Kotlin Release-Like/Kotlin 选择，打包门禁确认两个 Kotlin runtime classpath 和全部 ABI APK 都排除 GoMobile bridge 与 `libgojni.so`。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已对其精确完整 commit SHA 运行 `K6V Android STCP Interop`：可直接手动触发，首次引入时也可通过人工显式启用的 CI reusable bootstrap。API 26 x86_64 `compat` lane 精确通过 `success-v1-00`；API 36 x86_64 `full` lane 通过全部八个 wire/加密/压缩成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。Renderer preflight tests 已通过，fail-closed 双语报告与规范化 evidence 完整校验 suite/profile identity、参数、`gomobile,kotlin` 顺序、精确 checks、等价性和 `authorizesKotlinDefault=false`，而不是依赖 Gradle task success。否则本项明确记录为不适用。
-- [ ] 已审查 K6V 报告限制：模拟器证据不能替代物理目标 ABI 与 16KB native load、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。
-- [ ] Canary 与 Kotlin Release-Like APK 仅作为无 bridge 的验证输出。Kotlin Release-Like 使用标准 Android Debug 测试证书进行物理设备 Release-mode 验证；Release 签名与发布暂存只使用 GoMobile 默认的 `assembleRelease` 输出。
+- [ ] 已审查 K6V 报告限制：模拟器证据不能替代分离的目标 ABI 真机与 16KB runtime lane、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。两个设备 lane 可以使用不同设备；无法获得物理 ARM 16KB 硬件记录为残余风险，而不是 K7 开发阻塞项。
+- [ ] Canary 与 Kotlin Release-Like APK 仅作为无 bridge 的验证输出。Kotlin Release-Like 使用标准 Android Debug 测试证书进行 Release-mode 设备验证；Release 签名与发布暂存只使用 GoMobile 默认的 `assembleRelease` 输出。
 - [ ] 签名 Release APK 的 metadata、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、native 字节绑定、法律资产、文件名和 `SHA256SUMS` 校验已通过。
 
-## 真机与连接门禁
+## 设备与连接门禁
+
+目标 ABI 真机 lane 与 16KB runtime lane 可以使用不同设备。官方 Android 16KB 测试镜像或真机可以提供 runtime page size、启动和适用互操作证据，但必须结合目标 ABI 真机加载以及静态对齐/打包门禁。物理 ARM 16KB 设备仍是理想的组合覆盖，而不是 K7 开发的前置条件。
 
 - [ ] 每个可获得真机的目标 ABI 都已首次安装对应签名 ABI APK，并成功启动。
 - [ ] 已从上一个真实公开版本执行兼容覆盖更新，并确认预期本地数据保留；对于首个公开版本，应明确记录为不适用，而不是推断通过。
@@ -46,7 +48,7 @@
 - [ ] 已确认卸载会按文档删除应用私有本地数据，重新安装表现为新的本地安装，并且没有作出不受支持的导出/恢复声明。
 - [x] 已在可获得的 `arm64-v8a` 真机上测试 native load 和应用启动。
 - [ ] 如果发布声明依赖其他公开 ABI，已在对应真机测试 native load；无法测试的 ABI 限制已经披露。
-- [x] 已在使用 16KB page size 的 Android 真机上通过 native load 和启动验证。
+- [x] 已在使用 16KB page size 的 Android runtime 上通过 native load 和启动验证，可使用官方 Android 16KB 测试镜像或真机；已记录的 `0.1.0` 证据使用物理硬件。
 - [x] 已通过真实 frps/STCP visitor 路径达到 listener readiness，并经隧道完成 `/global/health`。
 - [x] 同一真实 STCP 路径已覆盖代表性 REST、全局/项目 SSE，并在可行时验证重连或 control epoch 恢复。
 - [ ] 已通过 App 实际连接路径对 HTTP(S) 直连和 SSH 进行 smoke test。

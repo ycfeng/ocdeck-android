@@ -446,17 +446,9 @@ jobs:
 
           page_size = "unavailable"
           if serial:
-              page_size_script = (
-                  'while read key value unit rest; do '
-                  'case "$key" in KernelPageSize:|MMUPageSize:) '
-                  'case "$unit" in kB) echo $((value * 1024)); exit 0;; '
-                  'B) echo "$value"; exit 0;; esac;; esac; '
-                  'done < /proc/self/smaps; exit 1'
-              )
               return_code, output = command_text(
-                  [str(sdk / "platform-tools" / "adb"), "-s", serial, "shell", "-T", "sh"],
+                  [str(sdk / "platform-tools" / "adb"), "-s", serial, "shell", "getconf", "PAGE_SIZE"],
                   15,
-                  page_size_script.encode("utf-8"),
               )
               if return_code == 0 and output.strip().isdigit():
                   page_size = output.strip()

@@ -532,7 +532,7 @@ def audit_release_metadata(version_name: str) -> None:
     for token in (
         "testApkSha256",
         "bridgeAarSha256",
-        "/proc/self/smaps",
+        '"getconf", "PAGE_SIZE"',
         "HOST_SUMMARY_FILE",
         "hostSummary",
         "laneId",

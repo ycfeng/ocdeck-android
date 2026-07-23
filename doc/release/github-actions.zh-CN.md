@@ -60,7 +60,7 @@ K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.wor
 
 Preflight 会运行报告 renderer 单元测试。只有两份 lane evidence 都包含严格 Host summary，并精确匹配 suite、设备 metadata、有序 profile、scenario/wire/encryption/compression 参数、`gomobile,kotlin` 顺序、精确 checks 与等价性时，renderer 才通过，否则 fail closed。Gradle task success 不能替代 profile 证据。报告状态绑定这一完整契约；每份报告都设置 `authorizesKotlinDefault=false`，每个 lane 还记录实际 Android test APK 与 GoMobile bridge AAR 的 SHA-256。最终 artifact 包含中英文报告、规范化 evidence JSON 和 `SHA256SUMS`，不包含凭据、endpoint、私有路径、原始进程日志或测试配置。
 
-普通 CI 与 K6V workflow 都不持有 Release JKS、密码或仓库写权限。Debug、Canary 与 Kotlin Release-Like APK 仅作为验证输出；Kotlin Release-Like 只使用标准 Android Debug 测试证书。Host 互操作 job 与 API 36 K6V `full` lane 在不同执行边界分别覆盖完整 wire/payload、负例与重启矩阵。x86_64 模拟器证据不能替代物理目标 ABI native load、16KB page-size 真机、App 的真实 Store/快照/reconciliation 链路、Doze 或网络切换、前后台、性能、资源泄漏与长期 soak 证据、正式稳定发布周期或发布设备 STCP 验证。K6V artifact 通过只代表可用于评估 K7，并不自动授权 Kotlin 默认装配。
+普通 CI 与 K6V workflow 都不持有 Release JKS、密码或仓库写权限。Debug、Canary 与 Kotlin Release-Like APK 仅作为验证输出；Kotlin Release-Like 只使用标准 Android Debug 测试证书。Host 互操作 job 与 API 36 K6V `full` lane 在不同执行边界分别覆盖完整 wire/payload、负例与重启矩阵。固定 x86_64 模拟器证据不能替代分离的目标 ABI 真机与 16KB runtime lane、App 的真实 Store/快照/reconciliation 链路、Doze 或网络切换、前后台、性能、资源泄漏与长期 soak 证据、正式稳定发布周期或发布设备 STCP 验证。两个设备 lane 可以使用不同设备：物理 ARM 覆盖目标 ABI 安装/class loading 和真实 App/STCP；官方 Android 16KB 测试镜像或真机覆盖 runtime page size、启动和适用互操作，并结合静态对齐/打包门禁。缺少物理 ARM 16KB 硬件属于需披露的残余风险，而不是 K7 开发阻塞项。K6V artifact 通过只代表可用于评估 K7，并不自动授权 Kotlin 默认装配。
 
 ## 4. GitHub 仓库配置
 
@@ -143,7 +143,7 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 
 1. 更新 `gradle.properties` 中的 `VERSION_NAME` 和递增后的 `VERSION_CODE`。
 2. 更新变更日志和 `release-notes/v${VERSION_NAME}.md`。按实际变化同步 README、隐私、安全、支持、商标、`THIRD_PARTY_NOTICES.txt` 和 `third_party/`，重新核对依赖、音效、Gradle wrapper、frp patch 及本地 SHA-256。
-3. 完成[发布检查清单](checklist.zh-CN.md)，包括真机 native load、16KB page-size 和真实 STCP 验证。缺少外部门禁时必须阻止正式发布。
+3. 完成[发布检查清单](checklist.zh-CN.md)，包括目标 ABI 真机 native load、在官方 Android 测试镜像或真机上的 16KB runtime 验证，以及真实 STCP 验证。这些维度可以使用不同设备；缺少任一必要维度时仍必须阻止正式发布。
 4. 合并到 `main`，确认 CI 通过。
 5. 可先从 `main` 手动运行 `Release` workflow。Dry-run 会准备最终可审阅说明，重新构建、签名、校验并保留三天 artifact，但不会创建 GitHub Release。
 6. 在已经验证的 commit 上创建并推送 `vMAJOR.MINOR.PATCH` tag。
@@ -179,5 +179,5 @@ Bridge 静态生成四个 GoMobile ABI，但公开应用发布只包含 `arm64-v
 - 签名失败：检查四个 Environment secret、JKS Base64 是否完整以及 alias/密码是否匹配；不得在日志中输出 secret。
 - 证书指纹失败：停止发布并确认 Environment 中的 JKS 是既有 app-signing key；不得通过修改预期指纹绕过连续性保护。
 - AAR 门禁通过后 APK native 字节绑定仍失败：确认 App 打包保留已经 stripped 的 `libgojni.so`；不得接受 transform 后的字节、替换 AAR hash 或降低 APK 校验。
-- 真机或真实 STCP 门禁失败或未完成：不得发布。修复并重做门禁，或推迟版本。
+- 必需的目标 ABI 真机、16KB runtime 或真实 STCP 门禁失败或未完成：不得发布。各 lane 可以使用不同设备；修复并重做受影响门禁，或推迟版本。
 - GitHub Release 已存在：不要覆盖 Release 或移动同名 tag；修复问题后递增版本并创建新 tag。

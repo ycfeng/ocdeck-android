@@ -33,6 +33,10 @@ internal data class AndroidInteropScenario(
     val kind: String,
 )
 
+internal fun parseAndroidRuntimePageSize(output: String): Int = output.trim().toIntOrNull()
+    ?.takeIf { it > 0 }
+    ?: throw InteropFailure("Android device page size was invalid")
+
 @Serializable
 internal data class AndroidInteropRestartMarkers(
     val deviceReadyFile: String,
@@ -1319,13 +1323,13 @@ private class FrpcAndroidInteropRunner {
             ?: throw InteropFailure("Android device API level was unsupported")
         val abi = property("ro.product.cpu.abi").takeIf(ANDROID_INTEROP_SUPPORTED_ABIS::contains)
             ?: throw InteropFailure("Android device ABI was unsupported by the retained GoMobile bridge")
-        val pageSize = adb.run(
+        // Android's x86_64 16 KiB test images expose the runtime ABI page size through sysconf,
+        // while /proc/self/smaps can still report the underlying 4 KiB MMU page size.
+        val pageSize = parseAndroidRuntimePageSize(adb.run(
             label = "Android device page size",
-            arguments = listOf("shell", "-T", "sh"),
+            arguments = listOf("shell", "getconf", "PAGE_SIZE"),
             timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
-            standardInput = PAGE_SIZE_SHELL.toByteArray(StandardCharsets.UTF_8),
-        ).standardOutput.trim().toIntOrNull()?.takeIf { it > 0 }
-            ?: throw InteropFailure("Android device page size was invalid")
+        ).standardOutput)
         return AndroidDeviceMetadata(api, abi, pageSize)
     }
 
@@ -1956,12 +1960,6 @@ private class FrpcAndroidInteropRunner {
         const val ASYNC_EXECUTOR_STOP_TIMEOUT_MILLIS = 15_000L
         const val ASYNC_EXECUTOR_FORCE_TIMEOUT_MILLIS = 5_000L
         const val RESOURCE_CLEANUP_TIMEOUT_MILLIS = 45_000L
-        const val PAGE_SIZE_SHELL =
-            "while read key value unit rest; do " +
-                "case \"\$key\" in KernelPageSize:|MMUPageSize:) " +
-                "case \"\$unit\" in kB) echo \$((value * 1024)); exit 0;; " +
-                "B) echo \"\$value\"; exit 0;; esac;; esac; " +
-                "done < /proc/self/smaps; exit 1"
     }
 }
 

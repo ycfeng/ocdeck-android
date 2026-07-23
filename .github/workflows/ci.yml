@@ -113,6 +113,12 @@ jobs:
         shell: bash
         run: go run ./cmd/preparefrp
 
+      - name: Validate Go race environment
+        shell: bash
+        run: |
+          python3 .github/scripts/test_check_go_race_environment.py
+          python3 .github/scripts/check-go-race-environment.py
+
       - name: Audit community and documentation metadata
         shell: bash
         run: python3 .github/scripts/audit-community.py

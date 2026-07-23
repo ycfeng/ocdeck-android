@@ -75,6 +75,15 @@ class FrpcAndroidInteropHostTest {
     }
 
     @Test
+    fun androidRuntimePageSizeParserAcceptsGetconfOutputAndRejectsInvalidValues() {
+        assertEquals(4_096, parseAndroidRuntimePageSize("4096\n"))
+        assertEquals(16_384, parseAndroidRuntimePageSize(" 16384 \r\n"))
+        listOf("", "0", "-4096", "16384\nunexpected", "unavailable").forEach { output ->
+            assertThrows(InteropFailure::class.java) { parseAndroidRuntimePageSize(output) }
+        }
+    }
+
+    @Test
     fun profilesExposeTheExactScenarioChecks() {
         val expected = mapOf(
             "success" to listOf(

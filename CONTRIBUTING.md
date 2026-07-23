@@ -86,6 +86,7 @@ If a change touches `frpc-stcp-visitor-go/`, `frpc-stcp-visitor/`, the frp patch
 frpc-stcp-visitor-go: go run ./cmd/preparefrp
 repository root: python3 .github/scripts/audit-third-party.py
 repository root: python3 .github/scripts/audit-community.py
+repository root: python3 .github/scripts/check-go-race-environment.py
 frpc-stcp-visitor-go: go test -race -modfile=build/frp-patched.mod ./...
 frpc-stcp-visitor-go/build/frp-v0.69.1-p1: go test -race ./client/...
 repository root: bash frpc-stcp-visitor-go/build-aar.sh
@@ -93,7 +94,7 @@ repository root: ./gradlew :frpc-stcp-visitor:frpcInteropTest
 repository root: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-On Windows, use `frpc-stcp-visitor-go/build-aar.ps1` and `gradlew.bat` as appropriate. `frpcInteropTest` explicitly downloads only the hash-pinned official frp release asset for the host, keeps it in the Gradle cache, and runs outside release-signing environments; ordinary unit tests do not launch it. The complete Android gate validates Debug/GoMobile assembly plus bridge-free Canary/Kotlin and Kotlin Release-Like/Kotlin runtime classpaths and APKs; neither Kotlin verification APK is a publication artifact. Bridge validation must continue to cover checksum, Java API signature, provenance, expected ABIs, ELF machine type, 16 KiB `PT_LOAD` alignment, stripped status, and reproducibility. A bridge byte change requires a new bridge version; never publish different bytes under the same Maven coordinate.
+On Windows, use `frpc-stcp-visitor-go/build-aar.ps1` and `gradlew.bat` as appropriate. The Go race gates require a supported CGO toolchain on native Windows, WSL2, native Linux, or the Ubuntu CI runner. WSL1 is not a valid substitute because its socket translation can allow duplicate loopback listener binds; the environment check fails before those tests with an explicit diagnostic. `frpcInteropTest` explicitly downloads only the hash-pinned official frp release asset for the host, keeps it in the Gradle cache, and runs outside release-signing environments; ordinary unit tests do not launch it. The complete Android gate validates Debug/GoMobile assembly plus bridge-free Canary/Kotlin and Kotlin Release-Like/Kotlin runtime classpaths and APKs; neither Kotlin verification APK is a publication artifact. Bridge validation must continue to cover checksum, Java API signature, provenance, expected ABIs, ELF machine type, 16 KiB `PT_LOAD` alignment, stripped status, and reproducibility. A bridge byte change requires a new bridge version; never publish different bytes under the same Maven coordinate.
 
 ## Sensitive Data and Fixtures
 

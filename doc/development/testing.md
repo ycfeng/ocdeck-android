@@ -122,9 +122,9 @@ For every selected profile, GoMobile runs first in a fresh instrumentation proce
 
 The Host summary is strict structured evidence, not a task-status proxy. It records the suite, device API/ABI/page size, exact ordered profiles, each profile's scenario/wire/encryption/compression parameters, backend order `gomobile,kotlin`, exact per-backend checks, semantic equivalence, and `authorizesKotlinDefault=false`. Missing, reordered, partial, or inconsistent fields fail validation; Gradle task success alone cannot stand in for profile evidence.
 
-The explicitly requested `.github/workflows/frpc-kotlin-android-interop.yml` runs the exact candidate SHA with API 26 x86_64 fixed to `compat` and API 36 x86_64 fixed to `full`. It supports direct `workflow_dispatch` and a read-only `workflow_call`; the latter is used only when a manual CI dispatch sets `run_frpc_android_interop=true`, which bootstraps the branch-local workflow before it exists on the default branch. The optional CI `candidate_sha` defaults to the dispatched ref SHA, and push/pull-request CI never invokes K6V. Preflight runs the report-renderer unit tests. The renderer fails closed unless both lane files and their Host summaries satisfy the exact lane/profile contract; it does not infer profile success from the Gradle outcome. Each lane also records the actual Android test APK and GoMobile bridge AAR SHA-256 values. The workflow uploads bounded English/Chinese acceptance reports, consolidated JSON evidence, and `SHA256SUMS`; it has read-only repository permission, no signing Environment or secrets, and every report keeps `authorizesKotlinDefault=false`.
+The explicitly requested `.github/workflows/frpc-kotlin-android-interop.yml` runs the exact candidate SHA with API 26 x86_64 fixed to `compat` and API 36 x86_64 fixed to `full`. It supports direct `workflow_dispatch` and a read-only `workflow_call`; the latter is used only when a manual CI dispatch sets `run_frpc_android_interop=true`, which bootstraps the branch-local workflow before it exists on the default branch. The optional CI `candidate_sha` defaults to the dispatched ref SHA, and push/pull-request CI never invokes K6V. Preflight runs the report-renderer unit tests. The renderer fails closed unless both lane files and their Host summaries satisfy the exact lane/profile contract; it does not infer profile success from the Gradle outcome. Host and lane evidence read the Android runtime ABI page size with `adb shell getconf PAGE_SIZE`; this avoids misclassifying an x86_64 16 KiB Android test image from the 4 KiB MMU backing pages reported by `/proc/self/smaps`. Each lane also records the actual Android test APK and GoMobile bridge AAR SHA-256 values. The workflow uploads bounded English/Chinese acceptance reports, consolidated JSON evidence, and `SHA256SUMS`; it has read-only repository permission, no signing Environment or secrets, and every report keeps `authorizesKotlinDefault=false`.
 
-Recorded expanded K6V evidence: exact candidate `01ba5437276fb5074da5c654219668ac4cb69d48` (tree `22a32b9027fb6731bad57e10a1793863f5348d87`) passed [workflow run 29763640048](https://github.com/ycfeng/ocdeck-android/actions/runs/29763640048), including the complete ordinary verification job that builds and tests the Kotlin Release-Like variant. API 26 Android 8.0.0 completed the one-profile x86_64 `compat` suite, while API 36 Android 16 completed the x86_64 12-profile `full` suite; both reported 4 KiB pages. The consolidated artifact `k6v-frpc-android-interop-01ba5437276fb5074da5c654219668ac4cb69d48` reported `Pass`; its GitHub artifact digest is `sha256:f045f29dec1b705d9058fdafeb07917a19365885611ed71cb706c90c34d5ebaf`. The report verifies the fixed backend order, semantic outcomes, exact checks, same-port rebinding, all wire/payload combinations, three negative cases, and restart/control-epoch recovery. It still sets `authorizesKotlinDefault=false` and does not satisfy physical ARM/16KB, the App's real Store/snapshot/reconciliation path, Doze/network/foreground-background, performance, resource-leak, long-duration soak, or formal stable-release-cycle gates.
+Recorded expanded K6V evidence: exact candidate `01ba5437276fb5074da5c654219668ac4cb69d48` (tree `22a32b9027fb6731bad57e10a1793863f5348d87`) passed [workflow run 29763640048](https://github.com/ycfeng/ocdeck-android/actions/runs/29763640048), including the complete ordinary verification job that builds and tests the Kotlin Release-Like variant. API 26 Android 8.0.0 completed the one-profile x86_64 `compat` suite, while API 36 Android 16 completed the x86_64 12-profile `full` suite; both reported 4 KiB pages. The consolidated artifact `k6v-frpc-android-interop-01ba5437276fb5074da5c654219668ac4cb69d48` reported `Pass`; its GitHub artifact digest is `sha256:f045f29dec1b705d9058fdafeb07917a19365885611ed71cb706c90c34d5ebaf`. The report verifies the fixed backend order, semantic outcomes, exact checks, same-port rebinding, all wire/payload combinations, three negative cases, and restart/control-epoch recovery. It still sets `authorizesKotlinDefault=false` and does not by itself satisfy the split target-ABI physical ARM and 16KB runtime lanes, the App's real Store/snapshot/reconciliation path, Doze/network/foreground-background, performance, resource-leak, long-duration soak, or formal stable-release-cycle gates. The ARM and 16KB lanes may use different devices; missing physical ARM 16KB hardware is recorded as residual combination risk rather than a development blocker.
 
 Earlier phase-one evidence remains recorded for exact candidate `459c2b57ebf465d6b933ea939f59fa739128ec59` (tree `a6ce1019adfa351bc15e09bc479220a967bdf323`) and [workflow run 29716724485](https://github.com/ycfeng/ocdeck-android/actions/runs/29716724485). It covered only the former single GoMobile-then-Kotlin v1/plain scenario and is superseded for current K6V scope by the expanded evidence above.
 
@@ -142,6 +142,7 @@ Prepare patched frp and run the two Go race-test scopes:
 cd frpc-stcp-visitor-go
 
 go run ./cmd/preparefrp
+python3 ../.github/scripts/check-go-race-environment.py
 go test -race -modfile=build/frp-patched.mod ./...
 cd build/frp-v0.69.1-p1
 go test -race ./client/...
@@ -161,7 +162,7 @@ bash .github/scripts/verify-bridge-reproducibility.sh
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-The Go race detector requires CGO and a supported C compiler. If that toolchain is unavailable on Windows, run both Go race scopes under WSL or Linux; ordinary Windows Go tests do not replace the race gate. PowerShell also does not stop on a failing native process by default, so the sequence below uses a small fail-fast wrapper.
+The Go race detector requires CGO and a supported C compiler. If that toolchain is unavailable on Windows, run both Go race scopes under WSL2, native Linux, or the GitHub Actions Ubuntu runner; ordinary Windows Go tests do not replace the race gate. WSL1 is not supported for this gate because its socket translation can allow duplicate loopback listener binds and invalidate the listener-ownership/bind-conflict assertions. The environment check fails WSL1 explicitly rather than weakening or skipping those tests. PowerShell also does not stop on a failing native process by default, so the sequence below uses a small fail-fast wrapper.
 
 On Windows PowerShell, run the equivalent sequence from the repository root:
 
@@ -177,6 +178,7 @@ function Invoke-NativeChecked {
 
 Push-Location .\frpc-stcp-visitor-go
 Invoke-NativeChecked { go run ./cmd/preparefrp }
+Invoke-NativeChecked { python ..\.github\scripts\check-go-race-environment.py }
 Invoke-NativeChecked { go test -race '-modfile=build/frp-patched.mod' ./... }
 Push-Location .\build\frp-v0.69.1-p1
 Invoke-NativeChecked { go test -race ./client/... }
@@ -239,7 +241,7 @@ The absence of an instrumentation gate must be reported as a testing gap; manual
 Static checks cannot prove that Android can load a native library on every target device or that a real tunnel works. Before a formal release, complete and record the manual items in the [release checklist](../release/checklist.md), including:
 
 - Native load on the target release ABIs that can be physically tested.
-- Native load and app startup on a physical 16KB page-size device.
+- Native load, app startup, and applicable interoperability on an official Android 16KB test image or a physical device reporting `16384` from `getconf PAGE_SIZE`.
 - A real frps/STCP visitor path through `/global/health`, REST, and SSE.
 - Direct and SSH smoke tests through the same path used by the app.
 - First installation and startup for each physically available signed ABI-specific APK.
@@ -247,5 +249,7 @@ Static checks cannot prove that Android can load a native library on every targe
 - Rejection of incompatible signing and lower-`versionCode` replacement attempts.
 - Destructive rollback and uninstall/reinstall behavior, including app-private local-data loss and the absence of a supported export/restore workflow.
 - Re-download from the public Release and execution of both the complete `SHA256SUMS` check and the documented one-APK checksum procedure.
+
+The target-ABI physical-device lane and the 16KB runtime lane may use different devices. A physical ARM 16KB device remains desirable combined coverage, but its absence does not block development when target-ABI physical loading, the official 16KB runtime lane, and static alignment/packaging gates all pass.
 
 For the `0.1.0` candidate, maintainers recorded the native-loading, 16KB page-size, and real STCP checks above as passing. Exact device and deployment details are not published, so the evidence applies only to this candidate and does not establish universal Android or OpenCode Server coverage. Other unchecked manual items remain independent, and every future candidate must repeat the applicable gates. See the [compatibility matrix](../user/compatibility.md).
