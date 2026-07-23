@@ -19,6 +19,11 @@ type zipEntry struct {
 	data   []byte
 }
 
+type addition struct {
+	sourcePath    string
+	normalizeText bool
+}
+
 func main() {
 	additions, paths, err := parseArguments(os.Args[1:])
 	if err != nil {
@@ -26,7 +31,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(paths) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: normalizezip [--add <archive-path>=<source-file>] <zip> [<zip> ...]")
+		fmt.Fprintln(os.Stderr, "usage: normalizezip [--add|--add-text <archive-path>=<source-file>] <zip> [<zip> ...]")
 		os.Exit(2)
 	}
 	if len(additions) > 0 && len(paths) != 1 {
@@ -45,7 +50,7 @@ func normalize(path string) error {
 	return normalizeWithAdditions(path, nil)
 }
 
-func normalizeWithAdditions(path string, additions map[string]string) error {
+func normalizeWithAdditions(path string, additions map[string]addition) error {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return err
@@ -83,10 +88,13 @@ func normalizeWithAdditions(path string, additions map[string]string) error {
 	if err := reader.Close(); err != nil {
 		return err
 	}
-	for archivePath, sourcePath := range additions {
-		data, err := os.ReadFile(sourcePath)
+	for archivePath, addition := range additions {
+		data, err := os.ReadFile(addition.sourcePath)
 		if err != nil {
-			return fmt.Errorf("read addition %s: %w", sourcePath, err)
+			return fmt.Errorf("read addition %s: %w", addition.sourcePath, err)
+		}
+		if addition.normalizeText {
+			data = normalizeTextLineEndings(data)
 		}
 		header := zip.FileHeader{Name: archivePath, Method: zip.Deflate, Modified: normalizedTime}
 		header.SetMode(0o644)
@@ -116,11 +124,12 @@ func normalizeWithAdditions(path string, additions map[string]string) error {
 	return os.WriteFile(path, output.Bytes(), 0o644)
 }
 
-func parseArguments(arguments []string) (map[string]string, []string, error) {
-	additions := make(map[string]string)
+func parseArguments(arguments []string) (map[string]addition, []string, error) {
+	additions := make(map[string]addition)
 	paths := make([]string, 0, len(arguments))
 	for index := 0; index < len(arguments); index++ {
-		if arguments[index] != "--add" {
+		flag := arguments[index]
+		if flag != "--add" && flag != "--add-text" {
 			paths = append(paths, arguments[index])
 			continue
 		}
@@ -139,7 +148,15 @@ func parseArguments(arguments []string) (map[string]string, []string, error) {
 		if _, exists := additions[archivePath]; exists {
 			return nil, nil, fmt.Errorf("duplicate addition %q", archivePath)
 		}
-		additions[archivePath] = parts[1]
+		additions[archivePath] = addition{
+			sourcePath:    parts[1],
+			normalizeText: flag == "--add-text",
+		}
 	}
 	return additions, paths, nil
+}
+
+func normalizeTextLineEndings(data []byte) []byte {
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
 }

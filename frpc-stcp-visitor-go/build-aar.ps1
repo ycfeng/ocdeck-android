@@ -198,20 +198,20 @@ try {
     Assert-NativeSuccess 'write embedded bridge provenance'
     $NormalizeArguments = @(
         'run', './cmd/normalizezip',
-        '--add', "META-INF/OCDECK/LICENSE.txt=$(Join-Path $RootDir 'LICENSE')",
-        '--add', "META-INF/OCDECK/NOTICE.txt=$(Join-Path $RootDir 'NOTICE')",
-        '--add', "META-INF/OCDECK/THIRD_PARTY_NOTICES.txt=$(Join-Path $RootDir 'THIRD_PARTY_NOTICES.txt')",
-        '--add', "META-INF/OCDECK/TRADEMARKS.md=$(Join-Path $RootDir 'TRADEMARKS.md')",
-        '--add', "META-INF/OCDECK/bridge-api.txt=$ExpectedApi",
-        '--add', "META-INF/OCDECK/bridge-provenance.json=$EmbeddedProvenance",
-        '--add', "META-INF/OCDECK/frp-patch-provenance.json=$PatchProvenance"
+        '--add-text', "META-INF/OCDECK/LICENSE.txt=$(Join-Path $RootDir 'LICENSE')",
+        '--add-text', "META-INF/OCDECK/NOTICE.txt=$(Join-Path $RootDir 'NOTICE')",
+        '--add-text', "META-INF/OCDECK/THIRD_PARTY_NOTICES.txt=$(Join-Path $RootDir 'THIRD_PARTY_NOTICES.txt')",
+        '--add-text', "META-INF/OCDECK/TRADEMARKS.md=$(Join-Path $RootDir 'TRADEMARKS.md')",
+        '--add-text', "META-INF/OCDECK/bridge-api.txt=$ExpectedApi",
+        '--add-text', "META-INF/OCDECK/bridge-provenance.json=$EmbeddedProvenance",
+        '--add-text', "META-INF/OCDECK/frp-patch-provenance.json=$PatchProvenance"
     )
     $LicenseFiles = @(Get-ChildItem -LiteralPath (Join-Path $RootDir 'third_party\licenses') -File | Sort-Object Name)
     if ($LicenseFiles.Count -eq 0) {
         throw 'No third-party license files found'
     }
     foreach ($License in $LicenseFiles) {
-        $NormalizeArguments += @('--add', "META-INF/OCDECK/licenses/$($License.Name)=$($License.FullName)")
+        $NormalizeArguments += @('--add-text', "META-INF/OCDECK/licenses/$($License.Name)=$($License.FullName)")
     }
     $NormalizeArguments += $StagedAar
     & go @NormalizeArguments

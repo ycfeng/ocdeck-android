@@ -232,7 +232,7 @@ func loadExpectedMetadata(
 		if err != nil {
 			return expectedMetadata{}, fmt.Errorf("read expected metadata %s", archivePath)
 		}
-		expected[archivePath] = data
+		expected[archivePath] = normalizeTextLineEndings(data)
 	}
 	var provenance struct {
 		ModuleGraphSHA256        string `json:"moduleGraphSha256"`
@@ -245,6 +245,11 @@ func loadExpectedMetadata(
 		return expectedMetadata{}, errors.New("bridge provenance module graph proof is invalid")
 	}
 	return expectedMetadata{entries: expected, moduleGraphSHA256: provenance.ModuleGraphSHA256}, nil
+}
+
+func normalizeTextLineEndings(data []byte) []byte {
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	return bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
 }
 
 func verifyMetadata(entries map[string]*zip.File, expected map[string][]byte) error {
