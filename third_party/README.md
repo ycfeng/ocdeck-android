@@ -13,7 +13,7 @@ This directory is the manually maintained source and license inventory for OC De
 
 ## Audit Basis
 
-The current inventory was reviewed for OC Deck `0.2.2` and bridge `0.3.9-frp0.69.1-p1` on 2026-07-23 using:
+The current inventory was reviewed for OC Deck `0.2.3` and bridge `0.3.10-frp0.69.1-p1` on 2026-07-23 using:
 
 ```powershell
 .\gradlew.bat :app:dependencies --configuration releaseRuntimeClasspath --console=plain

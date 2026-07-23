@@ -4,7 +4,7 @@
 
 Last updated: 2026-07-23
 
-This document describes the current OC Deck `0.2.2` codebase. It is not a promise that every future build, distribution channel, OpenCode Server, model provider, Android device, or network operator behaves the same way.
+This document describes the current OC Deck `0.2.3` codebase. It is not a promise that every future build, distribution channel, OpenCode Server, model provider, Android device, or network operator behaves the same way.
 
 ## OC Deck Services and Telemetry
 

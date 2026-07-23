@@ -13,7 +13,19 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
-No changes have been assigned beyond the `0.2.2` release. / 尚无超出 `0.2.2` 发布范围的变更。
+No changes have been assigned beyond the `0.2.3` release. / 尚无超出 `0.2.3` 发布范围的变更。
+
+## [0.2.3] - 2026-07-23
+
+### Changed / 变更
+
+- Session history now loads in cursor pages of 200 messages. Reaching the loaded top fetches one older page, while the first-user jump loads all remaining pages before navigating to the true first user message. / 会话历史现在按每页 200 条消息进行 cursor 分页；到达已加载顶部时获取一页更早历史，点击首条用户消息跳转时会先加载全部剩余页面，再定位到真正的第一条用户消息。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.10-frp0.69.1-p1` because the AAR embeds the `0.2.3` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.3` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.10-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Session refresh and recovery now reject stale first-page responses, preserve concurrent SSE and optimistic updates, reconcile deletions in the refreshed latest window, and keep stable `(createdAt, id)` ordering across pages. / 会话刷新与恢复现在会拒绝过期的第一页响应，保留并发 SSE 与乐观更新，校准刷新后最新窗口中的删除结果，并在分页间保持稳定的 `(createdAt, id)` 顺序。
+- Cursor state now survives overlapping latest-page refreshes, safely restarts after disjoint refreshes, rejects repeated cursor cycles, and is cleared with deleted sessions. / cursor 状态现在可在最新页重叠刷新后保留，在不相交刷新后安全重启，拒绝重复 cursor 循环，并随已删除会话一同清理。
 
 ## [0.2.2] - 2026-07-23
 
