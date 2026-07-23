@@ -130,7 +130,9 @@ tasks.register("checkGoMobileBridgeAar") {
         check(sha256(goMobileBridgeAar) == expectedSha) {
             "GoMobile STCP visitor AAR checksum does not match its immutable artifact metadata."
         }
-        check(goMobileBridgeApi.readBytes().contentEquals(expectedBridgeApi.readBytes())) {
+        val publishedApi = goMobileBridgeApi.readText().replace("\r\n", "\n").replace('\r', '\n')
+        val committedApi = expectedBridgeApi.readText().replace("\r\n", "\n").replace('\r', '\n')
+        check(publishedApi == committedApi) {
             "GoMobile STCP visitor API does not exactly match the committed signature."
         }
 
