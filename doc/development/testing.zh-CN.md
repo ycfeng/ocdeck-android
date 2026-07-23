@@ -25,7 +25,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 ## 聚焦测试清单
 
 - `RetrofitInboundResponsePolicyTest` 与 `EncodedResponseLimitInterceptorTest` 验证每个 `OpenCodeApi` 方法声明 `BOUNDED` 或 `EMPTY_SUCCESS`；缺少策略时在网络请求前失败；encoded/decoded 已声明、未知和低报长度都在 `max + 1` 执行各自 16 MiB 边界；真实 OkHttp gzip chain 在 Bridge 解码前执行 encoded 上限；非 2xx 与成功 Unit body 不读取即关闭；`/file/content` 保持延迟读取；没有 Retrofit `Invocation` 的请求绕过 Retrofit interceptor。
-- `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`FileContentResponseReaderTest` 覆盖无 body 的非 2xx 失败、OkHttp callback 线程 direct decode、encoded/decoded 精确/未知/低报长度、EOF 验证、取消与 callback race、session messages 独立 64 MiB 边界，以及 `/file/content` reader 层 decoded 纵深防御。
+- `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`InMemoryOpenCodeStoreRevisionTest`、`SessionMessageJumpTest`、`FileContentResponseReaderTest` 覆盖 cursor query/header、旧页合并、重叠刷新保留 cursor、不相交刷新补齐断层、cursor compare-and-set 与循环拒绝、第一页请求逆序完成时最后 generation 获胜、`(createdAt, id)` 同时间排序、第一页覆盖窗口删除校准、session 删除后的 cursor 与待处理 generation 清理、空投影时间线加载与跳转控件可用性、无 body 的非 2xx 失败、OkHttp callback 线程 direct decode、encoded/decoded 精确/未知/低报长度、EOF 验证、取消与 callback race、session messages 每页独立 64 MiB 边界，以及 `/file/content` reader 层 decoded 纵深防御。
 - `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest` 覆盖不读取 `Throwable.message` 的语义分类，包括将 `KotlinFrpcStcpVisitorFailure` enum 映射为 App failure 和本地端口拒绝；带操作 fallback 的本地化资源映射、Repository 传播、response-too-large 行为，以及取消与 JVM `Error` 传播。
 - `BoundedSseReaderTest`、`OkHttpSseEventSourceFactoryTest`、`OpenCodeEventClientLifecycleTest`、`ProjectSnapshotCoordinatorTest` 覆盖显式 identity encoding、非 identity 零读取拒绝、所有换行与 EOF 状态、32 MiB 行/event 边界、无 body status/MIME 失败、取消、重试分类、关闭终态、owner/generation/source/transport 竞态、project/global 权威切换、有界重放和快照失败/恢复。
 - `FrpcStcpReadinessRetryClassifierTest` 与 `GoMobileFrpcStcpVisitorClientTest` 覆盖 readiness 瞬时/永久失败、入站策略失败、typed unavailable/API mismatch bridge 错误、安全 bridge 摘要、API v2 JSON、revision/control epoch、`WaitVisitorReady`，以及反射取消/JVM `Error` 传播。
@@ -46,7 +46,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest` 覆盖按服务端顺序过滤 Build/Plan 及回退、初始模型/Variant 校验与切换回退，以及只对新会话接受项目首页轻量 Composer 路由选择。
 - `ComposerParameterPickerScrollTest` 覆盖跨 provider 标题的模型 lazy-list 索引、带“默认”前缀的 Variant 索引、选择不存在时的行为，以及基于实测 item 与 viewport 的居中偏移。
 - `LocalizedWindowTest` 是 Android instrumentation 测试：它为父组合提供与 Activity 不同的 locale，验证 Popup 与 modal bottom sheet 的资源使用父组合 locale，并验证已打开的 Popup 会随语言切换更新。
-- `ProjectFilePathNormalizerTest` 与 `ProjectFileUrlBuilderTest` 覆盖相对路径平台语义、遍历/绝对路径拒绝、POSIX/Windows 盘符/UNC `file://` 构造、UTF-8 百分号编码、往返和项目根包含关系。
+- `ProjectFilePathNormalizerTest`、`ProjectFileUrlBuilderTest` 与 `ProjectFileAbsolutePathTest` 覆盖相对路径平台语义、遍历/绝对路径拒绝、POSIX/Windows 盘符/UNC `file://` 与展示路径构造、UTF-8 百分号编码、往返和项目根包含关系。`ProjectFilePanelCopyMenuTest` 覆盖文件/目录长按菜单、三种复制值以及选择模式长按不改变选择。
 - `PromptSendStateMachineTest`、`OpenCodePromptSenderTest` 与 `PromptRequestDtoSerializationTest` 覆盖纯项目上下文发送、上下文终检与去重、普通/已加载命令透传、乐观 `file://` parts、新 session 消息移动和线缆序列化。
 - `UserMessagePartsTest` 与 `SessionRevertProjectionTest` 区分本地 `data:` 附件、独立项目上下文和评论 backing file，并只在数量上限内恢复当前项目上下文。
 - `ProviderSettingsParsingTest` 与 `ProviderCapabilityRefreshTest` 覆盖可能含密钥的 Provider/auth payload 的即时安全投影、权威已加载状态、原始 auth method index 与条件、安全 OAuth URL，以及通过当前 SSE authority lease 刷新 capability。
@@ -229,7 +229,7 @@ Fixture 规则见[测试夹具](test-fixtures.zh-CN.md)。
 | Provider 设置与认证 | 搜索和已加载/可连接分组；动态 text/select prompt；API key 键盘；OAuth 浏览器、code、auto callback 与取消；明文/loopback/断开确认 | 浮层关闭后 secret 消失；系统返回先关闭聚焦 sheet；IME 与 200% 字体下操作仍可达；已加载、disabled、pending、错误均有非颜色提示；取消不会静默重试 |
 | Custom Provider 创建/编辑 | 多模型/Header 行、数量/上限状态、持久化标识限制、密码字段、保存、disabled/unknown outcome、停用与凭据清理 | 行和操作保持可达且至少 48dp；满额/超限状态明确，移除新增行后可重新添加；已保存值不回显；partial/unknown 状态明确；停用不宣称物理删除；两种主题和 TalkBack 表达相同状态 |
 | 项目首页 Composer 预览 | Agent、模型、Variant 控件；输入区与附件入口；系统返回；紧凑屏幕和 200% 字体 | 参数 picker 原地打开和更新且不导航；返回先关闭聚焦 popup；Provider/模型操作进入真实设置路由；输入区和附件入口携带当前已校验选择进入 `"new"` |
-| 项目文件 picker | 树与搜索、最多 10 个选择、独立预览、确认/取消、预览返回文件树、route/session 变化、上下文 chip、纯上下文发送/reset | 选择具备 Checkbox 语义和非颜色提示；预览不切换选择；取消不修改草稿；旧路由不接收结果；IME、200% 字体、TalkBack 和两种主题下操作均可达 |
+| 项目文件 picker | 树与搜索、文件/目录长按复制菜单、最多 10 个选择、独立预览、确认/取消、预览返回文件树、route/session 变化、上下文 chip、纯上下文发送/reset | 长按不打开、不展开且不切换选择；文件/目录名和规范化相对/绝对路径复制正确；选择具备 Checkbox 语义和非颜色提示；预览不切换选择；取消不修改草稿；旧路由不接收结果；IME、200% 字体、TalkBack 和两种主题下操作均可达 |
 
 缺少 instrumentation 门禁必须作为测试缺口报告；人工检查只证明已测试设备/配置，不代表全部 Android 环境。
 

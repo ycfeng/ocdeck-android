@@ -9,6 +9,7 @@ import io.github.ycfeng.ocdeck.core.store.SseConnectionStatus
 import io.github.ycfeng.ocdeck.core.store.SseFailureReason
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.data.server.ServerTransportIdentity
+import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePage
 import io.github.ycfeng.ocdeck.ui.text.UiText
 import io.github.ycfeng.ocdeck.ui.text.toErrorUiText
 import kotlinx.coroutines.CancellationException
@@ -993,11 +994,13 @@ class OpenCodeEventClient internal constructor(
                                 ).activeSessionId == messages.sessionId
                             }
                             ?.let { messages ->
-                                guardedStore.putMessages(
+                                guardedStore.putMessagePage(
                                     serverId = token.key.serverId,
                                     directory = token.key.normalizedDirectory,
                                     sessionId = messages.sessionId,
-                                    bundle = messages.bundle,
+                                    page = OpenCodeMessagePage(messages.bundle, messages.nextCursor),
+                                    before = null,
+                                    firstPageRequestGeneration = messages.requestGeneration,
                                     expectedRevision = messages.expectedRevision,
                                     workspace = token.key.normalizedWorkspace,
                                 )

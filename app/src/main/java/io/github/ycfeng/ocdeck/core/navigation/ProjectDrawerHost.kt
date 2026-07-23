@@ -164,14 +164,6 @@ internal fun ProjectDrawerHost(
         }
     }
 
-    BackHandler(enabled = isFilePanelOpen) {
-        if (fileViewModel?.uiState?.value?.page == ProjectFileBrowserPage.Content) {
-            fileViewModel.showTree()
-        } else {
-            closeFilePanel()
-        }
-    }
-
     DisposableEffect(routeKey, fileViewModel) {
         onDispose { fileViewModel?.onPanelClosed() }
     }
@@ -477,6 +469,11 @@ internal fun ProjectDrawerHost(
             }
 
             if (isFilePanelOpen && activeProject != null && fileViewModel != null) {
+                ProjectFilePanelBackHandler(
+                    currentPage = { fileViewModel.uiState.value.page },
+                    onShowTree = fileViewModel::showTree,
+                    onClose = closeFilePanel,
+                )
                 val closeDescription = stringResource(R.string.a11y_close)
                 val pickerRequest = filePickerRequest
                 val paneDescription = stringResource(
@@ -509,6 +506,7 @@ internal fun ProjectDrawerHost(
                     ) {
                         ProjectFilePanel(
                             state = fileState,
+                            projectDirectory = activeProject.directory,
                             onSearchQueryChanged = fileViewModel::onSearchQueryChanged,
                             onToggleDirectory = fileViewModel::toggleDirectory,
                             onRetryDirectory = fileViewModel::retryDirectory,
@@ -550,6 +548,22 @@ internal fun ProjectDrawerHost(
                     }
                 }
             }
+        }
+    }
+
+}
+
+@Composable
+internal fun ProjectFilePanelBackHandler(
+    currentPage: () -> ProjectFileBrowserPage?,
+    onShowTree: () -> Unit,
+    onClose: () -> Unit,
+) {
+    BackHandler {
+        if (currentPage() == ProjectFileBrowserPage.Content) {
+            onShowTree()
+        } else {
+            onClose()
         }
     }
 }

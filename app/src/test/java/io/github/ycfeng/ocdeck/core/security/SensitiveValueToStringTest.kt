@@ -26,11 +26,13 @@ import io.github.ycfeng.ocdeck.core.network.QuestionInfoDto
 import io.github.ycfeng.ocdeck.core.network.QuestionOptionDto
 import io.github.ycfeng.ocdeck.core.network.QuestionReplyRequestDto
 import io.github.ycfeng.ocdeck.core.network.ServerHealthDto
+import io.github.ycfeng.ocdeck.core.network.SessionMessagesPage
 import io.github.ycfeng.ocdeck.core.network.SseConnection
 import io.github.ycfeng.ocdeck.core.network.SshRemoteEndpoint
 import io.github.ycfeng.ocdeck.core.network.SshTunnel
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
 import io.github.ycfeng.ocdeck.core.store.OpenCodeRuntimeState
+import io.github.ycfeng.ocdeck.core.store.MessageHistoryState
 import io.github.ycfeng.ocdeck.core.store.ProjectKey
 import io.github.ycfeng.ocdeck.core.store.SseConnectionStatus
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
@@ -52,6 +54,7 @@ import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessageBundle
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessageComment
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePart
+import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeModel
 import io.github.ycfeng.ocdeck.domain.model.OpenCodePathInfo
 import io.github.ycfeng.ocdeck.domain.model.OpenCodePermissionRequest
@@ -280,6 +283,14 @@ class SensitiveValueToStringTest {
             sessions = listOf(session),
             messagesBySession = mapOf(SYNTHETIC_SESSION_ID to listOf(message)),
             partsByMessage = mapOf(SYNTHETIC_MESSAGE_ID to listOf(part)),
+            messageHistoryBySession = mapOf(
+                SYNTHETIC_SESSION_ID to MessageHistoryState(
+                    SYNTHETIC_MESSAGE_ID,
+                    consumedCursors = setOf(SYNTHETIC_SECRET),
+                    latestPageMessageIds = setOf(SYNTHETIC_SECRET),
+                ),
+            ),
+            messageFirstPageRequestGenerations = mapOf(SYNTHETIC_SECRET to 31L),
             permissionsBySession = mapOf(SYNTHETIC_SESSION_ID to listOf(permission)),
             questionsBySession = mapOf(SYNTHETIC_SESSION_ID to listOf(question)),
             models = listOf(model),
@@ -311,7 +322,27 @@ class SensitiveValueToStringTest {
             effectiveBaseUrl = SYNTHETIC_URL,
         )
         val messageBundle = OpenCodeMessageBundle(listOf(message), listOf(part))
-        val loadedMessages = LoadedActiveSessionMessages(SYNTHETIC_SESSION_ID, 29, messageBundle)
+        val messagePage = OpenCodeMessagePage(messageBundle, SYNTHETIC_MESSAGE_ID)
+        val transportMessagePage = SessionMessagesPage(
+            listOf(
+                MessageWithPartsDto(
+                    MessageInfoDto(
+                        id = SYNTHETIC_MESSAGE_ID,
+                        sessionID = SYNTHETIC_SESSION_ID,
+                        role = "assistant",
+                    ),
+                    emptyList(),
+                ),
+            ),
+            SYNTHETIC_MESSAGE_ID,
+        )
+        val loadedMessages = LoadedActiveSessionMessages(
+            sessionId = SYNTHETIC_SESSION_ID,
+            requestGeneration = 23,
+            expectedRevision = 29,
+            bundle = messageBundle,
+            nextCursor = SYNTHETIC_MESSAGE_ID,
+        )
         val loadedSnapshot = LoadedProjectSnapshot(snapshot, transportIdentity, loadedMessages)
         val snapshotToken = ProjectSnapshotToken(
             key = projectKey,
@@ -424,6 +455,8 @@ class SensitiveValueToStringTest {
             status = "working",
             isWorking = true,
             isLoading = false,
+            hasOlderMessages = true,
+            isLoadingOlderMessages = true,
             isSending = true,
             isReadingAttachments = false,
             isQuestionActionInProgress = false,
@@ -465,6 +498,8 @@ class SensitiveValueToStringTest {
             comment,
             part,
             messageBundle,
+            messagePage,
+            transportMessagePage,
             diff,
             permission,
             question,
@@ -481,7 +516,7 @@ class SensitiveValueToStringTest {
                 globalConnectionStatuses = mapOf(SYNTHETIC_SERVER_ID to SseConnectionStatus.Open),
             ),
             BoundedSseEvent(SYNTHETIC_MESSAGE_ID, SYNTHETIC_SERVER_TEXT, SYNTHETIC_SSE_DATA),
-            ActiveSessionMessagesRequest(SYNTHETIC_SESSION_ID, 29),
+            ActiveSessionMessagesRequest(SYNTHETIC_SESSION_ID, 23, 29),
             loadedMessages,
             loadedSnapshot,
             snapshotToken,

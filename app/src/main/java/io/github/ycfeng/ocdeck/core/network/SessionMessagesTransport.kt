@@ -2,7 +2,6 @@ package io.github.ycfeng.ocdeck.core.network
 
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellableContinuation
@@ -15,12 +14,13 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
 
-fun interface SessionMessagesTransport {
+interface SessionMessagesTransport {
     suspend fun load(
         sessionId: String,
         directory: String,
         workspace: String?,
-    ): List<MessageWithPartsDto>
+        before: String? = null,
+    ): SessionMessagesPage
 
     companion object {
         val Unavailable: SessionMessagesTransport = object : SessionMessagesTransport {
@@ -28,9 +28,18 @@ fun interface SessionMessagesTransport {
                 sessionId: String,
                 directory: String,
                 workspace: String?,
-            ): List<MessageWithPartsDto> = throw SessionMessagesTransportUnavailableException()
+                before: String?,
+            ): SessionMessagesPage = throw SessionMessagesTransportUnavailableException()
         }
     }
+}
+
+data class SessionMessagesPage(
+    val items: List<MessageWithPartsDto>,
+    val nextCursor: String?,
+) {
+    override fun toString(): String =
+        "SessionMessagesPage(itemCount=${items.size}, nextCursorPresent=${nextCursor != null})"
 }
 
 class SessionMessagesTransportUnavailableException : IllegalStateException()
@@ -48,7 +57,8 @@ internal class OkHttpSessionMessagesTransport(
         sessionId: String,
         directory: String,
         workspace: String?,
-    ): List<MessageWithPartsDto> {
+        before: String?,
+    ): SessionMessagesPage {
         val urlBuilder = baseUrl.newBuilder()
             .addPathSegment("session")
             .addPathSegment(sessionId)
@@ -56,6 +66,7 @@ internal class OkHttpSessionMessagesTransport(
             .addQueryParameter("directory", directory)
         workspace?.let { urlBuilder.addQueryParameter("workspace", it) }
         urlBuilder.addQueryParameter("limit", SESSION_MESSAGE_LIMIT.toString())
+        before?.let { urlBuilder.addQueryParameter("before", it) }
         val request = Request.Builder()
             .url(urlBuilder.build())
             .header("Accept", "application/json")
@@ -82,14 +93,13 @@ internal class OkHttpSessionMessagesTransport(
 
 private class SessionMessagesCallback(
     private val call: Call,
-    private val continuation: CancellableContinuation<List<MessageWithPartsDto>>,
+    private val continuation: CancellableContinuation<SessionMessagesPage>,
     private val json: Json,
     private val maxBytes: Long,
 ) : Callback {
     private val callbackClaimed = AtomicBoolean()
     private val completed = AtomicBoolean()
     private val cancelledByOwner = AtomicBoolean()
-    private val activeBody = AtomicReference<ResponseBody?>()
 
     override fun onFailure(call: Call, e: IOException) {
         if (!callbackClaimed.compareAndSet(false, true)) return
@@ -107,20 +117,18 @@ private class SessionMessagesCallback(
         }
 
         try {
-            val messages = response.use { currentResponse ->
+            val page = response.use { currentResponse ->
                 if (!currentResponse.isSuccessful) {
                     throw SessionMessagesHttpException(currentResponse.code)
                 }
                 val body = currentResponse.body
-                activeBody.set(body)
                 if (completed.get()) throw OwnerCancelledSessionMessagesCallException()
-                try {
-                    body.readSessionMessages(json, maxBytes)
-                } finally {
-                    activeBody.compareAndSet(body, null)
-                }
+                SessionMessagesPage(
+                    items = body.readSessionMessages(json, maxBytes),
+                    nextCursor = currentResponse.header(NEXT_CURSOR_HEADER)?.takeIf(String::isNotBlank),
+                )
             }
-            completeSuccess(messages)
+            completeSuccess(page)
         } catch (_: OwnerCancelledSessionMessagesCallException) {
             // Coroutine cancellation owns completion and has already cancelled the call.
         } catch (failure: Throwable) {
@@ -131,8 +139,9 @@ private class SessionMessagesCallback(
     fun cancelByOwner() {
         cancelledByOwner.set(true)
         if (completed.compareAndSet(false, true)) {
+            // Let response.use close the body on the callback thread after cancel interrupts its read.
+            // Closing here races Okio's active read and may also perform network cleanup on the main thread.
             call.cancel()
-            activeBody.getAndSet(null)?.close()
         }
     }
 
@@ -141,8 +150,8 @@ private class SessionMessagesCallback(
         completeFailure(failure)
     }
 
-    private fun completeSuccess(messages: List<MessageWithPartsDto>) {
-        if (completed.compareAndSet(false, true)) continuation.resume(messages)
+    private fun completeSuccess(page: SessionMessagesPage) {
+        if (completed.compareAndSet(false, true)) continuation.resume(page)
     }
 
     private fun completeFailure(failure: Throwable) {
@@ -152,3 +161,5 @@ private class SessionMessagesCallback(
 }
 
 private class OwnerCancelledSessionMessagesCallException : IOException()
+
+private const val NEXT_CURSOR_HEADER = "X-Next-Cursor"

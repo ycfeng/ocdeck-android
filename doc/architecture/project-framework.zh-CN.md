@@ -120,8 +120,8 @@ kotlin {
 应用版本集中在根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=5
-VERSION_NAME=0.2.0
+VERSION_CODE=8
+VERSION_NAME=0.2.3
 ```
 
 `VERSION_NAME` 使用稳定 SemVer，正式 tag 必须精确为 `v${VERSION_NAME}`；`VERSION_CODE` 必须高于上一稳定 tag。CI 不从 tag 或 run number 动态覆盖源码版本，避免本地构建、设置页展示、APK文件名和发布记录出现漂移。
@@ -242,7 +242,7 @@ frpc-stcp-visitor-go/
 
 `frpc-stcp-visitor-go/` 保存真实 frp GoMobile wrapper 源码。`bridge-versions.properties` 固定 bridge、Go、x/mobile 和 Android API 版本；禁止在构建脚本中使用 `gomobile@latest`。基础 frp 固定为 `github.com/fatedier/frp@v0.69.1`，`cmd/preparefrp` 校验上游 module sum、zip SHA 和待修改文件 SHA 后应用 `downstream/frp-v0.69.1-p1/` 中的最小补丁，不直接修改 Go module cache。补丁修复动态 visitor 配置与 Control 安装的竞态、传播真实 listener bind 状态，并暴露 config revision、control epoch 和阻塞式 `WaitVisitorReady`。
 
-`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.8-frp0.69.1-p1` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
+`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.11-frp0.69.1-p1` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
 
 `cmd/checkaar` 会读取四个 ABI library 的 Go BuildInfo，校验固定 Go identity 以及稳定的 module identity、version 与 sum，拒绝本地 module identity 和内嵌的仓库/cache 路径，并要求各 ABI 使用同一个 canonical module graph digest。Schema 2 内嵌 bridge provenance 与外部 native sidecar 会绑定 module graph digest 和无本地路径证明。AAR 的 `META-INF/OCDECK/` 还会内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表；`cmd/checkaar` 还会校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。
 
@@ -373,7 +373,7 @@ Hilt 引入条件：
 - `RetrofitInboundResponsePolicyInterceptor`：要求每个 `OpenCodeApi` 方法显式声明响应模式，为有界请求附加 encoded-body network interceptor tag，对 decoded 成功实体施加边界，并丢弃不应进入 Retrofit converter 的 body。
 - `EncodedResponseLimitInterceptor`：network interceptor，在 OkHttp 执行 `Content-Encoding` 解码前限制 tagged response-body octets。
 - `OpenCodeApiFactory`：根据 `ServerConfig` 创建自持有的 API client bundle；每个 bundle 包含 REST/session-message 共用的 OkHttp client、单独有界为十分钟的 Provider OAuth callback client，并支持显式幂等清理。
-- `SessionMessagesTransport`：直接请求会话消息；非 2xx 不读取 body，2xx 同时使用 64 MiB encoded response-body policy，并在 OkHttp callback 线程执行 64 MiB 有界 decoded 流式 JSON decode。
+- `SessionMessagesTransport`：直接请求 `limit=200` 的会话消息页，传递 `before`/`X-Next-Cursor`；非 2xx 不读取 body，2xx 每页同时使用 64 MiB encoded response-body policy，并在 OkHttp callback 线程执行 64 MiB 有界 decoded 流式 JSON decode。
 - `OpenCodeEventClient`：基于 OkHttp `Call` 和自定义流式 SSE reader 管理全局和项目事件流。
 - `OpenCodeErrorParser`：统一解析 HTTP 错误、网络错误、服务端错误体。
 - `OpenCodeFailureClassifier`：不依赖异常 message，将 transport、协议、大小和操作失败转换为类型化语义原因；UI 再通过本地化 `UiText.Resource` 映射这些原因。
@@ -423,7 +423,7 @@ Json {
 - 会话列表：`GET /session?directory=...&workspace=...&roots=true&limit=...`，为 Store 会话窗口重新获取有序前缀。
 - 会话 metadata：`GET /session/{sessionID}`，用于补取当前窗口外路由目标及其有界父链。
 - 会话创建：`POST /session`
-- 会话消息：`GET /session/{sessionID}/message`，使用共享 REST OkHttp client 的专用 transport，绕过 Retrofit converter/错误体缓存；非 2xx 不读取 body，encoded response-body octets 限制为 64 MiB，2xx 再使用计数 InputStream + 宽容 `Json.decodeFromStream` 执行独立 64 MiB decoded-entity 边界和 EOF 验证。
+- 会话消息：`GET /session/{sessionID}/message?limit=200&before={cursor?}`，使用共享 REST OkHttp client 的专用 transport，读取 `X-Next-Cursor`，绕过 Retrofit converter/错误体缓存；非 2xx 不读取 body，每页 encoded response-body octets 限制为 64 MiB，2xx 再使用计数 InputStream + 宽容 `Json.decodeFromStream` 执行每页独立 64 MiB decoded-entity 边界和 EOF 验证。
 - 发送 prompt：`POST /session/{sessionID}/prompt_async`
 - 中止：`POST /session/{sessionID}/abort`
 - 项目事件：`GET /event?directory=...&workspace=...`
@@ -468,7 +468,8 @@ SSE 设计要求：
 - 页面 ViewModel 只持有幂等 owner lease；项目壳层和直接进入的会话详情都持有 global lease，多 owner 共享一个 global source。最后一个 owner 释放或强制关闭后进入 `Closed`，连接、回调、重试和快照都必须通过 generation/source/transport identity 最终校验。
 - 同一项目的 project source 为 `Open` 且 transport identity 与 global listener 一致时，project source 是项目事件权威来源，global 中带 directory/workspace 的对应事件直接忽略；project 尚未打开、重试或失败时，global 才作为 fallback 归约事件。
 - 项目 SSE 打开、重连和前台恢复后，由应用级 `ProjectSnapshotCoordinator` 按项目 key 和生命周期 token 执行 single-flight 校准；校准 token 区分 project/global 权威来源。项目流未 Open、重试、失败或不存在时，global fallback 的 LSP/MCP 能力事件也可发起校准；project 随后 Open 会取消旧 global flight。校准期间有界缓冲权威来源事件，成功时先快照后顺序重放，失败时保持 SSE 打开并重放；能力变更只标记 dirty，当前轮成功、失败或缓冲溢出后最多合并启动一轮 follow-up。
-- Store 分别维护项目数据和消息数据 revision。ViewModel 直接 REST 项目快照使用 revision CAS 和 latest-request gate，不能覆盖更晚的 SSE/协调器状态或更新后的刷新；消息 GET 在 revision 未变化时替换但保留 REST 缺失的本地乐观消息及 parts，变化时按 message/part id 合并并保留实时字段、delta、历史补全和请求期间的删除 tombstone。合并后的空 message text 从最终有效 text parts 重建，`session.deleted` 同步删除该 session 的 messages/parts 并推进删除 revision。connection/loading/通知变化不推进项目数据 revision。
+- Store 分别维护项目数据、消息数据 revision 和按 session 隔离的历史 cursor 状态。每个第一页请求先原子注册 Store 共享的单调递增 generation，并同时捕获预期消息 revision；只有最后注册的 generation 能应用消息、第一页 ID 或 cursor 状态，因此旧 ViewModel 或恢复快照的响应即使最后到达也会视为 stale。初次消息第一页在 revision 未变化时替换，但保留 REST 缺失的本地乐观消息及 parts；建立 cursor 状态后，后续第一页刷新在 revision 未变化时校准其覆盖的最新窗口，仅在请求期间 revision 已前进时改用合并。若刷新页与上一次第一页的 message id 有重叠，则保留已加载历史的最旧 cursor，避免分页窗口移动丢失历史；若两页不相交，则采用刷新响应的新 cursor 并重置已消费链，使后续旧页加载补齐中间断层，必要时允许重新获取已加载页。更早页始终按 message/part id 合并，但只有请求的 `before` 仍等于当前最旧 cursor 时才应用；已消费 cursor 形成循环时不修改消息或 cursor 状态并直接失败。revision 变化时仍保留实时字段、delta、历史补全和请求期间的删除 tombstone。合并后的空 message text 从最终有效 text parts 重建，`session.deleted` 同步删除该 session 的 messages、parts、历史 cursor 与待处理第一页 generation，并推进删除 revision。ViewModel 直接 REST 项目快照继续使用 revision CAS 和 latest-request gate；connection/loading/通知变化不推进项目数据 revision。
+- 消息列表在 REST 分页、SSE upsert、乐观确认和消息移动中统一保持服务端 `(createdAt, id)` 升序。第一页响应按捕获的消息 revision 应用时，Store 校准其覆盖的最新窗口：保留严格早于响应边界的消息和本地乐观消息，替换响应返回的消息与 parts，并删除覆盖窗口内响应缺失的消息或 part；若请求期间 revision 已前进，则改用合并语义，使并发 SSE、乐观数据和 tombstone 获胜。
 - `OpenCodeRepository` 项目快照和 `DefaultForegroundHealthChecker` 在 REST/health I/O 成功或非取消失败后重新获取 connection 校验 transport identity；旧连接失败而 identity 已前进时以新连接有限重试，identity 未变时传播原异常，连续变化返回不含敏感信息的类型化失败。
 - `AppConnectionCoordinator` 在应用前台恢复时按 server 合并 health/readiness 检查；transport identity 改变时整体重建该服务器仍需保持的全局/项目流，不变时复用流并校准项目快照。明确 older-than 当前 identity 的迟到 open attempt 必须原子解绑当前 attempt 并进入标准 retry，close 或新 generation 使该 retry 失效。
 - 全局 SSE 状态按 serverId 隔离；事件缓冲同时限制数量和估算字节数，溢出时取消快照并立即重放，避免无界内存增长。
@@ -712,7 +713,7 @@ Existing session id
 - `ProjectFilePathNormalizerTest` 与 `ProjectFileUrlBuilderTest`：平台差异、NUL、绝对路径、`..`、直接子项校验、POSIX/盘符/UNC URL 构造、百分号编码、往返和项目根包含关系。
 - `RedactorTest`：key/token/password/header/env/config 脱敏。
 - `RetrofitInboundResponsePolicyTest` 与 `EncodedResponseLimitInterceptorTest`：所有 `OpenCodeApi` 方法显式声明模式；缺少策略时 fail-closed；encoded/decoded 已知、未知和低报长度均执行 `max + 1`；真实 OkHttp gzip chain 在 Bridge 解码前执行 encoded 上限；非 2xx 与成功 Unit body 不读取即关闭；无 `Invocation` 的 direct call 不进入 Retrofit 策略。
-- `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`FileContentResponseReaderTest`：无 body HTTP 失败、流式 decode、EOF 验证、取消/关闭竞态、session messages 64 MiB 边界和 `/file/content` 第二道防御。
+- `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`InMemoryOpenCodeStoreRevisionTest`、`SessionMessageJumpTest`、`FileContentResponseReaderTest`：cursor query/header、旧页合并和 cursor 保留、逆序完成时拒绝过期第一页 generation、`(createdAt, id)` 同时间排序、第一页覆盖窗口删除校准、session 删除清理待处理 generation、空投影时间线加载与跳转控件可用性、无 body HTTP 失败、流式 decode、EOF 验证、取消/关闭竞态、session messages 每页 64 MiB 边界和 `/file/content` 第二道防御。
 - `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest`：不解析异常 message 的语义分类，包括类型化 Kotlin runtime failure 与本地端口拒绝；本地化资源与操作 fallback 映射、Repository 传播，以及取消/JVM `Error` 行为。
 - `ProviderSettingsParsingTest` 与 `ProviderCapabilityRefreshTest`：对可能含密钥的 Provider/auth payload 做安全投影、以 `connected` 为权威、保留 auth wire index 与条件、安全解析 OAuth URL，并通过当前 project/global SSE authority lease 刷新 capability。
 - `ProviderSettingsViewModelTest`：项目作用域动态 auth 输入、明文 HTTP 冻结确认、mutation single-flight、OAuth code/callback scope、无 secret 状态摘要和 mutation 后 reload/calibration。
@@ -775,7 +776,7 @@ Existing session id
 
 - Android 工程、手动 DI、DataStore/Keystore/内存 Store、带客户端说明空态的服务器列表、新增/健康检查和直连/SSH/STCP 三种互斥连接模式；不自动创建 localhost 服务器。
 - STCP 构建级装配为正式 `debug`/`release` 选择 GoMobile，为内部 `canary` 与不可发布的 `kotlinRelease` Release-Like 真机测试构建选择纯 Kotlin；所有 variant 共享同一 manager lease/readiness 契约，不提供用户设置、持久化 selector 或运行时 fallback。Kotlin library 实现支持公共 encryption/compression 字段，而当前 App 创建的 STCP 配置继续将二者默认设为 `false`；正式 `assembleRelease` 仍是唯一可接受 Release 签名和发布的输出。
-- 路径规范化、按服务器 `sortOrder` 持久化且新项目置顶并由项目选择页/Drawer 共享重排的最近项目、项目选择与壳层、支持网络加载更多的 Store 共享会话窗口、会话 drawer/详情、懒创建 session、普通 prompt、全局/项目 SSE、provider/model/agent 基础数据；session messages 具备独立 64 MiB encoded 与 decoded 上限。
+- 路径规范化、按服务器 `sortOrder` 持久化且新项目置顶并由项目选择页/Drawer 共享重排的最近项目、项目选择与壳层、支持网络加载更多的 Store 共享会话窗口、会话 drawer/详情、懒创建 session、普通 prompt、全局/项目 SSE、provider/model/agent 基础数据；session messages 支持 cursor 分页，并具备每页独立 64 MiB encoded 与 decoded 上限。
 - 所有普通 `OpenCodeApi` Retrofit 方法都具备显式且独立的 16 MiB encoded/decoded 边界或 empty-success 策略；非 2xx 与 Unit body 不读取即丢弃，`/file/content` 保留 reader 层 decoded 边界。
 - Slash command 与 `@` mention UI、agent/model/variant picker、手机本地附件、项目文件树/搜索/只读预览及完整文件 Composer 上下文、permission/question、会话内 Changes/diff 和 context usage。
 - Repository/SSE/快照类型化失败映射为本地化 UI 资源，不解析异常 message；敏感与大型 value object 使用经过测试的结构化摘要。

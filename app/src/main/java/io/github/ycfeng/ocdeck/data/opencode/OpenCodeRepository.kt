@@ -60,6 +60,7 @@ import io.github.ycfeng.ocdeck.domain.model.OpenCodeLsp
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMcp
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessageBundle
+import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePart
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeModel
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeModelSettingsGroup
@@ -84,8 +85,11 @@ import io.github.ycfeng.ocdeck.domain.prompt.PromptAttachment
 import io.github.ycfeng.ocdeck.domain.prompt.PromptGateway
 import io.github.ycfeng.ocdeck.domain.prompt.ProjectFileContext
 import io.github.ycfeng.ocdeck.domain.prompt.SessionRevertGateway
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -113,6 +117,7 @@ class OpenCodeRepository(
     private val projectFilePathNormalizer: ProjectFilePathNormalizer,
     private val json: Json,
     private val redactor: Redactor,
+    private val fileContentDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : PromptGateway, SessionRevertGateway, ProjectSnapshotLoader, SessionListWindowLoader {
     private val promptCapabilityRevision = AtomicLong()
     private val projectFileUrlBuilder = ProjectFileUrlBuilder(pathNormalizer, projectFilePathNormalizer)
@@ -174,9 +179,7 @@ class OpenCodeRepository(
                 val hiddenModels = async { serverRepository.getHiddenModelPreferences(serverId).toModelKeySet() }
                 val messages = activeSessionMessages?.let { request ->
                     async {
-                        connection.sessionMessagesTransport
-                            .load(request.sessionId, normalized, workspace)
-                            .toBundle()
+                        connection.sessionMessagesTransport.load(request.sessionId, normalized, workspace)
                     }
                 }
                 val providerJson = providers.await()
@@ -234,8 +237,10 @@ class OpenCodeRepository(
             activeSessionMessages = activeSessionMessages?.let { request ->
                 LoadedActiveSessionMessages(
                     sessionId = request.sessionId,
+                    requestGeneration = request.requestGeneration,
                     expectedRevision = request.expectedRevision,
-                    bundle = stable.value.second ?: invalidResponse(),
+                    bundle = stable.value.second?.items?.toBundle() ?: invalidResponse(),
+                    nextCursor = stable.value.second?.nextCursor,
                 )
             },
         )
@@ -337,10 +342,23 @@ class OpenCodeRepository(
         sessionId: String,
         workspace: String? = null,
     ): Result<OpenCodeMessageBundle> = catching {
+        loadMessagePage(serverId, directory, sessionId, workspace).getOrThrow().bundle
+    }
+
+    suspend fun loadMessagePage(
+        serverId: String,
+        directory: String,
+        sessionId: String,
+        workspace: String? = null,
+        before: String? = null,
+    ): Result<OpenCodeMessagePage> = catching {
         val normalized = pathNormalizer.normalize(directory)
-        val transport = serverRepository.getConnection(serverId).sessionMessagesTransport
-        transport.load(sessionId, normalized, workspace)
-            .toBundle()
+        val page = serverRepository.getConnection(serverId).sessionMessagesTransport
+            .load(sessionId, normalized, workspace, before)
+        OpenCodeMessagePage(
+            bundle = page.items.toBundle(),
+            nextCursor = page.nextCursor,
+        )
     }
 
     suspend fun loadSessionDiff(
@@ -462,9 +480,11 @@ class OpenCodeRepository(
         )
         val api = serverRepository.getConnection(serverId).api
         try {
-            api.getFileContent(directory = normalizedDirectory, path = normalizedPath)
-                .readFileContentDto(json)
-                .toDomain(normalizedPath)
+            withContext(fileContentDispatcher) {
+                api.getFileContent(directory = normalizedDirectory, path = normalizedPath)
+                    .readFileContentDto(json)
+                    .toDomain(normalizedPath)
+            }
         } catch (_: InboundPayloadTooLargeException) {
             OpenCodeFileContent.TooLarge(normalizedPath)
         }

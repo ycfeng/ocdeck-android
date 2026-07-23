@@ -2,7 +2,9 @@ package io.github.ycfeng.ocdeck.feature.session
 
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessage
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionMessageJumpTest {
@@ -36,6 +38,25 @@ class SessionMessageJumpTest {
     @Test
     fun returnsNullForEmptyListWithoutThinkingItem() {
         assertNull(resolveLatestMessageItemIndex(messageCount = 0, showAssistantThinking = false))
+    }
+
+    @Test
+    fun emptyFilteredTimelineLoadsOneOlderPageAndKeepsFirstUserControlAvailable() {
+        assertTrue(shouldLoadOlderMessagesForEmptyTimeline(messageCount = 0, hasOlderMessages = true))
+        assertTrue(
+            shouldShowMessageJumpControls(
+                latestMessageItemIndex = null,
+                hasOlderMessages = true,
+                isTextSelectionActive = false,
+            ),
+        )
+        assertFalse(
+            shouldShowMessageJumpControls(
+                latestMessageItemIndex = null,
+                hasOlderMessages = true,
+                isTextSelectionActive = true,
+            ),
+        )
     }
 
     private fun message(role: String, text: String = "message") = OpenCodeMessage(

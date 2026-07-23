@@ -5,6 +5,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
@@ -72,9 +73,10 @@ class SessionMessagesTransportTest {
             callback.onResponse(call, response(call.request(), 200, body))
         }
 
-        val messages = harness.transport.load("session", "E:/work/app", null)
+        val page = harness.transport.load("session", "E:/work/app", null)
 
-        assertTrue(messages.isEmpty())
+        assertTrue(page.items.isEmpty())
+        assertEquals(null, page.nextCursor)
         assertTrue(body.trackingSource.closed.get())
     }
 
@@ -120,9 +122,9 @@ class SessionMessagesTransportTest {
             callback.onResponse(call, response(call.request(), 200, body))
         }
 
-        val messages = harness.transport.load("session", "E:/work/app", null)
+        val page = harness.transport.load("session", "E:/work/app", null)
 
-        assertEquals("message-1", messages.single().info.id)
+        assertEquals("message-1", page.items.single().info.id)
         assertTrue(body.trackingSource.bytesRead.get() > 1L)
         assertTrue(body.trackingSource.closed.get())
     }
@@ -132,29 +134,40 @@ class SessionMessagesTransportTest {
         lateinit var body: ByteArrayResponseBody
         val harness = harness(maxBytes = 4_096L) { call, callback ->
             body = ByteArrayResponseBody(messageJson.encodeToByteArray(), declaredLength = -1L)
-            callback.onResponse(call, response(call.request(), 200, body))
+            callback.onResponse(call, response(call.request(), 200, body, nextCursor = "cursor/two"))
         }
 
-        val messages = harness.transport.load("session/id", "E:/work with space/app", "workspace/one")
+        val page = harness.transport.load(
+            "session/id",
+            "E:/work with space/app",
+            "workspace/one",
+            before = "cursor/one",
+        )
         val request = harness.factory.calls.single().request()
 
-        assertEquals("message-1", messages.single().info.id)
+        assertEquals("message-1", page.items.single().info.id)
+        assertEquals("cursor/two", page.nextCursor)
         assertEquals("/api/session/session%2Fid/message", request.url.encodedPath)
         assertEquals("E:/work with space/app", request.url.queryParameter("directory"))
         assertEquals("workspace/one", request.url.queryParameter("workspace"))
         assertEquals("200", request.url.queryParameter("limit"))
+        assertEquals("cursor/one", request.url.queryParameter("before"))
         assertEquals("application/json", request.header("Accept"))
         assertEquals(4_096L, request.tag(EncodedResponseLimit::class.java)?.maxBytes)
     }
 
     @Test
-    fun cancellationDuringBlockedReadCancelsCallAndClosesBodyWithoutReplacingCancellation() = runBlocking {
+    fun cancellationDuringBlockedReadClosesBodyOnCallbackThreadWithoutReplacingCancellation() = runBlocking {
         val blockingSource = BlockingSource()
         lateinit var body: SourceResponseBody
         val callbackFinished = CountDownLatch(1)
+        val callbackThread = AtomicReference<Thread?>()
+        val cancellingThread = Thread.currentThread()
         val harness = harness(maxBytes = 4_096L) { call, callback ->
             body = SourceResponseBody(blockingSource, declaredLength = -1L)
+            call.onCancel = blockingSource::cancel
             Thread {
+                callbackThread.set(Thread.currentThread())
                 try {
                     callback.onResponse(call, response(call.request(), 200, body))
                 } finally {
@@ -178,6 +191,9 @@ class SessionMessagesTransportTest {
         assertTrue(callbackFinished.await(5, TimeUnit.SECONDS))
         assertEquals(1, harness.factory.calls.single().cancelCount.get())
         assertTrue(harness.factory.calls.single().isCanceled())
+        assertTrue(body.trackingSource.closed.get())
+        assertEquals(callbackThread.get(), body.trackingSource.closedBy.get())
+        assertFalse(body.trackingSource.closedBy.get() === cancellingThread)
     }
 
     @Test
@@ -208,7 +224,7 @@ class SessionMessagesTransportTest {
             callback.onFailure(call, lateFailure)
         }
 
-        assertTrue(successHarness.transport.load("session", "E:/work/app", null).isEmpty())
+        assertTrue(successHarness.transport.load("session", "E:/work/app", null).items.isEmpty())
     }
 
     private fun harness(
@@ -228,12 +244,18 @@ class SessionMessagesTransportTest {
         )
     }
 
-    private fun response(request: Request, code: Int, body: ResponseBody): Response = Response.Builder()
+    private fun response(
+        request: Request,
+        code: Int,
+        body: ResponseBody,
+        nextCursor: String? = null,
+    ): Response = Response.Builder()
         .request(request)
         .protocol(Protocol.HTTP_1_1)
         .code(code)
         .message("status")
         .body(body)
+        .apply { nextCursor?.let { header("X-Next-Cursor", it) } }
         .build()
 
     private class Harness(
@@ -257,6 +279,7 @@ class SessionMessagesTransportTest {
         private val executed = AtomicBoolean()
         private val cancelled = AtomicBoolean()
         private var callback: Callback? = null
+        var onCancel: () -> Unit = {}
 
         override fun request(): Request = requestValue
 
@@ -271,6 +294,7 @@ class SessionMessagesTransportTest {
         override fun cancel() {
             if (cancelled.compareAndSet(false, true)) {
                 cancelCount.incrementAndGet()
+                onCancel()
                 callback?.onFailure(this, IOException("cancelled"))
             }
         }
@@ -317,6 +341,7 @@ class SessionMessagesTransportTest {
         val readCount = AtomicInteger()
         val bytesRead = java.util.concurrent.atomic.AtomicLong()
         val closed = AtomicBoolean()
+        val closedBy = AtomicReference<Thread?>()
 
         override fun read(sink: Buffer, byteCount: Long): Long {
             readCount.incrementAndGet()
@@ -327,6 +352,7 @@ class SessionMessagesTransportTest {
 
         override fun close() {
             closed.set(true)
+            closedBy.compareAndSet(null, Thread.currentThread())
             super.close()
         }
     }
@@ -353,17 +379,22 @@ class SessionMessagesTransportTest {
     private class BlockingSource : Source {
         val readStarted = CountDownLatch(1)
         val closed = CountDownLatch(1)
+        private val cancelled = CountDownLatch(1)
 
         override fun read(sink: Buffer, byteCount: Long): Long {
             readStarted.countDown()
-            if (!closed.await(5, TimeUnit.SECONDS)) throw IOException("close timed out")
-            throw IOException("closed")
+            if (!cancelled.await(5, TimeUnit.SECONDS)) throw IOException("cancel timed out")
+            throw IOException("cancelled")
         }
 
         override fun timeout(): Timeout = Timeout.NONE
 
         override fun close() {
             closed.countDown()
+        }
+
+        fun cancel() {
+            cancelled.countDown()
         }
     }
 

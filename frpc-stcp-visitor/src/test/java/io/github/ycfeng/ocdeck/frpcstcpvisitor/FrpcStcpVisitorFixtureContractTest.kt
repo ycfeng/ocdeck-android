@@ -33,7 +33,7 @@ class FrpcStcpVisitorFixtureContractTest {
         assertEquals("k0-go-oracle-v5", manifest.generatorVersion)
         assertEquals(
             Pins(
-                bridge = "0.3.8-frp0.69.1-p1",
+                bridge = "0.3.11-frp0.69.1-p1",
                 frp = "github.com/fatedier/frp@v0.69.1 (frp-v0.69.1-p1)",
                 golib = "github.com/fatedier/golib@v0.7.0",
                 snappy = "github.com/golang/snappy@v0.0.4",
