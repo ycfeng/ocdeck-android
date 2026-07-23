@@ -22,6 +22,12 @@ const val SessionListPageSize = 20
 const val SessionListRawHeadroom = 50
 const val InitialSessionListRawLimit = SessionListPageSize + SessionListRawHeadroom
 
+internal val OpenCodeMessageTimelineComparator: Comparator<OpenCodeMessage> =
+    compareBy<OpenCodeMessage> { it.createdAt ?: 0L }.thenBy(OpenCodeMessage::id)
+
+internal fun Iterable<OpenCodeMessage>.sortedForTimeline(): List<OpenCodeMessage> =
+    sortedWith(OpenCodeMessageTimelineComparator)
+
 enum class SessionListMoreState {
     Unknown,
     MayHaveMore,
@@ -48,6 +54,24 @@ data class SessionListWindowLoadRequest(
     val requestedRawLimit: Int,
     val requestGeneration: Long,
     val expectedProjectRevision: Long,
+)
+
+data class MessageHistoryState(
+    val nextCursor: String?,
+    internal val consumedCursors: Set<String> = emptySet(),
+    internal val latestPageMessageIds: Set<String> = emptySet(),
+) {
+    val hasOlderMessages: Boolean
+        get() = nextCursor != null
+
+    override fun toString(): String =
+        "MessageHistoryState(nextCursorPresent=${nextCursor != null}, " +
+            "consumedCursorCount=${consumedCursors.size}, latestPageMessageCount=${latestPageMessageIds.size})"
+}
+
+internal data class MessageFirstPageRequest(
+    val generation: Long,
+    val expectedRevision: Long,
 )
 
 enum class SessionListWindowRequestAction {
@@ -112,6 +136,8 @@ data class OpenCodeProjectState(
     val sessionListWindow: SessionListWindowState = SessionListWindowState(),
     val messagesBySession: Map<String, List<OpenCodeMessage>> = emptyMap(),
     val partsByMessage: Map<String, List<OpenCodeMessagePart>> = emptyMap(),
+    val messageHistoryBySession: Map<String, MessageHistoryState> = emptyMap(),
+    internal val messageFirstPageRequestGenerations: Map<String, Long> = emptyMap(),
     val permissionsBySession: Map<String, List<OpenCodePermissionRequest>> = emptyMap(),
     val questionsBySession: Map<String, List<OpenCodeQuestionRequest>> = emptyMap(),
     val statuses: Map<String, OpenCodeSessionStatus> = emptyMap(),
@@ -142,6 +168,8 @@ data class OpenCodeProjectState(
              "workspace=${redactedIfPresent(workspace)}, projectPresent=${project != null}, " +
             "pathInfoPresent=${pathInfo != null}, sessionCount=${sessions.size}, sessionListWindow=$sessionListWindow, " +
             "messageSessionCount=${messagesBySession.size}, partMessageCount=${partsByMessage.size}, " +
+            "messageHistorySessionCount=${messageHistoryBySession.size}, " +
+            "messageFirstPageRequestCount=${messageFirstPageRequestGenerations.size}, " +
             "permissionSessionCount=${permissionsBySession.size}, questionSessionCount=${questionsBySession.size}, " +
             "statusCount=${statuses.size}, providerCount=$providerCount, modelCount=${models.size}, " +
             "agentCount=${agents.size}, commandListCount=${commands.size}, " +

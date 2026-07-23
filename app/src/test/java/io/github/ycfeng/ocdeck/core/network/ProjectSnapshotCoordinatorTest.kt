@@ -134,7 +134,10 @@ class ProjectSnapshotCoordinatorTest {
         source.open()
         runCurrent()
 
-        assertEquals(ActiveSessionMessagesRequest(sessionId, expectedRevision), loader.activeSessionRequests.single())
+        val request = loader.activeSessionRequests.single()!!
+        assertEquals(sessionId, request.sessionId)
+        assertEquals(expectedRevision, request.expectedRevision)
+        assertTrue(request.requestGeneration > 0L)
         source.event(
             """{"type":"message.part.delta","properties":{"messageID":"$messageId","partID":"$partId","field":"text","delta":"+live"}}""",
         )
@@ -145,6 +148,7 @@ class ProjectSnapshotCoordinatorTest {
                     directory = directory,
                     activeSessionMessages = LoadedActiveSessionMessages(
                         sessionId = sessionId,
+                        requestGeneration = request.requestGeneration,
                         expectedRevision = expectedRevision,
                         bundle = OpenCodeMessageBundle(
                             messages = listOf(OpenCodeMessage(messageId, sessionId, "assistant", "missed")),
@@ -183,6 +187,7 @@ class ProjectSnapshotCoordinatorTest {
                     directory = directory,
                     activeSessionMessages = LoadedActiveSessionMessages(
                         sessionId = request.sessionId,
+                        requestGeneration = request.requestGeneration,
                         expectedRevision = request.expectedRevision,
                         bundle = OpenCodeMessageBundle(
                             messages = listOf(OpenCodeMessage("stale-message", request.sessionId, "assistant", "stale")),

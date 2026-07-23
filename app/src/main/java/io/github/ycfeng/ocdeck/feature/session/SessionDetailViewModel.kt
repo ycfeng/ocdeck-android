@@ -10,6 +10,7 @@ import io.github.ycfeng.ocdeck.core.network.GlobalConnectionLease
 import io.github.ycfeng.ocdeck.core.network.OpenCodeEventClient
 import io.github.ycfeng.ocdeck.core.network.ProjectConnectionLease
 import io.github.ycfeng.ocdeck.core.store.InMemoryOpenCodeStore
+import io.github.ycfeng.ocdeck.core.store.MessagePageApplyResult
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
 import io.github.ycfeng.ocdeck.core.util.LatestRequestGate
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
@@ -65,6 +66,7 @@ import io.github.ycfeng.ocdeck.feature.composer.toComposerAgentOrNull
 import io.github.ycfeng.ocdeck.ui.text.UiText
 import io.github.ycfeng.ocdeck.ui.text.toErrorUiText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -111,6 +113,9 @@ class SessionDetailViewModel(
     private val refreshGate = LatestRequestGate()
     private lateinit var projectConnectionLease: ProjectConnectionLease
     private lateinit var globalConnectionLease: GlobalConnectionLease
+    private var olderMessagesJob: Job? = null
+    private var loadAllOlderMessagesRequested = false
+    private val loadAllOlderMessagesCallbacks = mutableListOf<(Boolean) -> Unit>()
     private val sessionVisibilityLease: SessionVisibilityLease = sessionVisibilityRegistry.createLease(
         serverId = serverId,
         directory = normalizedDirectory,
@@ -298,6 +303,106 @@ class SessionDetailViewModel(
         val requestId = refreshGate.begin()
         viewModelScope.launch { refreshAll(requestId) }
         refreshServerHealth(requestId)
+    }
+
+    fun loadOlderMessages() {
+        startOlderMessagesLoad(loadAll = false)
+    }
+
+    fun loadAllOlderMessages(onComplete: (Boolean) -> Unit = {}) {
+        startOlderMessagesLoad(loadAll = true, onComplete = onComplete)
+    }
+
+    private fun startOlderMessagesLoad(
+        loadAll: Boolean,
+        onComplete: ((Boolean) -> Unit)? = null,
+    ) {
+        val sessionId = localState.value.currentSessionId
+        val history = store.currentProject(serverId, normalizedDirectory)
+            .messageHistoryBySession[sessionId]
+        if (sessionId == OpenCodePromptSender.NEW_SESSION_ID) {
+            onComplete?.invoke(true)
+            return
+        }
+        if (history == null) {
+            onComplete?.invoke(false)
+            return
+        }
+        if (!history.hasOlderMessages) {
+            onComplete?.invoke(true)
+            return
+        }
+        if (loadAll) {
+            loadAllOlderMessagesRequested = true
+            onComplete?.let(loadAllOlderMessagesCallbacks::add)
+        }
+        if (olderMessagesJob?.isActive == true) return
+
+        localState.update { it.copy(isLoadingOlderMessages = true, error = null) }
+        olderMessagesJob = viewModelScope.launch {
+            var succeeded = true
+            try {
+                do {
+                    val currentHistory = store.currentProject(serverId, normalizedDirectory)
+                        .messageHistoryBySession[sessionId]
+                    if (currentHistory == null) {
+                        succeeded = false
+                        break
+                    }
+                    val before = currentHistory.nextCursor ?: break
+                    val expectedRevision = store.captureMessageDataRevision(serverId, normalizedDirectory)
+                    val result = repository.loadMessagePage(
+                        serverId = serverId,
+                        directory = normalizedDirectory,
+                        sessionId = sessionId,
+                        before = before,
+                    )
+                    if (localState.value.currentSessionId != sessionId) {
+                        succeeded = false
+                        break
+                    }
+                    result.onSuccess { page ->
+                        when (
+                            store.putMessagePage(
+                                serverId = serverId,
+                                directory = normalizedDirectory,
+                                sessionId = sessionId,
+                                page = page,
+                                before = before,
+                                firstPageRequestGeneration = null,
+                                expectedRevision = expectedRevision,
+                            )
+                        ) {
+                            MessagePageApplyResult.Applied,
+                            MessagePageApplyResult.Stale,
+                            -> Unit
+                            MessagePageApplyResult.CursorCycle -> {
+                                localState.update {
+                                    it.copy(error = UiText.Resource(R.string.session_load_messages_failed))
+                                }
+                                succeeded = false
+                            }
+                        }
+                    }.onFailure { throwable ->
+                        if (throwable is CancellationException) throw throwable
+                        localState.update {
+                            it.copy(error = throwable.toErrorUiText(R.string.session_load_messages_failed))
+                        }
+                        succeeded = false
+                    }
+                } while (succeeded && loadAllOlderMessagesRequested)
+            } finally {
+                val finalHistory = store.currentProject(serverId, normalizedDirectory)
+                    .messageHistoryBySession[sessionId]
+                val completedAll = succeeded && finalHistory != null && !finalHistory.hasOlderMessages
+                val callbacks = loadAllOlderMessagesCallbacks.toList()
+                loadAllOlderMessagesCallbacks.clear()
+                loadAllOlderMessagesRequested = false
+                olderMessagesJob = null
+                localState.update { it.copy(isLoadingOlderMessages = false) }
+                callbacks.forEach { callback -> callback(completedAll) }
+            }
+        }
     }
 
     fun selectTab(tab: SessionDetailTab) {
@@ -867,11 +972,19 @@ class SessionDetailViewModel(
             parentSessionIdToLoad = projectWithMetadata.sessions.firstOrNull { it.id == sessionId }
                 ?.parentId
                 ?.takeIf { it.isNotBlank() }
-            val expectedMessageRevision = store.captureMessageDataRevision(serverId, normalizedDirectory)
-            val messageResult = repository.loadMessages(serverId, normalizedDirectory, sessionId)
+            val messageRequest = store.beginMessageFirstPageRequest(serverId, normalizedDirectory, sessionId)
+            val messageResult = repository.loadMessagePage(serverId, normalizedDirectory, sessionId)
             if (!refreshGate.isCurrent(requestId)) return
             messageResult.onSuccess {
-                store.putMessages(serverId, normalizedDirectory, sessionId, it, expectedMessageRevision)
+                store.putMessagePage(
+                    serverId = serverId,
+                    directory = normalizedDirectory,
+                    sessionId = sessionId,
+                    page = it,
+                    before = null,
+                    firstPageRequestGeneration = messageRequest.generation,
+                    expectedRevision = messageRequest.expectedRevision,
+                )
                 messagesForModelResolution = store.currentProject(serverId, normalizedDirectory)
                     .messagesBySession[sessionId]
                     .orEmpty()
@@ -882,16 +995,26 @@ class SessionDetailViewModel(
             parentSessionIdToLoad
                 ?.takeIf { it != sessionId }
                 ?.let { parentSessionId ->
-                    val expectedParentMessageRevision = store.captureMessageDataRevision(serverId, normalizedDirectory)
-                    val parentMessageResult = repository.loadMessages(serverId, normalizedDirectory, parentSessionId)
+                    val parentMessageRequest = store.beginMessageFirstPageRequest(
+                        serverId,
+                        normalizedDirectory,
+                        parentSessionId,
+                    )
+                    val parentMessageResult = repository.loadMessagePage(
+                        serverId,
+                        normalizedDirectory,
+                        parentSessionId,
+                    )
                     if (!refreshGate.isCurrent(requestId)) return
                     parentMessageResult.onSuccess {
-                        store.putMessages(
+                        store.putMessagePage(
                             serverId,
                             normalizedDirectory,
                             parentSessionId,
-                            it,
-                            expectedParentMessageRevision,
+                            page = it,
+                            before = null,
+                            firstPageRequestGeneration = parentMessageRequest.generation,
+                            expectedRevision = parentMessageRequest.expectedRevision,
                         )
                     }.onFailure { throwable ->
                         if (throwable is CancellationException) throw throwable
@@ -1135,6 +1258,8 @@ class SessionDetailViewModel(
             status = status,
             isWorking = isWorking,
             isLoading = isLoading,
+            hasOlderMessages = messageHistoryBySession[local.currentSessionId]?.hasOlderMessages == true,
+            isLoadingOlderMessages = local.isLoadingOlderMessages,
             isSending = local.isSending,
             isReadingAttachments = local.isReadingAttachments,
             isQuestionActionInProgress = local.isQuestionActionInProgress,
@@ -1166,6 +1291,7 @@ private data class SessionLocalState(
     val selectedModel: PromptModelSelection? = null,
     val selectedVariant: String? = null,
     val isSending: Boolean = false,
+    val isLoadingOlderMessages: Boolean = false,
     val isReadingAttachments: Boolean = false,
     val isQuestionActionInProgress: Boolean = false,
     val isPermissionActionInProgress: Boolean = false,
@@ -1190,6 +1316,7 @@ private data class SessionLocalState(
             "projectFileContextCount=${projectFileContexts.size}, " +
             "selectedAgentPresent=${selectedAgentOverride != null}, selectedModelPresent=${selectedModel != null}, " +
             "selectedVariantPresent=${selectedVariant != null}, isSending=$isSending, " +
+            "isLoadingOlderMessages=$isLoadingOlderMessages, " +
             "isReadingAttachments=$isReadingAttachments, isQuestionActionInProgress=$isQuestionActionInProgress, " +
             "isPermissionActionInProgress=$isPermissionActionInProgress, " +
             "isSessionActionInProgress=$isSessionActionInProgress, " +
@@ -1261,6 +1388,8 @@ data class SessionDetailUiState(
     val status: String,
     val isWorking: Boolean,
     val isLoading: Boolean,
+    val hasOlderMessages: Boolean,
+    val isLoadingOlderMessages: Boolean,
     val isSending: Boolean,
     val isReadingAttachments: Boolean,
     val isQuestionActionInProgress: Boolean,
@@ -1292,6 +1421,7 @@ data class SessionDetailUiState(
             "availableReviewModeCount=${availableReviewModes.size}, reviewDiffCount=${reviewDiffs.size}, " +
             "isReviewLoading=$isReviewLoading, reviewErrorPresent=${reviewError != null}, " +
             "isGitProject=$isGitProject, status=$status, isWorking=$isWorking, isLoading=$isLoading, " +
+            "hasOlderMessages=$hasOlderMessages, isLoadingOlderMessages=$isLoadingOlderMessages, " +
             "isSending=$isSending, isReadingAttachments=$isReadingAttachments, " +
             "isQuestionActionInProgress=$isQuestionActionInProgress, " +
             "isPermissionActionInProgress=$isPermissionActionInProgress, " +

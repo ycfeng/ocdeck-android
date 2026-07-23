@@ -73,9 +73,10 @@ class SessionMessagesTransportTest {
             callback.onResponse(call, response(call.request(), 200, body))
         }
 
-        val messages = harness.transport.load("session", "E:/work/app", null)
+        val page = harness.transport.load("session", "E:/work/app", null)
 
-        assertTrue(messages.isEmpty())
+        assertTrue(page.items.isEmpty())
+        assertEquals(null, page.nextCursor)
         assertTrue(body.trackingSource.closed.get())
     }
 
@@ -121,9 +122,9 @@ class SessionMessagesTransportTest {
             callback.onResponse(call, response(call.request(), 200, body))
         }
 
-        val messages = harness.transport.load("session", "E:/work/app", null)
+        val page = harness.transport.load("session", "E:/work/app", null)
 
-        assertEquals("message-1", messages.single().info.id)
+        assertEquals("message-1", page.items.single().info.id)
         assertTrue(body.trackingSource.bytesRead.get() > 1L)
         assertTrue(body.trackingSource.closed.get())
     }
@@ -133,17 +134,24 @@ class SessionMessagesTransportTest {
         lateinit var body: ByteArrayResponseBody
         val harness = harness(maxBytes = 4_096L) { call, callback ->
             body = ByteArrayResponseBody(messageJson.encodeToByteArray(), declaredLength = -1L)
-            callback.onResponse(call, response(call.request(), 200, body))
+            callback.onResponse(call, response(call.request(), 200, body, nextCursor = "cursor/two"))
         }
 
-        val messages = harness.transport.load("session/id", "E:/work with space/app", "workspace/one")
+        val page = harness.transport.load(
+            "session/id",
+            "E:/work with space/app",
+            "workspace/one",
+            before = "cursor/one",
+        )
         val request = harness.factory.calls.single().request()
 
-        assertEquals("message-1", messages.single().info.id)
+        assertEquals("message-1", page.items.single().info.id)
+        assertEquals("cursor/two", page.nextCursor)
         assertEquals("/api/session/session%2Fid/message", request.url.encodedPath)
         assertEquals("E:/work with space/app", request.url.queryParameter("directory"))
         assertEquals("workspace/one", request.url.queryParameter("workspace"))
         assertEquals("200", request.url.queryParameter("limit"))
+        assertEquals("cursor/one", request.url.queryParameter("before"))
         assertEquals("application/json", request.header("Accept"))
         assertEquals(4_096L, request.tag(EncodedResponseLimit::class.java)?.maxBytes)
     }
@@ -216,7 +224,7 @@ class SessionMessagesTransportTest {
             callback.onFailure(call, lateFailure)
         }
 
-        assertTrue(successHarness.transport.load("session", "E:/work/app", null).isEmpty())
+        assertTrue(successHarness.transport.load("session", "E:/work/app", null).items.isEmpty())
     }
 
     private fun harness(
@@ -236,12 +244,18 @@ class SessionMessagesTransportTest {
         )
     }
 
-    private fun response(request: Request, code: Int, body: ResponseBody): Response = Response.Builder()
+    private fun response(
+        request: Request,
+        code: Int,
+        body: ResponseBody,
+        nextCursor: String? = null,
+    ): Response = Response.Builder()
         .request(request)
         .protocol(Protocol.HTTP_1_1)
         .code(code)
         .message("status")
         .body(body)
+        .apply { nextCursor?.let { header("X-Next-Cursor", it) } }
         .build()
 
     private class Harness(

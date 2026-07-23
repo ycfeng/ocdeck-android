@@ -25,20 +25,26 @@ data class LoadedProjectSnapshot(
 
 data class ActiveSessionMessagesRequest(
     val sessionId: String,
+    val requestGeneration: Long,
     val expectedRevision: Long,
 ) {
     override fun toString(): String =
-        "ActiveSessionMessagesRequest(sessionId=<redacted>, expectedRevision=$expectedRevision)"
+        "ActiveSessionMessagesRequest(sessionId=<redacted>, requestGeneration=$requestGeneration, " +
+            "expectedRevision=$expectedRevision)"
 }
 
 data class LoadedActiveSessionMessages(
     val sessionId: String,
+    val requestGeneration: Long,
     val expectedRevision: Long,
     val bundle: OpenCodeMessageBundle,
+    val nextCursor: String? = null,
 ) {
     override fun toString(): String =
-        "LoadedActiveSessionMessages(sessionId=<redacted>, expectedRevision=$expectedRevision, " +
-            "messageCount=${bundle.messages.size}, partCount=${bundle.parts.size})"
+        "LoadedActiveSessionMessages(sessionId=<redacted>, requestGeneration=$requestGeneration, " +
+            "expectedRevision=$expectedRevision, " +
+            "messageCount=${bundle.messages.size}, partCount=${bundle.parts.size}, " +
+            "nextCursorPresent=${nextCursor != null})"
 }
 
 interface ProjectSnapshotLoader {
@@ -142,9 +148,16 @@ class ProjectSnapshotCoordinator(
                 workspace = flight.token.key.normalizedWorkspace,
             )
             val activeSessionMessages = project.activeSessionId?.let { sessionId ->
+                val request = store.beginMessageFirstPageRequest(
+                    serverId = flight.token.key.serverId,
+                    directory = flight.token.key.normalizedDirectory,
+                    sessionId = sessionId,
+                    workspace = flight.token.key.normalizedWorkspace,
+                )
                 ActiveSessionMessagesRequest(
                     sessionId = sessionId,
-                    expectedRevision = project.messageDataRevision,
+                    requestGeneration = request.generation,
+                    expectedRevision = request.expectedRevision,
                 )
             }
             val result = loader.loadProjectSnapshot(
