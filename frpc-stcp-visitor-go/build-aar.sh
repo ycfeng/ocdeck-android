@@ -142,19 +142,19 @@ go run ./cmd/writebridgeprovenance \
   -output "$EMBEDDED_PROVENANCE"
 
 ADD_ARGUMENTS=(
-  --add "META-INF/OCDECK/LICENSE.txt=$ROOT_DIR/LICENSE"
-  --add "META-INF/OCDECK/NOTICE.txt=$ROOT_DIR/NOTICE"
-  --add "META-INF/OCDECK/THIRD_PARTY_NOTICES.txt=$ROOT_DIR/THIRD_PARTY_NOTICES.txt"
-  --add "META-INF/OCDECK/TRADEMARKS.md=$ROOT_DIR/TRADEMARKS.md"
-  --add "META-INF/OCDECK/bridge-api.txt=$EXPECTED_API"
-  --add "META-INF/OCDECK/bridge-provenance.json=$EMBEDDED_PROVENANCE"
-  --add "META-INF/OCDECK/frp-patch-provenance.json=$PATCH_PROVENANCE"
+  --add-text "META-INF/OCDECK/LICENSE.txt=$ROOT_DIR/LICENSE"
+  --add-text "META-INF/OCDECK/NOTICE.txt=$ROOT_DIR/NOTICE"
+  --add-text "META-INF/OCDECK/THIRD_PARTY_NOTICES.txt=$ROOT_DIR/THIRD_PARTY_NOTICES.txt"
+  --add-text "META-INF/OCDECK/TRADEMARKS.md=$ROOT_DIR/TRADEMARKS.md"
+  --add-text "META-INF/OCDECK/bridge-api.txt=$EXPECTED_API"
+  --add-text "META-INF/OCDECK/bridge-provenance.json=$EMBEDDED_PROVENANCE"
+  --add-text "META-INF/OCDECK/frp-patch-provenance.json=$PATCH_PROVENANCE"
 )
 shopt -s nullglob
 LICENSE_FILES=("$ROOT_DIR"/third_party/licenses/*)
 [[ ${#LICENSE_FILES[@]} -gt 0 ]] || { echo "No third-party license files found" >&2; exit 1; }
 for license in "${LICENSE_FILES[@]}"; do
-  ADD_ARGUMENTS+=(--add "META-INF/OCDECK/licenses/$(basename "$license")=$license")
+  ADD_ARGUMENTS+=(--add-text "META-INF/OCDECK/licenses/$(basename "$license")=$license")
 done
 go run ./cmd/normalizezip "${ADD_ARGUMENTS[@]}" "$STAGED_AAR"
 
