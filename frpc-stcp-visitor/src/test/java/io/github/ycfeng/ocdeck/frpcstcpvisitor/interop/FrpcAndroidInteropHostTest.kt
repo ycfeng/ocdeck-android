@@ -84,6 +84,36 @@ class FrpcAndroidInteropHostTest {
     }
 
     @Test
+    fun androidRuntimePageSizeUsesLegacyProbeOnlyWhenGetconfIsMissing() {
+        var legacyProbeCalls = 0
+        assertEquals(
+            16_384,
+            resolveAndroidRuntimePageSize(AdbCommandResult(0, "16384\n", "")) {
+                legacyProbeCalls += 1
+                "4096\n"
+            },
+        )
+        assertEquals(0, legacyProbeCalls)
+
+        assertEquals(
+            4_096,
+            resolveAndroidRuntimePageSize(AdbCommandResult(127, "", "getconf: not found")) {
+                legacyProbeCalls += 1
+                "4096\n"
+            },
+        )
+        assertEquals(1, legacyProbeCalls)
+
+        assertThrows(InteropFailure::class.java) {
+            resolveAndroidRuntimePageSize(AdbCommandResult(1, "", "device unavailable")) {
+                legacyProbeCalls += 1
+                "4096\n"
+            }
+        }
+        assertEquals(1, legacyProbeCalls)
+    }
+
+    @Test
     fun profilesExposeTheExactScenarioChecks() {
         val expected = mapOf(
             "success" to listOf(

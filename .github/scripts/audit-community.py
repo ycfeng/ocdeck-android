@@ -533,6 +533,8 @@ def audit_release_metadata(version_name: str) -> None:
         "testApkSha256",
         "bridgeAarSha256",
         '"getconf", "PAGE_SIZE"',
+        "KernelPageSize:|MMUPageSize:",
+        "/proc/self/smaps",
         "HOST_SUMMARY_FILE",
         "hostSummary",
         "laneId",
