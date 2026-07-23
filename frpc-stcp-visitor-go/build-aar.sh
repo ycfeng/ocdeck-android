@@ -203,7 +203,7 @@ cat > "$REPO_POM" <<POM
 </project>
 POM
 printf '%s  %s\n' "$AAR_SHA256" "$ARTIFACT_NAME.aar" > "$REPO_SHA"
-cp "$EXPECTED_API" "$REPO_API"
+cp "$STAGED_API" "$REPO_API"
 cp "$PATCH_PROVENANCE" "$REPO_FRP_PROVENANCE"
 cp "$VALIDATED_NATIVE_REPORT" "$REPO_NATIVE"
 go run ./cmd/writebridgeprovenance \

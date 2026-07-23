@@ -26,7 +26,7 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ### Fixed / 修复
 
-- Bridge AAR assembly now normalizes embedded legal, API, and provenance text to LF before validation, so an older Windows worktree with CRLF files produces the same immutable artifact bytes as a fresh checkout. / Bridge AAR 装配现在会在校验前将内嵌法律文本、API 和 provenance 文本统一为 LF，因此保留 CRLF 文件的旧 Windows worktree 与全新 checkout 会生成相同的不可变制品字节。
+- Bridge AAR assembly now normalizes embedded and published legal, API, and provenance text to LF before validation, so an older Windows worktree with CRLF files produces the same immutable artifact bytes and sidecars as a fresh checkout. / Bridge AAR 装配现在会在校验前将内嵌及发布的法律文本、API 和 provenance 文本统一为 LF，因此保留 CRLF 文件的旧 Windows worktree 与全新 checkout 会生成相同的不可变制品及 sidecar 字节。
 - Removed checkout absolute paths from `libgojni.so` Go BuildInfo. `cmd/checkaar` now validates the four ABI BuildInfo graphs, fixed module identities, versions, and sums, local-path absence, and one consistent module-graph digest, with schema-2 provenance/native metadata binding the proof. / 消除 `libgojni.so` Go BuildInfo 中的 checkout 绝对路径；`cmd/checkaar` 现在校验四个 ABI 的 BuildInfo graph、固定 module identity/version/sum、无本地路径及一致的 module graph digest，并由 schema 2 provenance/native metadata 绑定该证明。
 
 ## [0.2.3] - 2026-07-23
