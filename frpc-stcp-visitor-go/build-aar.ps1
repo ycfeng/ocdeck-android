@@ -269,7 +269,7 @@ try {
 "@
     [IO.File]::WriteAllText($RepoPom, "$($Pom.Trim())`n")
     [IO.File]::WriteAllText($RepoSha, "$AarSha256  $ArtifactName.aar`n")
-    Copy-Item -LiteralPath $ExpectedApi -Destination $RepoApi -Force
+    Copy-Item -LiteralPath $StagedApi -Destination $RepoApi -Force
     Copy-Item -LiteralPath $PatchProvenance -Destination $RepoFrpProvenance -Force
     Copy-Item -LiteralPath $ValidatedNativeReport -Destination $RepoNative -Force
     & go run ./cmd/writebridgeprovenance `
