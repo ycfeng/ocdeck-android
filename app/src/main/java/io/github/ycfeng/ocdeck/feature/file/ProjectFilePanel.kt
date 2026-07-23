@@ -1,11 +1,12 @@
 package io.github.ycfeng.ocdeck.feature.file
 
+import android.content.ClipData
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,16 +25,23 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -41,11 +49,16 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.ycfeng.ocdeck.R
+import io.github.ycfeng.ocdeck.core.util.PathNormalizer
+import io.github.ycfeng.ocdeck.core.util.ProjectFilePathNormalizer
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeFileContent
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeFileEntry
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeFileType
@@ -58,6 +71,7 @@ import io.github.ycfeng.ocdeck.ui.component.OpenCodeTopBar
 import io.github.ycfeng.ocdeck.ui.theme.OpenCodePalette
 import io.github.ycfeng.ocdeck.ui.text.asString
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class ProjectFilePanelMode {
@@ -68,6 +82,7 @@ enum class ProjectFilePanelMode {
 @Composable
 fun ProjectFilePanel(
     state: ProjectFileBrowserUiState,
+    projectDirectory: String,
     onSearchQueryChanged: (String) -> Unit,
     onToggleDirectory: (OpenCodeFileEntry) -> Unit,
     onRetryDirectory: (String) -> Unit,
@@ -93,6 +108,7 @@ fun ProjectFilePanel(
         when (state.page) {
             ProjectFileBrowserPage.Tree -> ProjectFileTreePage(
                 state = state,
+                projectDirectory = projectDirectory,
                 onSearchQueryChanged = onSearchQueryChanged,
                 onToggleDirectory = onToggleDirectory,
                 onRetryDirectory = onRetryDirectory,
@@ -119,6 +135,7 @@ fun ProjectFilePanel(
 @Composable
 private fun ProjectFileTreePage(
     state: ProjectFileBrowserUiState,
+    projectDirectory: String,
     onSearchQueryChanged: (String) -> Unit,
     onToggleDirectory: (OpenCodeFileEntry) -> Unit,
     onRetryDirectory: (String) -> Unit,
@@ -197,6 +214,7 @@ private fun ProjectFileTreePage(
                                 val selected = file.path in selectedPaths
                                 ProjectFileEntryRow(
                                     entry = file,
+                                    projectDirectory = projectDirectory,
                                     depth = row.depth,
                                     expanded = file.path in state.expandedDirectories,
                                     showPath = false,
@@ -246,6 +264,7 @@ private fun ProjectFileTreePage(
             } else {
                 ProjectFileSearchResults(
                     state = state,
+                    projectDirectory = projectDirectory,
                     mode = mode,
                     selectedPaths = selectedPaths,
                     selectionLimit = selectionLimit,
@@ -267,6 +286,7 @@ private fun ProjectFileTreePage(
 @Composable
 private fun ProjectFileSearchResults(
     state: ProjectFileBrowserUiState,
+    projectDirectory: String,
     mode: ProjectFilePanelMode,
     selectedPaths: Set<String>,
     selectionLimit: Int,
@@ -295,6 +315,7 @@ private fun ProjectFileSearchResults(
                 val selected = file.path in selectedPaths
                 ProjectFileEntryRow(
                     entry = file,
+                    projectDirectory = projectDirectory,
                     depth = 0,
                     expanded = false,
                     showPath = true,
@@ -321,6 +342,7 @@ private fun ProjectFileSearchResults(
 @Composable
 private fun ProjectFileEntryRow(
     entry: OpenCodeFileEntry,
+    projectDirectory: String,
     depth: Int,
     expanded: Boolean,
     showPath: Boolean,
@@ -330,6 +352,9 @@ private fun ProjectFileEntryRow(
     onPreview: (() -> Unit)? = null,
 ) {
     val directory = entry.type == OpenCodeFileType.Directory
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    var menuExpanded by remember(entry.path) { mutableStateOf(false) }
     val actionDescription = if (directory) {
         stringResource(
             if (expanded) R.string.file_browser_collapse_directory else R.string.file_browser_expand_directory,
@@ -341,94 +366,152 @@ private fun ProjectFileEntryRow(
             entry.name,
         )
     }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    val openCopyMenuLabel = stringResource(R.string.file_browser_open_copy_menu)
+    val copyNameLabel = stringResource(
+        if (directory) R.string.file_browser_copy_directory_name else R.string.file_browser_copy_file_name,
+    )
+    val copyRelativePathLabel = stringResource(R.string.file_browser_copy_relative_path)
+    val copyAbsolutePathLabel = stringResource(R.string.file_browser_copy_absolute_path)
+    val copyToClipboard: (String, String) -> Unit = { label, text ->
+        menuExpanded = false
+        scope.launch {
+            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(label, text)))
+        }
+    }
+    Box(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier
-                .weight(1f)
-                .heightIn(min = 48.dp)
-                .semantics { contentDescription = actionDescription }
-                .then(
-                    if (selected != null) {
-                        Modifier.toggleable(
-                            value = selected,
-                            enabled = selectionEnabled,
-                            role = Role.Checkbox,
-                            onValueChange = { onClick() },
-                        )
-                    } else {
-                        Modifier
-                            .semantics { role = Role.Button }
-                            .clickable(onClick = onClick)
-                    },
-                )
-                .padding(
-                    start = 8.dp + (depth.coerceAtMost(12) * 16).dp,
-                    end = if (onPreview == null) 12.dp else 4.dp,
-                    top = 6.dp,
-                    bottom = 6.dp,
-                ),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (directory) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp)
+                    .semantics {
+                        contentDescription = actionDescription
+                        if (selected != null) {
+                            toggleableState = ToggleableState(selected)
+                            if (!selectionEnabled) disabled()
+                        }
+                    }
+                    .combinedClickable(
+                        role = if (selected != null) Role.Checkbox else Role.Button,
+                        onLongClickLabel = openCopyMenuLabel,
+                        onLongClick = { menuExpanded = true },
+                        onClick = {
+                            if (selected == null || selectionEnabled) onClick()
+                        },
+                    )
+                    .padding(
+                        start = 8.dp + (depth.coerceAtMost(12) * 16).dp,
+                        end = if (onPreview == null) 12.dp else 4.dp,
+                        top = 6.dp,
+                        bottom = 6.dp,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (directory) {
+                    Icon(
+                        painter = painterResource(
+                            if (expanded) R.drawable.ic_opencode_chevron_down else R.drawable.ic_opencode_chevron_right,
+                        ),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = OpenCodePalette.IconMuted,
+                    )
+                } else if (selected == true) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_opencode_check),
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = OpenCodePalette.Accent,
+                    )
+                } else {
+                    Spacer(Modifier.width(18.dp))
+                }
+                Spacer(Modifier.width(4.dp))
                 Icon(
                     painter = painterResource(
-                        if (expanded) R.drawable.ic_opencode_chevron_down else R.drawable.ic_opencode_chevron_right,
+                        if (directory) R.drawable.ic_opencode_folder else R.drawable.ic_opencode_file,
                     ),
                     contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = OpenCodePalette.IconMuted,
+                    modifier = Modifier.size(16.dp),
+                    tint = if (selected == true) OpenCodePalette.Accent else OpenCodePalette.IconMuted,
                 )
-            } else if (selected == true) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_opencode_check),
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = OpenCodePalette.Accent,
-                )
-            } else {
-                Spacer(Modifier.width(18.dp))
-            }
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                painter = painterResource(
-                    if (directory) R.drawable.ic_opencode_folder else R.drawable.ic_opencode_file,
-                ),
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = if (selected == true) OpenCodePalette.Accent else OpenCodePalette.IconMuted,
-            )
-            Spacer(Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = entry.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (entry.ignored) OpenCodePalette.MutedText else OpenCodePalette.Text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (showPath) {
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = entry.path.substringBeforeLast('/', missingDelimiterValue = ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = OpenCodePalette.MutedText,
+                        text = entry.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (entry.ignored) OpenCodePalette.MutedText else OpenCodePalette.Text,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (showPath) {
+                        Text(
+                            text = entry.path.substringBeforeLast('/', missingDelimiterValue = ""),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = OpenCodePalette.MutedText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
+            if (onPreview != null) {
+                OpenCodeHeaderIconButton(
+                    iconRes = R.drawable.ic_opencode_file,
+                    contentDescription = stringResource(R.string.project_file_picker_preview_file, entry.name),
+                    onClick = onPreview,
+                )
+            }
         }
-        if (onPreview != null) {
-            OpenCodeHeaderIconButton(
-                iconRes = R.drawable.ic_opencode_file,
-                contentDescription = stringResource(R.string.project_file_picker_preview_file, entry.name),
-                onClick = onPreview,
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text(copyNameLabel) },
+                onClick = { copyToClipboard(copyNameLabel, entry.name) },
+                modifier = Modifier.heightIn(min = 48.dp),
+            )
+            DropdownMenuItem(
+                text = { Text(copyRelativePathLabel) },
+                onClick = { copyToClipboard(copyRelativePathLabel, entry.path) },
+                modifier = Modifier.heightIn(min = 48.dp),
+            )
+            DropdownMenuItem(
+                text = { Text(copyAbsolutePathLabel) },
+                onClick = {
+                    copyToClipboard(
+                        copyAbsolutePathLabel,
+                        buildProjectFileAbsolutePath(projectDirectory, entry.path),
+                    )
+                },
+                modifier = Modifier.heightIn(min = 48.dp),
             )
         }
     }
 }
+
+internal fun buildProjectFileAbsolutePath(
+    projectDirectory: String,
+    relativePath: String,
+): String {
+    val pathNormalizer = PathNormalizer()
+    val projectFilePathNormalizer = ProjectFilePathNormalizer()
+    val root = pathNormalizer.normalize(projectDirectory)
+    require(root.startsWith('/') || WindowsDriveAbsolutePath.matches(root)) {
+        "Project directory must be absolute"
+    }
+    val relative = projectFilePathNormalizer.normalize(
+        relativePath,
+        backslashIsSeparator = projectFilePathNormalizer.usesWindowsSeparators(root),
+    )
+    return if (root == "/") "/$relative" else "${root.trimEnd('/')}/$relative"
+}
+
+private val WindowsDriveAbsolutePath = Regex("^[A-Za-z]:/.*")
 
 @Composable
 private fun ProjectFilePickerFooter(

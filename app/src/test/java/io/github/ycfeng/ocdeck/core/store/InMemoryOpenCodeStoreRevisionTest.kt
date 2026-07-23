@@ -4,6 +4,7 @@ import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessageBundle
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePart
+import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeProjectSnapshot
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeSession
 import io.github.ycfeng.ocdeck.domain.model.PromptCapabilities
@@ -110,6 +111,451 @@ class InMemoryOpenCodeStoreRevisionTest {
         assertEquals("current+delta", state.messagesBySession.getValue(sessionId).first { it.id == "message-live" }.text)
         assertEquals("current+delta", state.partsByMessage.getValue("message-live").single().text)
         assertTrue(store.captureMessageDataRevision(serverId, directory) > loadRevision)
+    }
+
+    @Test
+    fun olderMessagePagesPrependAndAdvanceCursorWithoutReplacingNewerMessages() {
+        putFirstMessagePage(
+            page = OpenCodeMessagePage(
+                bundle = OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-3", sessionId, "user", "three", createdAt = 3L),
+                        OpenCodeMessage("message-4", sessionId, "assistant", "four", createdAt = 4L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-1",
+            ),
+        )
+
+        val revision = store.captureMessageDataRevision(serverId, directory)
+        store.putMessagePage(
+            serverId = serverId,
+            directory = directory,
+            sessionId = sessionId,
+            page = OpenCodeMessagePage(
+                bundle = OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-1", sessionId, "user", "one", createdAt = 1L),
+                        OpenCodeMessage("message-2", sessionId, "assistant", "two", createdAt = 2L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-2",
+            ),
+            before = "cursor-1",
+            expectedRevision = revision,
+        )
+
+        val state = store.currentProject(serverId, directory)
+        assertEquals(
+            listOf("message-1", "message-2", "message-3", "message-4"),
+            state.messagesBySession.getValue(sessionId).map(OpenCodeMessage::id),
+        )
+        assertEquals("cursor-2", state.messageHistoryBySession.getValue(sessionId).nextCursor)
+    }
+
+    @Test
+    fun staleOlderPageCannotRollbackCursorOrMergeMessages() {
+        putFirstMessagePage(
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(OpenCodeMessage("message-3", sessionId, "assistant", "three", createdAt = 3L)),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-1",
+            ),
+        )
+        val revision = store.captureMessageDataRevision(serverId, directory)
+        assertEquals(
+            MessagePageApplyResult.Applied,
+            store.putMessagePage(
+                serverId,
+                directory,
+                sessionId,
+                OpenCodeMessagePage(
+                    OpenCodeMessageBundle(
+                        messages = listOf(OpenCodeMessage("message-2", sessionId, "user", "two", createdAt = 2L)),
+                        parts = emptyList(),
+                    ),
+                    nextCursor = "cursor-2",
+                ),
+                before = "cursor-1",
+                expectedRevision = revision,
+            ),
+        )
+
+        assertEquals(
+            MessagePageApplyResult.Stale,
+            store.putMessagePage(
+                serverId,
+                directory,
+                sessionId,
+                OpenCodeMessagePage(
+                    OpenCodeMessageBundle(
+                        messages = listOf(OpenCodeMessage("stale-message", sessionId, "user", "stale", createdAt = 1L)),
+                        parts = emptyList(),
+                    ),
+                    nextCursor = "stale-cursor",
+                ),
+                before = "cursor-1",
+                expectedRevision = revision,
+            ),
+        )
+
+        val state = store.currentProject(serverId, directory)
+        assertEquals("cursor-2", state.messageHistoryBySession.getValue(sessionId).nextCursor)
+        assertFalse(state.messagesBySession.getValue(sessionId).any { it.id == "stale-message" })
+    }
+
+    @Test
+    fun consumedCursorCycleIsRejectedWithoutMutatingMessages() {
+        putFirstMessagePage(
+            OpenCodeMessagePage(OpenCodeMessageBundle(emptyList(), emptyList()), nextCursor = "cursor-a"),
+        )
+        var revision = store.captureMessageDataRevision(serverId, directory)
+        store.putMessagePage(
+            serverId,
+            directory,
+            sessionId,
+            OpenCodeMessagePage(OpenCodeMessageBundle(emptyList(), emptyList()), nextCursor = "cursor-b"),
+            before = "cursor-a",
+            expectedRevision = revision,
+        )
+        revision = store.captureMessageDataRevision(serverId, directory)
+
+        assertEquals(
+            MessagePageApplyResult.CursorCycle,
+            store.putMessagePage(
+                serverId,
+                directory,
+                sessionId,
+                OpenCodeMessagePage(
+                    OpenCodeMessageBundle(
+                        messages = listOf(OpenCodeMessage("cycle-message", sessionId, "user", "cycle")),
+                        parts = emptyList(),
+                    ),
+                    nextCursor = "cursor-a",
+                ),
+                before = "cursor-b",
+                expectedRevision = revision,
+            ),
+        )
+
+        val state = store.currentProject(serverId, directory)
+        assertEquals("cursor-b", state.messageHistoryBySession.getValue(sessionId).nextCursor)
+        assertFalse(state.messagesBySession[sessionId].orEmpty().any { it.id == "cycle-message" })
+    }
+
+    @Test
+    fun overlappingInitialRefreshPreservesLoadedHistoryAndOldestCursor() {
+        putFirstMessagePage(
+            page = OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(OpenCodeMessage("message-2", sessionId, "assistant", "two", createdAt = 2L)),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-1",
+            ),
+        )
+        var revision = store.captureMessageDataRevision(serverId, directory)
+        store.putMessagePage(
+            serverId = serverId,
+            directory = directory,
+            sessionId = sessionId,
+            page = OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(OpenCodeMessage("message-1", sessionId, "user", "one", createdAt = 1L)),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-2",
+            ),
+            before = "cursor-1",
+            expectedRevision = revision,
+        )
+
+        putFirstMessagePage(
+            page = OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-2", sessionId, "assistant", "two", createdAt = 2L),
+                        OpenCodeMessage("message-3", sessionId, "assistant", "three", createdAt = 3L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "newest-page-cursor",
+            ),
+        )
+
+        val state = store.currentProject(serverId, directory)
+        assertEquals(
+            listOf("message-1", "message-2", "message-3"),
+            state.messagesBySession.getValue(sessionId).map(OpenCodeMessage::id),
+        )
+        assertEquals("cursor-2", state.messageHistoryBySession.getValue(sessionId).nextCursor)
+    }
+
+    @Test
+    fun overlappingFirstPageRefreshUsesServerIdTieBreakAcrossPages() {
+        putFirstMessagePage(
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-b", sessionId, "user", "b", createdAt = 1L),
+                        OpenCodeMessage("message-c", sessionId, "assistant", "c", createdAt = 1L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-1",
+            ),
+        )
+        store.putMessagePage(
+            serverId = serverId,
+            directory = directory,
+            sessionId = sessionId,
+            page = OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(OpenCodeMessage("message-a", sessionId, "assistant", "a", createdAt = 1L)),
+                    parts = emptyList(),
+                ),
+                nextCursor = null,
+            ),
+            before = "cursor-1",
+            expectedRevision = store.captureMessageDataRevision(serverId, directory),
+        )
+
+        putFirstMessagePage(
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-b", sessionId, "user", "b", createdAt = 1L),
+                        OpenCodeMessage("message-c", sessionId, "assistant", "c", createdAt = 1L),
+                        OpenCodeMessage("message-d", sessionId, "assistant", "d", createdAt = 1L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "refreshed-cursor",
+            ),
+        )
+
+        assertEquals(
+            listOf("message-a", "message-b", "message-c", "message-d"),
+            store.currentProject(serverId, directory).messagesBySession.getValue(sessionId).map(OpenCodeMessage::id),
+        )
+    }
+
+    @Test
+    fun overlappingFirstPageRefreshReconcilesMissingCoveredMessagesAndParts() {
+        putFirstMessagePage(
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-b", sessionId, "user", "b", createdAt = 2L),
+                        OpenCodeMessage("message-c", sessionId, "assistant", "c", createdAt = 3L),
+                        OpenCodeMessage("message-d", sessionId, "assistant", "d", createdAt = 4L),
+                    ),
+                    parts = listOf(
+                        part("part-b-old", "message-b", "b-old"),
+                        part("part-c", "message-c", "c"),
+                        part("part-d", "message-d", "d"),
+                    ),
+                ),
+                nextCursor = "cursor-1",
+            ),
+        )
+        store.putMessagePage(
+            serverId = serverId,
+            directory = directory,
+            sessionId = sessionId,
+            page = OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(OpenCodeMessage("message-a", sessionId, "assistant", "a", createdAt = 1L)),
+                    parts = listOf(part("part-a", "message-a", "a")),
+                ),
+                nextCursor = null,
+            ),
+            before = "cursor-1",
+            expectedRevision = store.captureMessageDataRevision(serverId, directory),
+        )
+
+        putFirstMessagePage(
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-b", sessionId, "user", "b", createdAt = 2L),
+                        OpenCodeMessage("message-d", sessionId, "assistant", "d", createdAt = 4L),
+                        OpenCodeMessage("message-e", sessionId, "assistant", "e", createdAt = 5L),
+                    ),
+                    parts = listOf(part("part-b-new", "message-b", "b-new")),
+                ),
+                nextCursor = "refreshed-cursor",
+            ),
+        )
+
+        val state = store.currentProject(serverId, directory)
+        assertEquals(
+            listOf("message-a", "message-b", "message-d", "message-e"),
+            state.messagesBySession.getValue(sessionId).map(OpenCodeMessage::id),
+        )
+        assertEquals(listOf("part-a"), state.partsByMessage.getValue("message-a").map(OpenCodeMessagePart::id))
+        assertEquals(listOf("part-b-new"), state.partsByMessage.getValue("message-b").map(OpenCodeMessagePart::id))
+        assertFalse(state.partsByMessage.containsKey("message-c"))
+        assertFalse(state.partsByMessage.containsKey("message-d"))
+        assertEquals(null, state.messageHistoryBySession.getValue(sessionId).nextCursor)
+    }
+
+    @Test
+    fun disjointInitialRefreshRestartsCursorChainToBridgeMissingWindow() {
+        putFirstMessagePage(
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-3", sessionId, "user", "three", createdAt = 3L),
+                        OpenCodeMessage("message-4", sessionId, "assistant", "four", createdAt = 4L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-a",
+            ),
+        )
+        var revision = store.captureMessageDataRevision(serverId, directory)
+        store.putMessagePage(
+            serverId,
+            directory,
+            sessionId,
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-1", sessionId, "user", "one", createdAt = 1L),
+                        OpenCodeMessage("message-2", sessionId, "assistant", "two", createdAt = 2L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-b",
+            ),
+            before = "cursor-a",
+            expectedRevision = revision,
+        )
+
+        putFirstMessagePage(
+            OpenCodeMessagePage(
+                OpenCodeMessageBundle(
+                    messages = listOf(
+                        OpenCodeMessage("message-5", sessionId, "user", "five", createdAt = 5L),
+                        OpenCodeMessage("message-6", sessionId, "assistant", "six", createdAt = 6L),
+                    ),
+                    parts = emptyList(),
+                ),
+                nextCursor = "cursor-c",
+            ),
+        )
+
+        var history = store.currentProject(serverId, directory).messageHistoryBySession.getValue(sessionId)
+        assertEquals("cursor-c", history.nextCursor)
+        assertTrue(history.consumedCursors.isEmpty())
+
+        revision = store.captureMessageDataRevision(serverId, directory)
+        assertEquals(
+            MessagePageApplyResult.Applied,
+            store.putMessagePage(
+                serverId,
+                directory,
+                sessionId,
+                OpenCodeMessagePage(
+                    OpenCodeMessageBundle(
+                        messages = listOf(
+                            OpenCodeMessage("message-3", sessionId, "user", "three", createdAt = 3L),
+                            OpenCodeMessage("message-4", sessionId, "assistant", "four", createdAt = 4L),
+                        ),
+                        parts = emptyList(),
+                    ),
+                    nextCursor = "cursor-a",
+                ),
+                before = "cursor-c",
+                expectedRevision = revision,
+            ),
+        )
+        history = store.currentProject(serverId, directory).messageHistoryBySession.getValue(sessionId)
+        assertEquals("cursor-a", history.nextCursor)
+        assertEquals(setOf("cursor-c"), history.consumedCursors)
+
+        revision = store.captureMessageDataRevision(serverId, directory)
+        assertEquals(
+            MessagePageApplyResult.Applied,
+            store.putMessagePage(
+                serverId,
+                directory,
+                sessionId,
+                OpenCodeMessagePage(
+                    OpenCodeMessageBundle(
+                        messages = listOf(
+                            OpenCodeMessage("message-1", sessionId, "user", "one", createdAt = 1L),
+                            OpenCodeMessage("message-2", sessionId, "assistant", "two", createdAt = 2L),
+                        ),
+                        parts = emptyList(),
+                    ),
+                    nextCursor = "cursor-b",
+                ),
+                before = "cursor-a",
+                expectedRevision = revision,
+            ),
+        )
+        history = store.currentProject(serverId, directory).messageHistoryBySession.getValue(sessionId)
+        assertEquals("cursor-b", history.nextCursor)
+        assertEquals(setOf("cursor-c", "cursor-a"), history.consumedCursors)
+        assertEquals(
+            listOf("message-1", "message-2", "message-3", "message-4", "message-5", "message-6"),
+            store.currentProject(serverId, directory).messagesBySession.getValue(sessionId).map(OpenCodeMessage::id),
+        )
+    }
+
+    @Test
+    fun staleFirstPageCannotOverwriteNewerMessagesOrCursor() {
+        val staleRequest = store.beginMessageFirstPageRequest(serverId, directory, sessionId)
+        val currentRequest = store.beginMessageFirstPageRequest(serverId, directory, sessionId)
+        val currentPage = OpenCodeMessagePage(
+            OpenCodeMessageBundle(
+                messages = listOf(OpenCodeMessage("current-message", sessionId, "assistant", "current")),
+                parts = emptyList(),
+            ),
+            nextCursor = "current-cursor",
+        )
+
+        assertEquals(
+            MessagePageApplyResult.Applied,
+            store.putMessagePage(
+                serverId = serverId,
+                directory = directory,
+                sessionId = sessionId,
+                page = currentPage,
+                before = null,
+                expectedRevision = currentRequest.expectedRevision,
+                firstPageRequestGeneration = currentRequest.generation,
+            ),
+        )
+        assertEquals(
+            MessagePageApplyResult.Stale,
+            store.putMessagePage(
+                serverId = serverId,
+                directory = directory,
+                sessionId = sessionId,
+                page = OpenCodeMessagePage(
+                    OpenCodeMessageBundle(
+                        messages = listOf(OpenCodeMessage("stale-message", sessionId, "user", "stale")),
+                        parts = emptyList(),
+                    ),
+                    nextCursor = "stale-cursor",
+                ),
+                before = null,
+                expectedRevision = staleRequest.expectedRevision,
+                firstPageRequestGeneration = staleRequest.generation,
+            ),
+        )
+
+        val state = store.currentProject(serverId, directory)
+        assertEquals(listOf("current-message"), state.messagesBySession.getValue(sessionId).map(OpenCodeMessage::id))
+        assertEquals("current-cursor", state.messageHistoryBySession.getValue(sessionId).nextCursor)
+        assertEquals(setOf("current-message"), state.messageHistoryBySession.getValue(sessionId).latestPageMessageIds)
     }
 
     @Test
@@ -304,6 +750,74 @@ class InMemoryOpenCodeStoreRevisionTest {
     }
 
     @Test
+    fun sessionDeletionClearsHistoryAndRejectsItsStalePage() {
+        putFirstMessagePage(
+            OpenCodeMessagePage(OpenCodeMessageBundle(emptyList(), emptyList()), nextCursor = "cursor-1"),
+        )
+        val pageRevision = store.captureMessageDataRevision(serverId, directory)
+        val pendingRequest = store.beginMessageFirstPageRequest(serverId, directory, sessionId)
+        assertEquals(
+            pendingRequest.generation,
+            store.currentProject(serverId, directory).messageFirstPageRequestGenerations[sessionId],
+        )
+
+        store.reduceProjectEvent(
+            serverId,
+            directory,
+            jsonObject("""{"type":"session.deleted","properties":{"sessionID":"$sessionId"}}"""),
+        )
+
+        assertFalse(store.currentProject(serverId, directory).messageHistoryBySession.containsKey(sessionId))
+        assertFalse(store.currentProject(serverId, directory).messageFirstPageRequestGenerations.containsKey(sessionId))
+        assertEquals(
+            MessagePageApplyResult.Stale,
+            store.putMessagePage(
+                serverId,
+                directory,
+                sessionId,
+                OpenCodeMessagePage(OpenCodeMessageBundle(emptyList(), emptyList()), nextCursor = null),
+                before = "cursor-1",
+                expectedRevision = pageRevision,
+            ),
+        )
+        assertEquals(
+            MessagePageApplyResult.Stale,
+            store.putMessagePage(
+                serverId = serverId,
+                directory = directory,
+                sessionId = sessionId,
+                page = OpenCodeMessagePage(OpenCodeMessageBundle(emptyList(), emptyList()), nextCursor = null),
+                before = null,
+                expectedRevision = pendingRequest.expectedRevision,
+                firstPageRequestGeneration = pendingRequest.generation,
+            ),
+        )
+        assertFalse(store.currentProject(serverId, directory).messageHistoryBySession.containsKey(sessionId))
+    }
+
+    @Test
+    fun removeSessionClearsPendingFirstPageGeneration() {
+        val pendingRequest = store.beginMessageFirstPageRequest(serverId, directory, sessionId)
+        assertTrue(store.currentProject(serverId, directory).messageFirstPageRequestGenerations.containsKey(sessionId))
+
+        store.removeSession(serverId, directory, sessionId)
+
+        assertFalse(store.currentProject(serverId, directory).messageFirstPageRequestGenerations.containsKey(sessionId))
+        assertEquals(
+            MessagePageApplyResult.Stale,
+            store.putMessagePage(
+                serverId = serverId,
+                directory = directory,
+                sessionId = sessionId,
+                page = OpenCodeMessagePage(OpenCodeMessageBundle(emptyList(), emptyList()), nextCursor = null),
+                before = null,
+                expectedRevision = pendingRequest.expectedRevision,
+                firstPageRequestGeneration = pendingRequest.generation,
+            ),
+        )
+    }
+
+    @Test
     fun liveMessageRebuildClearsSessionDeletionTombstone() {
         store.reduceProjectEvent(
             serverId,
@@ -323,6 +837,22 @@ class InMemoryOpenCodeStoreRevisionTest {
         val state = store.currentProject(serverId, directory)
         assertFalse(state.removedSessionRevisions.containsKey(sessionId))
         assertEquals("rebuilt-message", state.messagesBySession.getValue(sessionId).single().id)
+    }
+
+    private fun putFirstMessagePage(
+        page: OpenCodeMessagePage,
+        targetSessionId: String = sessionId,
+    ): MessagePageApplyResult {
+        val request = store.beginMessageFirstPageRequest(serverId, directory, targetSessionId)
+        return store.putMessagePage(
+            serverId = serverId,
+            directory = directory,
+            sessionId = targetSessionId,
+            page = page,
+            before = null,
+            expectedRevision = request.expectedRevision,
+            firstPageRequestGeneration = request.generation,
+        )
     }
 
     private fun snapshot(sessions: List<OpenCodeSession> = emptyList()) = OpenCodeProjectSnapshot(

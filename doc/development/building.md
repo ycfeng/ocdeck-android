@@ -129,15 +129,15 @@ macOS/Linux:
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary -PrequireGoMobileBridge=true
 ```
 
-The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.8-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.11-frp0.69.1-p1`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
 
 ## Release Builds
 
 Application versions come only from root `gradle.properties`:
 
 ```properties
-VERSION_CODE=5
-VERSION_NAME=0.2.0
+VERSION_CODE=8
+VERSION_NAME=0.2.3
 ```
 
 Local Release builds require a generated and verified bridge plus release-signing inputs. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts. Release remains GoMobile-default. CI and Release automation build Canary only as a verification variant without Release signing; only `assembleRelease` outputs receive Release signing, are staged, and are eligible for publication. The App packaging configuration preserves the already-stripped `libgojni.so` bytes verified in the GoMobile AAR; APK release checks independently revalidate native-byte binding, ELF metadata, 16KB alignment, and stripped state.

@@ -18,6 +18,9 @@ import io.github.ycfeng.ocdeck.data.server.ServerConnection
 import io.github.ycfeng.ocdeck.data.server.ServerHiddenModelPreference
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeFileContent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -29,6 +32,9 @@ import okhttp3.ResponseBody
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
 import okio.BufferedSource
+import okio.Source
+import okio.Timeout
+import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -39,6 +45,7 @@ import retrofit2.HttpException
 import retrofit2.Response
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
+import java.util.concurrent.Executors
 
 class OpenCodeRepositoryFailureHandlingTest {
     @Test
@@ -128,12 +135,39 @@ class OpenCodeRepositoryFailureHandlingTest {
         }
     }
 
-    private fun repository(api: OpenCodeApi): OpenCodeRepository = OpenCodeRepository(
+    @Test
+    fun projectFileResponseIsReadOnConfiguredDispatcher() = runTest {
+        val threadName = "project-file-reader"
+        val dispatcher = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, threadName) }
+            .asCoroutineDispatcher()
+        try {
+            val responseBody = ThreadRecordingResponseBody(
+                """{"type":"text","content":"hello"}""".encodeToByteArray(),
+            )
+            val repository = repository(
+                api = fakeApi(fileContent = { responseBody }),
+                fileContentDispatcher = dispatcher,
+            )
+
+            val content = repository.loadProjectFile(SERVER_ID, DIRECTORY, FILE_PATH).getOrThrow()
+
+            assertEquals(OpenCodeFileContent.Text(FILE_PATH, "hello"), content)
+            assertEquals(threadName, responseBody.readThreadName)
+        } finally {
+            dispatcher.close()
+        }
+    }
+
+    private fun repository(
+        api: OpenCodeApi,
+        fileContentDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ): OpenCodeRepository = OpenCodeRepository(
         serverRepository = FakeOpenCodeServerRepository(api),
         pathNormalizer = PathNormalizer(),
         projectFilePathNormalizer = ProjectFilePathNormalizer(),
         json = Json { ignoreUnknownKeys = true },
         redactor = Redactor(),
+        fileContentDispatcher = fileContentDispatcher,
     )
 
     private fun fakeApi(
@@ -195,6 +229,31 @@ class OpenCodeRepositoryFailureHandlingTest {
         override fun contentLength(): Long = -1L
 
         override fun source(): BufferedSource = throw failure
+    }
+
+    private class ThreadRecordingResponseBody(private val contentBytes: ByteArray) : ResponseBody() {
+        @Volatile
+        var readThreadName: String? = null
+            private set
+
+        private val source = object : Source {
+            private val buffer = Buffer().write(contentBytes)
+
+            override fun read(sink: Buffer, byteCount: Long): Long {
+                readThreadName = Thread.currentThread().name
+                return buffer.read(sink, byteCount)
+            }
+
+            override fun timeout(): Timeout = Timeout.NONE
+
+            override fun close() = buffer.close()
+        }.buffer()
+
+        override fun contentType(): MediaType? = null
+
+        override fun contentLength(): Long = contentBytes.size.toLong()
+
+        override fun source(): BufferedSource = source
     }
 
     private class FakeOpenCodeServerRepository(api: OpenCodeApi) : OpenCodeServerRepository {

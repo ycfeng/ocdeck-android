@@ -192,6 +192,11 @@
     <string name="file_browser_expand_directory">展开目录 %1$s</string>
     <string name="file_browser_collapse_directory">折叠目录 %1$s</string>
     <string name="file_browser_open_file">打开文件 %1$s</string>
+    <string name="file_browser_open_copy_menu">打开复制菜单</string>
+    <string name="file_browser_copy_file_name">复制文件名</string>
+    <string name="file_browser_copy_directory_name">复制目录名</string>
+    <string name="file_browser_copy_relative_path">复制相对路径</string>
+    <string name="file_browser_copy_absolute_path">复制绝对路径</string>
     <string name="file_browser_loading_content">正在加载文件</string>
     <string name="file_browser_content_failed">加载文件失败</string>
     <string name="file_browser_file_too_large">文件超过应用内预览大小限制。</string>

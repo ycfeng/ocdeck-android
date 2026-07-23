@@ -77,6 +77,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -250,10 +251,45 @@ fun SessionDetailScreen(
     var sessionMenuExpanded by remember { mutableStateOf(false) }
     var sessionDialog by remember { mutableStateOf<SessionDialog?>(null) }
     var renameTitle by remember { mutableStateOf("") }
+    var hasPositionedInitialMessages by remember(state.currentSessionId) { mutableStateOf(false) }
+    var jumpToFirstUserPending by remember(state.currentSessionId) { mutableStateOf(false) }
 
     LaunchedEffect(state.currentSessionId, latestVisibleMessageId, showAssistantThinking) {
-        if (!isTextSelectionActive && latestMessageItemIndex != null) {
-            messageListState.animateScrollToItem(latestMessageItemIndex)
+        latestMessageItemIndex?.let { targetIndex ->
+            if (!isTextSelectionActive) messageListState.animateScrollToItem(targetIndex)
+            hasPositionedInitialMessages = true
+        }
+    }
+
+    LaunchedEffect(state.currentSessionId, visibleMessages.isEmpty(), state.hasOlderMessages) {
+        if (shouldLoadOlderMessagesForEmptyTimeline(visibleMessages.size, state.hasOlderMessages)) {
+            viewModel.loadOlderMessages()
+        }
+    }
+
+    LaunchedEffect(messageListState, state.currentSessionId) {
+        snapshotFlow {
+            hasPositionedInitialMessages &&
+                messageListState.firstVisibleItemIndex == 0 &&
+                messageListState.firstVisibleItemScrollOffset == 0
+        }.collect { atTop ->
+            if (atTop) viewModel.loadOlderMessages()
+        }
+    }
+
+    LaunchedEffect(
+        jumpToFirstUserPending,
+        state.hasOlderMessages,
+        state.isLoadingOlderMessages,
+        firstUserMessageIndex,
+    ) {
+        if (
+            jumpToFirstUserPending &&
+            !state.hasOlderMessages &&
+            !state.isLoadingOlderMessages
+        ) {
+            firstUserMessageIndex?.let { messageListState.animateScrollToItem(it) }
+            jumpToFirstUserPending = false
         }
     }
 
@@ -475,9 +511,13 @@ fun SessionDetailScreen(
                             }
                         }
                     }
-                    val jumpControlsEnabled = latestMessageItemIndex != null && !isTextSelectionActive
+                    val jumpControlsVisible = shouldShowMessageJumpControls(
+                        latestMessageItemIndex = latestMessageItemIndex,
+                        hasOlderMessages = state.hasOlderMessages,
+                        isTextSelectionActive = isTextSelectionActive,
+                    )
                     androidx.compose.animation.AnimatedVisibility(
-                        visible = jumpControlsEnabled,
+                        visible = jumpControlsVisible,
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(end = 3.dp, bottom = 3.dp),
@@ -493,14 +533,19 @@ fun SessionDetailScreen(
                         ),
                     ) {
                         SessionMessageJumpControls(
-                            firstUserEnabled = jumpControlsEnabled && firstUserMessageIndex != null,
-                            latestEnabled = jumpControlsEnabled,
+                            firstUserEnabled = jumpControlsVisible &&
+                                !state.isLoadingOlderMessages &&
+                                !jumpToFirstUserPending &&
+                                (state.hasOlderMessages || firstUserMessageIndex != null),
+                            latestEnabled = latestMessageItemIndex != null,
                             onJumpToFirstUser = {
-                                firstUserMessageIndex?.let { targetIndex ->
-                                    screenScope.launch { messageListState.animateScrollToItem(targetIndex) }
+                                jumpToFirstUserPending = true
+                                viewModel.loadAllOlderMessages { completed ->
+                                    if (!completed) jumpToFirstUserPending = false
                                 }
                             },
                             onJumpToLatest = {
+                                jumpToFirstUserPending = false
                                 latestMessageItemIndex?.let { targetIndex ->
                                     screenScope.launch { messageListState.animateScrollToItem(targetIndex) }
                                 }
@@ -4769,6 +4814,17 @@ internal fun resolveLatestMessageItemIndex(
     messageCount > 0 -> messageCount - 1
     else -> null
 }
+
+internal fun shouldLoadOlderMessagesForEmptyTimeline(
+    messageCount: Int,
+    hasOlderMessages: Boolean,
+): Boolean = messageCount == 0 && hasOlderMessages
+
+internal fun shouldShowMessageJumpControls(
+    latestMessageItemIndex: Int?,
+    hasOlderMessages: Boolean,
+    isTextSelectionActive: Boolean,
+): Boolean = !isTextSelectionActive && (latestMessageItemIndex != null || hasOlderMessages)
 
 internal fun assistantTurnDurationMillisByMessageId(messages: List<OpenCodeMessage>): Map<String, Long> {
     val userCreatedAtById = messages.asSequence()

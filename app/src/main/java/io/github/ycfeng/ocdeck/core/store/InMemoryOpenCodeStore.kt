@@ -3,6 +3,7 @@ package io.github.ycfeng.ocdeck.core.store
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessageBundle
+import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePage
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeMessagePart
 import io.github.ycfeng.ocdeck.domain.model.OpenCodePermissionRequest
 import io.github.ycfeng.ocdeck.domain.model.OpenCodeProjectSnapshot
@@ -19,6 +20,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 
 data class ProjectEventReduction(
     val before: OpenCodeProjectState,
@@ -36,11 +38,18 @@ internal enum class OptimisticMessageRemovalResult {
     Missing,
 }
 
+internal enum class MessagePageApplyResult {
+    Applied,
+    Stale,
+    CursorCycle,
+}
+
 class InMemoryOpenCodeStore(
     private val pathNormalizer: PathNormalizer,
     private val eventReducer: OpenCodeEventReducer = OpenCodeEventReducer(),
 ) {
     private val state = MutableStateFlow(OpenCodeRuntimeState())
+    private val messageFirstPageGeneration = AtomicLong()
 
     fun observeProject(serverId: String, directory: String, workspace: String? = null): Flow<OpenCodeProjectState> {
         val key = key(serverId, directory, workspace)
@@ -58,6 +67,32 @@ class InMemoryOpenCodeStore(
     fun captureMessageDataRevision(serverId: String, directory: String, workspace: String? = null): Long {
         val key = key(serverId, directory, workspace)
         return state.value.projects[key]?.messageDataRevision ?: 0L
+    }
+
+    internal fun beginMessageFirstPageRequest(
+        serverId: String,
+        directory: String,
+        sessionId: String,
+        workspace: String? = null,
+    ): MessageFirstPageRequest {
+        val key = key(serverId, directory, workspace)
+        val generation = messageFirstPageGeneration.incrementAndGet()
+        var expectedRevision = 0L
+        state.update { runtime ->
+            val project = runtime.project(key)
+            expectedRevision = project.messageDataRevision
+            val currentGeneration = project.messageFirstPageRequestGenerations[sessionId] ?: 0L
+            if (currentGeneration >= generation) {
+                runtime
+            } else {
+                val next = project.copy(
+                    messageFirstPageRequestGenerations = project.messageFirstPageRequestGenerations +
+                        (sessionId to generation),
+                )
+                runtime.copy(projects = runtime.projects + (key to next))
+            }
+        }
+        return MessageFirstPageRequest(generation, expectedRevision)
     }
 
     fun captureSessionListWindow(
@@ -303,6 +338,93 @@ class InMemoryOpenCodeStore(
         }
     }
 
+    internal fun putMessagePage(
+        serverId: String,
+        directory: String,
+        sessionId: String,
+        page: OpenCodeMessagePage,
+        before: String?,
+        expectedRevision: Long,
+        firstPageRequestGeneration: Long? = null,
+        workspace: String? = null,
+    ): MessagePageApplyResult {
+        val key = key(serverId, directory, workspace)
+        var result = MessagePageApplyResult.Stale
+        state.update { runtime ->
+            result = MessagePageApplyResult.Stale
+            val project = runtime.project(key)
+            if (
+                before == null &&
+                (
+                    firstPageRequestGeneration == null ||
+                        project.messageFirstPageRequestGenerations[sessionId] != firstPageRequestGeneration
+                    )
+            ) {
+                return@update runtime
+            }
+            if (project.removedSessionRevisions[sessionId]?.let { it > expectedRevision } == true) {
+                return@update runtime
+            }
+            val currentHistory = project.messageHistoryBySession[sessionId]
+            if (before != null) {
+                if (currentHistory?.nextCursor != before) return@update runtime
+                if (
+                    page.nextCursor == before ||
+                    page.nextCursor?.let { it in currentHistory.consumedCursors } == true
+                ) {
+                    result = MessagePageApplyResult.CursorCycle
+                    return@update runtime
+                }
+            }
+            val messagesUpdated = when {
+                before == null &&
+                    currentHistory == null &&
+                    project.messageDataRevision == expectedRevision ->
+                    project.replaceMessages(sessionId, page.bundle)
+                before == null &&
+                    currentHistory != null &&
+                    project.messageDataRevision == expectedRevision &&
+                    (page.bundle.messages.isNotEmpty() || page.nextCursor == null) ->
+                    project.reconcileFirstMessagePage(sessionId, page.bundle)
+                else -> project.mergeMessages(sessionId, page.bundle, expectedRevision)
+            }
+            val nextHistory = if (before == null) {
+                val latestPageMessageIds = page.bundle.messages.mapTo(mutableSetOf(), OpenCodeMessage::id)
+                when {
+                    currentHistory == null -> MessageHistoryState(
+                        nextCursor = page.nextCursor,
+                        latestPageMessageIds = latestPageMessageIds,
+                    )
+                    latestPageMessageIds.any { it in currentHistory.latestPageMessageIds } -> currentHistory.copy(
+                        latestPageMessageIds = latestPageMessageIds,
+                    )
+                    else -> MessageHistoryState(
+                        nextCursor = page.nextCursor,
+                        latestPageMessageIds = latestPageMessageIds,
+                    )
+                }
+            } else {
+                checkNotNull(currentHistory).copy(
+                    nextCursor = page.nextCursor,
+                    consumedCursors = currentHistory.consumedCursors + before,
+                )
+            }
+            val next = messagesUpdated.copy(
+                messageHistoryBySession = messagesUpdated.messageHistoryBySession +
+                    (sessionId to nextHistory),
+                messageFirstPageRequestGenerations = if (before == null) {
+                    messagesUpdated.messageFirstPageRequestGenerations - sessionId
+                } else {
+                    messagesUpdated.messageFirstPageRequestGenerations
+                },
+                error = null,
+            ).withDataRevisionsFrom(project)
+            result = MessagePageApplyResult.Applied
+            runtime.copy(projects = runtime.projects + (key to next))
+        }
+        return result
+    }
+
     fun upsertSession(serverId: String, directory: String, session: OpenCodeSession, workspace: String? = null) {
         val key = key(serverId, directory, workspace)
         state.update { runtime ->
@@ -327,6 +449,8 @@ class InMemoryOpenCodeStore(
                 activeSessionId = if (project.activeSessionId == sessionId) null else project.activeSessionId,
                 messagesBySession = project.messagesBySession - sessionId,
                 partsByMessage = project.partsByMessage - messageIds,
+                messageHistoryBySession = project.messageHistoryBySession - sessionId,
+                messageFirstPageRequestGenerations = project.messageFirstPageRequestGenerations - sessionId,
                 permissionsBySession = project.permissionsBySession - sessionId,
                 questionsBySession = project.questionsBySession - sessionId,
                 statuses = project.statuses - sessionId,
@@ -385,7 +509,10 @@ class InMemoryOpenCodeStore(
             val project = runtime.project(key)
             val moved = project.messagesBySession[fromSessionId].orEmpty().map { it.copy(sessionId = toSessionId) }
             val movedMessageIds = moved.map { it.id }.toSet()
-            val nextMessages = project.messagesBySession - fromSessionId + (toSessionId to ((project.messagesBySession[toSessionId].orEmpty() + moved).distinctBy { it.id }))
+            val nextMessages = project.messagesBySession - fromSessionId +
+                (toSessionId to (project.messagesBySession[toSessionId].orEmpty() + moved)
+                    .distinctBy(OpenCodeMessage::id)
+                    .sortedForTimeline())
             val nextParts = project.partsByMessage.mapValues { (messageId, parts) ->
                 if (messageId in movedMessageIds) parts.map { it.copy(sessionId = toSessionId) } else parts
             }
@@ -417,7 +544,7 @@ class InMemoryOpenCodeStore(
             val existingTarget = project.messagesBySession[toSessionId].orEmpty().firstOrNull { it.id == messageId }
             val targetMessage = existingTarget?.takeUnless { it.isOptimistic } ?: movedMessage
             val targetMessages = (project.messagesBySession[toSessionId].orEmpty().filterNot { it.id == messageId } + targetMessage)
-                .sortedBy { it.createdAt ?: 0L }
+                .sortedForTimeline()
             var nextMessages = project.messagesBySession + (toSessionId to targetMessages)
             nextMessages = if (remainingSource.isEmpty()) {
                 nextMessages - fromSessionId
@@ -871,7 +998,7 @@ private fun OpenCodeProjectState.replaceMessages(
             add(optimisticById[historical.id]?.withHistoricalFallback(historical) ?: historical)
         }
         addAll(optimisticById.values.filterNot { it.id in incomingMessageIds })
-    }.sortedBy { it.createdAt ?: 0L }
+    }.sortedForTimeline()
     val optimisticParts = optimisticById.mapValues { (messageId, message) ->
         val liveParts = partsByMessage[messageId].orEmpty().ifEmpty { message.parts }
         mergeParts(incomingParts[messageId].orEmpty(), liveParts)
@@ -918,10 +1045,49 @@ private fun OpenCodeProjectState.mergeMessages(
         }
     val messagesWithRenderedText = mergedMessages.map { message ->
         if (message.text.isNotEmpty()) message else message.copy(text = mergedParts[message.id].orEmpty().renderText())
-    }.sortedBy { it.createdAt ?: 0L }
+    }.sortedForTimeline()
     return copy(
         messagesBySession = messagesBySession + (sessionId to messagesWithRenderedText),
         partsByMessage = mergedParts,
+    )
+}
+
+private fun OpenCodeProjectState.reconcileFirstMessagePage(
+    sessionId: String,
+    bundle: OpenCodeMessageBundle,
+): OpenCodeProjectState {
+    val currentMessages = messagesBySession[sessionId].orEmpty()
+    val incomingMessageIds = bundle.messages.mapTo(mutableSetOf(), OpenCodeMessage::id)
+    val optimisticById = currentMessages.filter(OpenCodeMessage::isOptimistic).associateBy(OpenCodeMessage::id)
+    val oldestIncoming = bundle.messages.minWithOrNull(OpenCodeMessageTimelineComparator)
+    val preservedMessages = currentMessages.filter { current ->
+        current.id !in incomingMessageIds &&
+            (
+                current.isOptimistic ||
+                    oldestIncoming?.let { OpenCodeMessageTimelineComparator.compare(current, it) < 0 } == true
+                )
+    }
+    val nextMessages = buildList {
+        bundle.messages.forEach { historical ->
+            add(optimisticById[historical.id]?.withHistoricalFallback(historical) ?: historical)
+        }
+        addAll(preservedMessages)
+    }.sortedForTimeline()
+
+    val incomingParts = bundle.parts.groupBy(OpenCodeMessagePart::messageId)
+    val optimisticParts = optimisticById
+        .filterKeys { it in incomingMessageIds }
+        .mapValues { (messageId, message) ->
+            val liveParts = partsByMessage[messageId].orEmpty().ifEmpty { message.parts }
+            mergeParts(incomingParts[messageId].orEmpty(), liveParts)
+        }
+    val currentMessageIds = currentMessages.mapTo(mutableSetOf(), OpenCodeMessage::id)
+    val preservedMessageIds = preservedMessages.mapTo(mutableSetOf(), OpenCodeMessage::id)
+    val replacedMessageIds = (currentMessageIds - preservedMessageIds) + incomingMessageIds
+    val nextParts = (partsByMessage - replacedMessageIds) + incomingParts + optimisticParts
+    return copy(
+        messagesBySession = messagesBySession + (sessionId to nextMessages),
+        partsByMessage = nextParts,
     )
 }
 
@@ -1056,5 +1222,5 @@ private fun Map<String, List<OpenCodeQuestionRequest>>.totalQuestionCount(): Int
 
 private fun Map<String, List<OpenCodeMessage>>.upsert(message: OpenCodeMessage): Map<String, List<OpenCodeMessage>> {
     val messages = get(message.sessionId).orEmpty().filterNot { it.id == message.id } + message
-    return this + (message.sessionId to messages.sortedBy { it.createdAt ?: 0L })
+    return this + (message.sessionId to messages.sortedForTimeline())
 }

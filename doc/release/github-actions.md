@@ -22,15 +22,15 @@ The workflow does not create a universal APK, AAB, or Play upload artifact. GitH
 
 The internal `canary` build is a verification variant only. It inherits Debug, uses application ID suffix `.canary` and version-name suffix `-canary`, and selects the pure Kotlin STCP backend through `BuildConfig`. CI and Release automation test and assemble it, but never apply Release signing or stage or publish Canary APKs. Formal `release` remains GoMobile-default.
 
-The application ID is `io.github.ycfeng.ocdeck`, version `0.2.0` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
+The application ID is `io.github.ycfeng.ocdeck`, version `0.2.3` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
 
 ## 2. Version Rules
 
 The only source of the application version is root `gradle.properties`:
 
 ```properties
-VERSION_CODE=5
-VERSION_NAME=0.2.0
+VERSION_CODE=8
+VERSION_NAME=0.2.3
 ```
 
 Requirements:

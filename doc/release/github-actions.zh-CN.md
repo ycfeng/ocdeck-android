@@ -22,15 +22,15 @@
 
 内部 `canary` 构建仅是验证 variant。它继承 Debug，使用 application ID suffix `.canary` 与 version name suffix `-canary`，并通过 `BuildConfig` 选择纯 Kotlin STCP backend。CI 与 Release 自动化会测试并 assemble Canary，但绝不应用 Release 签名，也不会暂存或发布 Canary APK；正式 `release` 继续默认使用 GoMobile。
 
-应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.2.0` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
+应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.2.3` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
 
 ## 2. 版本规则
 
 应用版本的唯一源码位于根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=5
-VERSION_NAME=0.2.0
+VERSION_CODE=8
+VERSION_NAME=0.2.3
 ```
 
 要求：

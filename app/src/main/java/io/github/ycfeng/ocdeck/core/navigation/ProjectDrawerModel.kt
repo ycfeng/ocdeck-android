@@ -6,6 +6,7 @@ import io.github.ycfeng.ocdeck.domain.model.ProjectRef
 internal enum class ProjectDrawerNavigation {
     CloseDrawerOnly,
     OpenProjectHome,
+    OpenProjectHomeFromSession,
 }
 
 internal fun resolveProjectDrawerNavigation(
@@ -19,10 +20,10 @@ internal fun resolveProjectDrawerNavigation(
             active.sessionId == null &&
             pathNormalizer.areSame(active.directory, targetDirectory)
     } == true
-    return if (alreadyOnProjectHome) {
-        ProjectDrawerNavigation.CloseDrawerOnly
-    } else {
-        ProjectDrawerNavigation.OpenProjectHome
+    return when {
+        alreadyOnProjectHome -> ProjectDrawerNavigation.CloseDrawerOnly
+        activeProject?.sessionId != null -> ProjectDrawerNavigation.OpenProjectHomeFromSession
+        else -> ProjectDrawerNavigation.OpenProjectHome
     }
 }
 

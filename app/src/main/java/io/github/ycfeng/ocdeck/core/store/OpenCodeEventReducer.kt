@@ -52,6 +52,8 @@ class OpenCodeEventReducer(
                     sessions = state.sessions.filterNot { it.id == sessionId },
                     messagesBySession = state.messagesBySession - sessionId,
                     partsByMessage = state.partsByMessage - messageIds,
+                    messageHistoryBySession = state.messageHistoryBySession - sessionId,
+                    messageFirstPageRequestGenerations = state.messageFirstPageRequestGenerations - sessionId,
                     permissionsBySession = nextPermissions,
                     questionsBySession = nextQuestions,
                     statuses = state.statuses - sessionId,
@@ -492,7 +494,7 @@ private fun OpenCodeProjectState.confirmMessage(messageId: String): OpenCodeProj
 
 private fun Map<String, List<OpenCodeMessage>>.upsertMessage(message: OpenCodeMessage): Map<String, List<OpenCodeMessage>> {
     val messages = get(message.sessionId).orEmpty().filterNot { it.id == message.id } + message
-    return this + (message.sessionId to messages.sortedBy { it.createdAt ?: 0L })
+    return this + (message.sessionId to messages.sortedForTimeline())
 }
 
 private fun Map<String, List<OpenCodePermissionRequest>>.upsertPermission(

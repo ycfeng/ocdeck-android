@@ -9,7 +9,7 @@ import (
 
 func TestBuildProvenanceCarriesSafeModuleGraphProof(t *testing.T) {
 	versions := reprobuild.Versions{
-		BridgeVersion:  "0.3.8-frp0.69.1-p1",
+		BridgeVersion:  "0.3.11-frp0.69.1-p1",
 		GoVersion:      "go1.26.4",
 		XMobileVersion: "v0.0.0-20260611195102-4dd8f1dbf5d2",
 		AndroidAPI:     26,

@@ -192,6 +192,11 @@
     <string name="file_browser_expand_directory">Expand directory %1$s</string>
     <string name="file_browser_collapse_directory">Collapse directory %1$s</string>
     <string name="file_browser_open_file">Open file %1$s</string>
+    <string name="file_browser_open_copy_menu">Open copy menu</string>
+    <string name="file_browser_copy_file_name">Copy File Name</string>
+    <string name="file_browser_copy_directory_name">Copy Directory Name</string>
+    <string name="file_browser_copy_relative_path">Copy Relative Path</string>
+    <string name="file_browser_copy_absolute_path">Copy Absolute Path</string>
     <string name="file_browser_loading_content">Loading File</string>
     <string name="file_browser_content_failed">Failed to load file</string>
     <string name="file_browser_file_too_large">This file exceeds the in-app preview size limit.</string>

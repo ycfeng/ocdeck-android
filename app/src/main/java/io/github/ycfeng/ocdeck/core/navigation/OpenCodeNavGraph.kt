@@ -76,14 +76,13 @@ fun OpenCodeNavGraph(
         val normalizedDirectory = appContainer.pathNormalizer.normalize(directory)
         appContainer.recentProjectRecorder.recordAdd(serverId, normalizedDirectory)
         val activeProject = navController.currentBackStackEntry?.activeProjectDrawerRoute()
-        if (
-            resolveProjectDrawerNavigation(
-                activeProject = activeProject,
-                targetServerId = serverId,
-                targetDirectory = normalizedDirectory,
-                pathNormalizer = appContainer.pathNormalizer,
-            ) == ProjectDrawerNavigation.CloseDrawerOnly
-        ) {
+        val navigation = resolveProjectDrawerNavigation(
+            activeProject = activeProject,
+            targetServerId = serverId,
+            targetDirectory = normalizedDirectory,
+            pathNormalizer = appContainer.pathNormalizer,
+        )
+        if (navigation == ProjectDrawerNavigation.CloseDrawerOnly) {
             return
         }
 
@@ -93,9 +92,35 @@ fun OpenCodeNavGraph(
             inclusive = false,
         )
         if (!restoredExistingProject) {
-            navController.navigate(targetRoute) {
-                launchSingleTop = true
+            val sessionProject = activeProject
+            if (
+                navigation == ProjectDrawerNavigation.OpenProjectHomeFromSession &&
+                sessionProject != null
+            ) {
+                // Project switches leave the current project's home in history, not its detail pages.
+                while (true) {
+                    val route = navController.currentBackStackEntry?.activeProjectDrawerRoute()
+                    val isCurrentProjectSession = route?.let {
+                        it.sessionId != null &&
+                            it.serverId == sessionProject.serverId &&
+                            appContainer.pathNormalizer.areSame(it.directory, sessionProject.directory)
+                    } == true
+                    if (!isCurrentProjectSession) break
+                    if (!navController.popBackStack()) break
+                }
+                val revealedProject = navController.currentBackStackEntry?.activeProjectDrawerRoute()
+                if (
+                    resolveProjectDrawerNavigation(
+                        activeProject = revealedProject,
+                        targetServerId = serverId,
+                        targetDirectory = normalizedDirectory,
+                        pathNormalizer = appContainer.pathNormalizer,
+                    ) == ProjectDrawerNavigation.CloseDrawerOnly
+                ) {
+                    return
+                }
             }
+            navController.navigate(targetRoute)
         }
     }
 

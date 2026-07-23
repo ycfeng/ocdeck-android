@@ -15,7 +15,7 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ### Changed / 变更
 
-- Incremented the immutable GoMobile bridge coordinate to `0.3.8-frp0.69.1-p1` because the post-`0.2.0` AAR combines the `0.2.0` legal inventory with a stable, versioned local Go module proxy and module graph; native/AAR bytes changed, while the Go, x/mobile, frp, Android API, and NDK pins remain unchanged. / `0.2.0` 之后的 AAR 同时纳入 `0.2.0` 法律清单及稳定、版本化的本地 Go module proxy 与 module graph，因此将不可变 GoMobile bridge 坐标提升为 `0.3.8-frp0.69.1-p1`；native/AAR 字节已变化，Go、x/mobile、frp、Android API 和 NDK 固定版本保持不变。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.11-frp0.69.1-p1` because the post-`0.2.3` AAR combines the `0.2.3` legal inventory with a stable, versioned local Go module proxy and module graph; native/AAR bytes changed, while the Go, x/mobile, frp, Android API, and NDK pins remain unchanged. / `0.2.3` 之后的 AAR 同时纳入 `0.2.3` 法律清单及稳定、版本化的本地 Go module proxy 与 module graph，因此将不可变 GoMobile bridge 坐标提升为 `0.3.11-frp0.69.1-p1`；native/AAR 字节已变化，Go、x/mobile、frp、Android API 和 NDK 固定版本保持不变。
 - CI and Release bridge reproducibility now build a clean candidate checkout and a detached checkout at a different absolute path on the same platform with isolated `GOCACHE`, `GOMODCACHE`, and `GOPATH`, then compare the AAR, required sources JAR, POM, checksum, API, bridge/frp provenance, and native sidecar byte-for-byte. / CI 与 Release 的 bridge 可复现门禁现在会在同一平台分别构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，再逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
 - Added an internal `canary` App variant that selects the pure Kotlin STCP backend at build time with no user setting or runtime fallback, while `debug`/`release` remain GoMobile-default; CI and Release validate both variants, but only Release APKs receive Release signing and are published. / 新增内部 `canary` App variant，在构建时选择纯 Kotlin STCP backend，不提供用户设置或运行时 fallback；`debug`/`release` 继续默认使用 GoMobile，CI 与 Release 会验证两个 variant，但只有 Release APK 接受 Release 签名并被发布。
 - Regenerated the canonical K0 contract fixtures with `k0-go-oracle-v5`: 34 entries now also pin Go Snappy raw/framed output, the 65,536/65,537-byte framing boundary, and AES-CFB plus Snappy payload order for cross-language verification. / 使用 `k0-go-oracle-v5` 重新生成 canonical K0 契约 fixture：当前 34 个条目进一步固定 Go Snappy raw/framed 输出、65,536/65,537 字节 framing 边界，以及 AES-CFB 与 Snappy payload 顺序，用于跨语言校验。
@@ -26,6 +26,45 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 ### Fixed / 修复
 
 - Removed checkout absolute paths from `libgojni.so` Go BuildInfo. `cmd/checkaar` now validates the four ABI BuildInfo graphs, fixed module identities, versions, and sums, local-path absence, and one consistent module-graph digest, with schema-2 provenance/native metadata binding the proof. / 消除 `libgojni.so` Go BuildInfo 中的 checkout 绝对路径；`cmd/checkaar` 现在校验四个 ABI 的 BuildInfo graph、固定 module identity/version/sum、无本地路径及一致的 module graph digest，并由 schema 2 provenance/native metadata 绑定该证明。
+
+## [0.2.3] - 2026-07-23
+
+### Changed / 变更
+
+- Session history now loads in cursor pages of 200 messages. Reaching the loaded top fetches one older page, while the first-user jump loads all remaining pages before navigating to the true first user message. / 会话历史现在按每页 200 条消息进行 cursor 分页；到达已加载顶部时获取一页更早历史，点击首条用户消息跳转时会先加载全部剩余页面，再定位到真正的第一条用户消息。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.10-frp0.69.1-p1` because the AAR embeds the `0.2.3` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.3` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.10-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Session refresh and recovery now reject stale first-page responses, preserve concurrent SSE and optimistic updates, reconcile deletions in the refreshed latest window, and keep stable `(createdAt, id)` ordering across pages. / 会话刷新与恢复现在会拒绝过期的第一页响应，保留并发 SSE 与乐观更新，校准刷新后最新窗口中的删除结果，并在分页间保持稳定的 `(createdAt, id)` 顺序。
+- Cursor state now survives overlapping latest-page refreshes, safely restarts after disjoint refreshes, rejects repeated cursor cycles, and is cleared with deleted sessions. / cursor 状态现在可在最新页重叠刷新后保留，在不相交刷新后安全重启，拒绝重复 cursor 循环，并随已删除会话一同清理。
+
+## [0.2.2] - 2026-07-23
+
+### Changed / 变更
+
+- Incremented the immutable GoMobile bridge coordinate to `0.3.9-frp0.69.1-p1` because the AAR embeds the `0.2.2` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.2` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.9-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Project-file response bodies are now read and decoded on the configured I/O dispatcher instead of the UI thread, preventing large valid file previews from blocking Compose interaction. / 项目文件响应体现在会在配置的 I/O dispatcher 上读取和解码，而不是占用 UI 线程，避免较大的有效文件预览阻塞 Compose 交互。
+- Cancelling an in-flight session-message load now interrupts the OkHttp call without concurrently closing its response body from the cancelling thread. The callback thread retains sole ownership of body cleanup, avoiding an Okio read/close race and network cleanup on the UI thread. / 取消进行中的会话消息加载时，现在只中断 OkHttp call，不再由取消线程并发关闭响应体；响应体清理由 callback 线程独占，避免 Okio 读写关闭竞态及在 UI 线程执行网络清理。
+
+## [0.2.1] - 2026-07-22
+
+### Added / 新增
+
+- Added a long-press copy menu to project file and directory rows in Browse and Pick modes. It can copy the name, project-relative path, or normalized absolute server path without opening, expanding, previewing, or selecting the row. / 在项目文件浏览与选择模式的文件和目录行中新增长按复制菜单，可复制名称、项目相对路径或规范化的服务端绝对路径，且不会打开、展开、预览或选择该行。
+
+### Changed / 变更
+
+- Project-drawer destination actions now commit once before the drawer close animation, covering project selection, Open Project, Settings, New Session, and session selection while preventing repeated navigation during closing. / 项目抽屉中的目标操作现在会在关闭动画前只提交一次，覆盖项目选择、打开项目、设置、新建会话和会话选择，并避免关闭过程中重复触发导航。
+- Incremented the immutable GoMobile bridge coordinate to `0.3.8-frp0.69.1-p1` because the AAR embeds the `0.2.1` legal inventory; Go, x/mobile, frp, Android API, and NDK versions are unchanged. / 由于 AAR 内嵌 `0.2.1` 法律清单，将不可变 GoMobile bridge 坐标提升为 `0.3.8-frp0.69.1-p1`；Go、x/mobile、frp、Android API 和 NDK 版本保持不变。
+
+### Fixed / 修复
+
+- Fixed project switching from session details through the project drawer so the current project returns to its project home and another project no longer leaves the previous session detail as the immediate Back destination. / 修复从会话详情通过项目抽屉切换项目时的返回栈，使当前项目回到项目首页，切换到其他项目后也不再把之前的会话详情留作紧接着的返回目标。
+- Fixed system Back handling while the project-file panel is open. Back now returns from file preview to the tree, closes the panel on the next press, and only then reaches the underlying project or session screen. / 修复项目文件面板打开时的系统返回处理：返回键现在会先从文件预览回到文件树，再关闭面板，之后才到达底层项目页或会话页。
 
 ## [0.2.0] - 2026-07-19
 

@@ -150,6 +150,14 @@ data class OpenCodeMessageBundle(
         "OpenCodeMessageBundle(messageCount=${messages.size}, partCount=${parts.size})"
 }
 
+data class OpenCodeMessagePage(
+    val bundle: OpenCodeMessageBundle,
+    val nextCursor: String?,
+) {
+    override fun toString(): String =
+        "OpenCodeMessagePage(bundle=$bundle, nextCursorPresent=${nextCursor != null})"
+}
+
 data class OpenCodeDiffFile(
     val file: String,
     val oldFile: String? = null,
