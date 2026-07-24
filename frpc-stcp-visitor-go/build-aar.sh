@@ -102,6 +102,12 @@ go install golang.org/x/mobile/cmd/gomobile
 go install golang.org/x/mobile/cmd/gobind
 mkdir -p "$PRIMARY_GOPATH/pkg/gomobile"
 
+# Avoid concurrent cold-cache module resolution across GoMobile's Android ABI builds.
+(
+  cd "$BIND_MODULE_DIR"
+  go list -deps -mod=readonly "$BIND_PACKAGE" >/dev/null
+)
+
 rm -f "$AAR_OUTPUT" "$SOURCES_OUTPUT"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR" "$(dirname "$AAR_OUTPUT")"

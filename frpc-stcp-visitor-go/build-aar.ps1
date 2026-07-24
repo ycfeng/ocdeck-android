@@ -135,6 +135,16 @@ try {
     Assert-NativeSuccess 'install gobind'
     New-Item -ItemType Directory -Force -Path (Join-Path $PrimaryGoPath 'pkg\gomobile') | Out-Null
 
+    Push-Location $BindModuleDir
+    try {
+        # Avoid concurrent cold-cache module resolution across GoMobile's Android ABI builds.
+        & go list -deps -mod=readonly $BuildConfig['BIND_PACKAGE'] | Out-Null
+        Assert-NativeSuccess 'resolve gomobile bind dependencies'
+    }
+    finally {
+        Pop-Location
+    }
+
     Remove-Item -LiteralPath $AarOutput, $SourcesOutput -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $StagingDir, (Split-Path -Parent $AarOutput) | Out-Null

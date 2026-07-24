@@ -41,7 +41,7 @@ $SecondaryRoot = Join-Path $TempRoot 'secondary-checkout-with-a-distinct-absolut
 $WorktreeAdded = $false
 
 function Invoke-BridgeBuild([string]$Checkout, [string]$CacheRoot) {
-    $EnvironmentKeys = @('GOCACHE', 'GOMODCACHE', 'GOPATH', 'GOENV', 'GOTOOLCHAIN')
+    $EnvironmentKeys = @('GOCACHE', 'GOMODCACHE', 'GOPATH', 'GOENV', 'GOTOOLCHAIN', 'TEMP', 'TMP', 'TMPDIR')
     $Previous = @{}
     foreach ($Key in $EnvironmentKeys) {
         $Previous[$Key] = [Environment]::GetEnvironmentVariable($Key, 'Process')
@@ -50,12 +50,16 @@ function Invoke-BridgeBuild([string]$Checkout, [string]$CacheRoot) {
         New-Item -ItemType Directory -Force -Path `
             (Join-Path $CacheRoot 'go-build'), `
             (Join-Path $CacheRoot 'go-mod'), `
-            (Join-Path $CacheRoot 'gopath') | Out-Null
+            (Join-Path $CacheRoot 'gopath'), `
+            (Join-Path $CacheRoot 'temp') | Out-Null
         $env:GOCACHE = Join-Path $CacheRoot 'go-build'
         $env:GOMODCACHE = Join-Path $CacheRoot 'go-mod'
         $env:GOPATH = Join-Path $CacheRoot 'gopath'
         $env:GOENV = 'off'
         $env:GOTOOLCHAIN = 'local'
+        $env:TEMP = Join-Path $CacheRoot 'temp'
+        $env:TMP = $env:TEMP
+        $env:TMPDIR = $env:TEMP
         & (Join-Path $Checkout 'frpc-stcp-visitor-go\build-aar.ps1')
         Assert-NativeSuccess 'build GoMobile bridge'
     }
