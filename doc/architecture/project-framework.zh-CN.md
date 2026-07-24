@@ -793,6 +793,7 @@ Existing session id
 - identity-only SSE 自定义流式 reader、32 MiB 行/event 上限、owner lease、关闭终态、project/global 去重与 fallback、generation/source/单调 transport identity、revision 快照防覆盖、消息并发合并、dirty follow-up 校准和应用级前台恢复已实现；仍需真实服务长时间断网、系统前后台、通知 channel 升级和 STCP control epoch 切换的设备验证。
 - 纯 Kotlin payload encryption/compression、跨语言 fixture、固定官方 frp host 专用门禁和扩展后的真实 Android A/B 自动化均已实现。Android harness 固定 API 26 使用只含 `success-v1-00` 的 `compat`，API 36 使用精确 12-profile wire/payload/negative/restart 矩阵的 `full`。每个 profile 都先运行 GoMobile，校验完整 stop/`Closed`/端口释放，再在独立 instrumentation 进程中让 Kotlin 使用同一端口；成功 profile 在 global/project SSE 在线时执行 health、两次 echo 与两次大于 Yamux 窗口的下载，并要求同一 checkpoint；重启 profile 验证既有 SSE 中断、control unavailable、`frps` 与 provider 恢复屏障、control epoch 严格增加，以及恢复后的 REST/SSE/大流量。严格 Host summary 证明 profile 参数、backend 顺序、语义结果、checks 与等价性，不把 Gradle success 当作证据。精确候选 `01ba5437276fb5074da5c654219668ac4cb69d48` 已在 [run 29763640048](https://github.com/ycfeng/ocdeck-android/actions/runs/29763640048) 通过普通完整验证 job、两条 Android lane 及 fail-closed 双语报告。当前已提供不可发布的 Kotlin Release-Like APK，用于不改变正式发布选择的纯 Kotlin Release 模式设备验证。pre-K7 使用分离证据矩阵：可用 ARM 真机覆盖目标 ABI 安装、class loading、真实 App/STCP、生命周期和资源行为；官方 Android 16KB 测试镜像或真机覆盖 runtime page size、启动和完整互操作，并由静态 16KB 对齐与打包门禁补强。两个 lane 不要求在同一台物理设备执行。缺少物理 ARM 16KB 组合仍需披露为残余风险和后续增强项，但不阻塞 pre-K7 收口或 K7 开发。App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、恢复、性能、资源泄漏证据、长期 soak 和正式稳定发布周期仍是独立门禁；emulator 报告与该验证 variant 单独都不授权 Kotlin 默认装配。
 - 独立 Review route 仍为占位；当前可用 diff 位于会话详情 Changes tab。
+- 专用 Kotlin Release-Like App STCP E2E 门禁已实现，并真实穿过 `AppContainer`、Repository/manager readiness、REST 快照、global/project SSE、Store 归约、快照 reconciliation、前台校准、`frps` 重启后的数据保留与 control epoch 严格增加，以及 stream/visitor/端口完整清理。该门禁已在官方 Android 16KB x86_64 测试镜像和物理 `arm64-v8a` 设备上分别本地通过；仍需 clean exact-SHA 复跑，也仍需 Doze/网络与前后台切换、真实长断网、性能、资源泄漏压力、soak 和正式稳定发布周期。本地设备证据不授权 Kotlin 默认装配。
 - Provider 管理仍需在支持的真实 Server/provider 版本上做兼容验证，重点包括远程 loopback OAuth 拓扑、真机长 callback 取消，以及 custom-config partial/unknown outcome；global-config deep merge 不提供字段或配置的物理删除。
 - 模型 enabled/hidden 仅是按 server 保存的本机过滤偏好，不代表修改 OpenCode server config。
 - Settings 已包含通用、后台、服务器、Provider 和模型子页，但完整快捷键与其他 Web 设置仍未完成。
@@ -823,7 +824,7 @@ Existing session id
 
 建议按以下顺序推进当前缺口：
 
-1. 以已记录的精确 SHA API 26 `compat`/API 36 `full` K6V 通过结果作为 emulator 基线，完成分离设备矩阵：在可用 ARM 真机验证目标 ABI 安装、Release 模式 class loading 和真实 App/STCP；在官方 Android 16KB 测试镜像或真机验证 `16384` runtime page size、启动和完整互操作。两个 lane 可以使用不同设备；缺少物理 ARM 16KB 设备不阻塞后续 App Store/快照/reconciliation、生命周期、性能、资源泄漏和长期 soak 工作。正式稳定发布周期另行继续验证；该验证 APK 不具备发布资格，也不能单独授权 Kotlin 默认装配。
+1. 在 clean exact-SHA 候选上冻结专用 Kotlin Release-Like App STCP E2E 门禁，并在分离设备矩阵复跑：可用 ARM 真机覆盖目标 ABI 安装、Release 模式 class loading 和真实 App/STCP；官方 Android 16KB 测试镜像或设备覆盖 `16384` runtime page size、启动，以及完整 snapshot/SSE/restart/reconciliation 场景。两个 lane 可以使用不同设备；缺少物理 ARM 16KB 设备继续作为残余组合风险而不是阻塞项。生命周期、性能、资源泄漏、长期 soak 和正式稳定发布周期另行验证；该验证 APK 不具备发布资格，也不能单独授权 Kotlin 默认装配。
 2. 在真实服务与设备上验证 SSE 长时间断网、系统前后台、全局/项目重复事件和 STCP control epoch 切换，并根据结果继续加固。
 3. 在支持的真实 Server/provider 版本与设备上验证 Provider 管理，重点覆盖远程 loopback OAuth、长 callback 取消，以及 custom-config 分阶段提交出现 partial/unknown outcome 后的恢复。
 4. 在真实紧凑设备上验证项目文件 picker 与纯上下文发送/reset，包括 route 切换、IME、200% 字体、TalkBack 和两种主题；设备测试门禁建立后补充 instrumentation 覆盖。

@@ -127,6 +127,9 @@ val frpcInteropTest = tasks.register<JavaExec>("frpcInteropTest") {
 
 val adbExecutable = androidComponents.sdkComponents.adb
 val androidInteropApkDirectory = layout.buildDirectory.dir("outputs/apk/androidTest/debug")
+val appKotlinReleaseApkDirectory = rootProject.layout.projectDirectory.dir("app/build/outputs/apk/kotlinRelease")
+val appKotlinReleaseTestApkDirectory =
+    rootProject.layout.projectDirectory.dir("app/build/outputs/apk/androidTest/kotlinRelease")
 
 tasks.register<JavaExec>("frpcAndroidInteropTest") {
     group = "verification"
@@ -161,6 +164,45 @@ tasks.register<JavaExec>("frpcAndroidInteropTest") {
         }
         providers.gradleProperty("ocdeck.frp.androidInterop.summaryFile").orNull?.let { summaryFile ->
             systemProperty("ocdeck.frp.androidInterop.summaryFile", summaryFile)
+        }
+    }
+}
+
+tasks.register<JavaExec>("frpcAppE2eTest") {
+    group = "verification"
+    description = "Runs the Kotlin Release-Like App Store/SSE/snapshot STCP end-to-end gate."
+    dependsOn(
+        "checkGoMobileBridgeAar",
+        ":app:assembleKotlinRelease",
+        ":app:assembleKotlinReleaseAndroidTest",
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcAppE2eHost")
+    classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+    workingDir(rootProject.projectDir)
+    systemProperty(
+        "ocdeck.frp.interop.cacheDir",
+        gradle.gradleUserHomeDir.resolve("caches/ocdeck/frp-interop/v0.69.1").absolutePath,
+    )
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "512m"
+    doFirst {
+        systemProperty("ocdeck.frp.appE2e.adb", adbExecutable.get().asFile.absolutePath)
+        systemProperty(
+            "ocdeck.frp.appE2e.appApkDirectory",
+            appKotlinReleaseApkDirectory.asFile.absolutePath,
+        )
+        systemProperty(
+            "ocdeck.frp.appE2e.testApkDirectory",
+            appKotlinReleaseTestApkDirectory.asFile.absolutePath,
+        )
+        providers.gradleProperty("ocdeck.frp.appE2e.deviceSerial").orNull?.let { serial ->
+            systemProperty("ocdeck.frp.appE2e.deviceSerial", serial)
+        }
+        providers.gradleProperty("ocdeck.frp.appE2e.summaryFile").orNull?.let { summaryFile ->
+            systemProperty("ocdeck.frp.appE2e.summaryFile", summaryFile)
         }
     }
 }

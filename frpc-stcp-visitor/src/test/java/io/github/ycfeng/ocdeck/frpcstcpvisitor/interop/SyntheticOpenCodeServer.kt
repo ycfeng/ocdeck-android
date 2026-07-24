@@ -8,6 +8,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
@@ -27,6 +28,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 internal class SyntheticOpenCodeServer(
     private val afterInitialSseEventFlushed: (() -> Unit)? = null,
+    private val appFixtureEnabled: Boolean = false,
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
@@ -34,6 +36,7 @@ internal class SyntheticOpenCodeServer(
     private val fatalFailure = AtomicReference<Throwable?>(null)
     private val concurrentTrafficGate = AtomicReference<ConcurrentTrafficGate?>(null)
     private val sseCheckpoint = AtomicInteger(0)
+    private val appFixtureGeneration = AtomicInteger(1)
     private val serverSocket = ServerSocket().apply {
         reuseAddress = false
         bind(InetSocketAddress(IPV4_LOOPBACK, 0), SERVER_BACKLOG)
@@ -125,6 +128,12 @@ internal class SyntheticOpenCodeServer(
             ?: throw InteropFailure("synthetic server SSE checkpoint overflowed")
     }
 
+    fun advanceAppFixture(): Int {
+        if (!appFixtureEnabled || closed.get()) throw InteropFailure("synthetic App fixture was unavailable")
+        return appFixtureGeneration.incrementAndGet().takeIf { it > 1 }
+            ?: throw InteropFailure("synthetic App fixture generation overflowed")
+    }
+
     private fun throwIfFatal() {
         fatalFailure.get()?.let { throw it }
     }
@@ -165,8 +174,10 @@ internal class SyntheticOpenCodeServer(
             val input = socket.getInputStream()
             val output = socket.getOutputStream()
             val request = readHttpRequest(input)
+            if (!appFixtureEnabled) requireNoQuery(request)
             when {
                 request.method == "GET" && request.path == "/global/health" -> {
+                    requireNoQuery(request)
                     requireNoRequestBody(request)
                     sendResponse(
                         output,
@@ -176,6 +187,7 @@ internal class SyntheticOpenCodeServer(
                     )
                 }
                 request.method == "GET" && request.path == "/global/health/traffic" -> {
+                    requireNoQuery(request)
                     requireNoRequestBody(request)
                     requireConcurrentTrafficGate().participate {
                         sendResponse(
@@ -187,6 +199,7 @@ internal class SyntheticOpenCodeServer(
                     }
                 }
                 request.method == "POST" && request.path == "/echo" -> {
+                    requireNoQuery(request)
                     val length = request.contentLength
                         ?: throw SyntheticHttpException()
                     if (length > MAXIMUM_ECHO_BODY_BYTES) throw SyntheticHttpException()
@@ -197,14 +210,30 @@ internal class SyntheticOpenCodeServer(
                     }
                 }
                 request.method == "GET" && request.path == "/global/event" -> {
+                    if (appFixtureEnabled) requireAppFixtureQuery(request) else requireNoQuery(request)
                     requireNoRequestBody(request)
-                    sendLiveSseResponse(output, GLOBAL_EVENT_BODY)
+                    sendLiveSseResponse(
+                        output,
+                        if (appFixtureEnabled) appGlobalEventBody(appFixtureGeneration.get()) else GLOBAL_EVENT_BODY,
+                    )
                 }
                 request.method == "GET" && request.path == "/event" -> {
+                    if (appFixtureEnabled) requireAppFixtureQuery(request) else requireNoQuery(request)
                     requireNoRequestBody(request)
-                    sendLiveSseResponse(output, PROJECT_EVENT_BODY)
+                    sendLiveSseResponse(
+                        output,
+                        if (appFixtureEnabled) appProjectEventBody(appFixtureGeneration.get()) else PROJECT_EVENT_BODY,
+                    )
+                }
+                appFixtureEnabled && request.method == "GET" -> {
+                    requireAppFixtureQuery(request)
+                    requireNoRequestBody(request)
+                    appFixtureResponse(request.path, appFixtureGeneration.get())?.let { body ->
+                        sendResponse(output, 200, "application/json; charset=utf-8", body)
+                    } ?: sendResponse(output, 404, "text/plain; charset=us-ascii", NOT_FOUND_BODY)
                 }
                 request.method == "GET" && request.path == "/large" -> {
+                    requireNoQuery(request)
                     requireNoRequestBody(request)
                     requireConcurrentTrafficGate().participate {
                         sendLargeResponse(output)
@@ -235,10 +264,16 @@ internal class SyntheticOpenCodeServer(
         }
         val parts = requestLine.split(' ')
         if (parts.size != 3 || parts[0] !in setOf("GET", "POST") ||
-            !parts[1].startsWith('/') || '?' in parts[1] || '#' in parts[1] || parts[2] != "HTTP/1.1"
+            !parts[1].startsWith('/') || '#' in parts[1] || parts[2] != "HTTP/1.1"
         ) {
             throw SyntheticHttpException()
         }
+        val target = parts[1]
+        val querySeparator = target.indexOf('?')
+        if (querySeparator >= 0 && target.indexOf('?', querySeparator + 1) >= 0) throw SyntheticHttpException()
+        val path = if (querySeparator >= 0) target.substring(0, querySeparator) else target
+        if (path.isEmpty()) throw SyntheticHttpException()
+        val query = if (querySeparator >= 0) parseQuery(target.substring(querySeparator + 1)) else emptyMap()
         val headers = LinkedHashMap<String, String>()
         repeat(MAXIMUM_HEADER_COUNT + 1) { index ->
             val line = readStrictCrlfLine(input, MAXIMUM_HEADER_LINE_BYTES)
@@ -248,7 +283,7 @@ internal class SyntheticOpenCodeServer(
                 if (headers["host"].isNullOrBlank()) throw SyntheticHttpException()
                 if (headers.containsKey("transfer-encoding")) throw SyntheticHttpException()
                 val contentLength = headers["content-length"]?.let(::parseContentLength)
-                return HttpRequest(parts[0], parts[1], contentLength)
+                return HttpRequest(parts[0], path, query, contentLength)
             }
             if (index == MAXIMUM_HEADER_COUNT || line[0] == ' ' || line[0] == '\t') {
                 throw SyntheticHttpException()
@@ -266,6 +301,49 @@ internal class SyntheticOpenCodeServer(
 
     private fun requireNoRequestBody(request: HttpRequest) {
         if ((request.contentLength ?: 0L) != 0L) throw SyntheticHttpException()
+    }
+
+    private fun requireNoQuery(request: HttpRequest) {
+        if (request.query.isNotEmpty()) throw SyntheticHttpException()
+    }
+
+    private fun requireAppFixtureQuery(request: HttpRequest) {
+        val expected = when (request.path) {
+            "/global/event" -> emptyMap()
+            "/event", "/path", "/project/current", "/session/status", "/provider", "/agent",
+            "/command", "/permission", "/question", "/mcp", "/lsp", "/config" ->
+                mapOf("directory" to APP_DIRECTORY)
+            "/session" -> mapOf(
+                "directory" to APP_DIRECTORY,
+                "roots" to "true",
+                "limit" to "70",
+            )
+            else -> return
+        }
+        if (request.query != expected) throw SyntheticHttpException()
+    }
+
+    private fun parseQuery(rawQuery: String): Map<String, String> {
+        if (rawQuery.isEmpty()) throw SyntheticHttpException()
+        val fields = rawQuery.split('&')
+        if (fields.size > MAXIMUM_QUERY_FIELDS) throw SyntheticHttpException()
+        val parsed = LinkedHashMap<String, String>()
+        fields.forEach { field ->
+            val separator = field.indexOf('=')
+            if (separator <= 0) throw SyntheticHttpException()
+            val name = decodeQueryComponent(field.substring(0, separator))
+            val value = decodeQueryComponent(field.substring(separator + 1))
+            if (!QUERY_NAME.matches(name) || parsed.put(name, value) != null) throw SyntheticHttpException()
+        }
+        return parsed
+    }
+
+    private fun decodeQueryComponent(value: String): String = try {
+        URLDecoder.decode(value, StandardCharsets.UTF_8).also { decoded ->
+            if (decoded.any { it.code < 0x20 || it.code == 0x7f }) throw SyntheticHttpException()
+        }
+    } catch (_: IllegalArgumentException) {
+        throw SyntheticHttpException()
     }
 
     private fun requireConcurrentTrafficGate(): ConcurrentTrafficGate =
@@ -335,6 +413,31 @@ internal class SyntheticOpenCodeServer(
     private fun sseCheckpointBody(checkpoint: Int): ByteArray =
         "event: checkpoint\ndata: $checkpoint\n\n".toByteArray(StandardCharsets.UTF_8)
 
+    private fun appFixtureResponse(path: String, generation: Int): ByteArray? = when (path) {
+        "/path" -> APP_PATH_BODY
+        "/project/current" -> APP_PROJECT_BODY
+        "/session" -> appSessionBody(generation)
+        "/session/status" -> APP_SESSION_STATUS_BODY
+        "/provider", "/mcp", "/lsp", "/config" -> EMPTY_OBJECT_BODY
+        "/agent", "/command", "/permission", "/question" -> EMPTY_ARRAY_BODY
+        else -> null
+    }
+
+    private fun appSessionBody(generation: Int): ByteArray =
+        """[{"id":"session-snapshot","directory":"/workspace","title":"snapshot-$generation","time":{"updated":${generation * 100L}}}]"""
+            .toByteArray(StandardCharsets.UTF_8)
+
+    private fun appProjectEventBody(generation: Int): ByteArray = sseJsonBody(
+        """{"type":"session.updated","properties":{"info":{"id":"session-project-sse","title":"project-sse-$generation","directory":"/workspace","time":{"updated":"${generation * 100L + 1L}"}}}}""",
+    )
+
+    private fun appGlobalEventBody(generation: Int): ByteArray = sseJsonBody(
+        """{"directory":"/workspace","payload":{"type":"sync","syncEvent":{"type":"session.updated","properties":{"info":{"id":"session-global-sse","title":"global-sse-$generation","directory":"/workspace","time":{"updated":"${generation * 100L + 2L}"}}}}}}""",
+    )
+
+    private fun sseJsonBody(json: String): ByteArray =
+        "event: ready\ndata: $json\n\n".toByteArray(StandardCharsets.UTF_8)
+
     private fun writeResponseHead(
         output: OutputStream,
         status: Int,
@@ -361,6 +464,7 @@ internal class SyntheticOpenCodeServer(
     private data class HttpRequest(
         val method: String,
         val path: String,
+        val query: Map<String, String>,
         val contentLength: Long?,
     )
 
@@ -369,9 +473,19 @@ internal class SyntheticOpenCodeServer(
     private companion object {
         val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val HTTP_HEADER_NAME = Regex("[a-z0-9!#$%&'*+.^_`|~-]+")
+        val QUERY_NAME = Regex("[a-z][a-z0-9_]*")
         val HEALTH_BODY = "{\"healthy\":true,\"version\":\"interop\"}".toByteArray(StandardCharsets.UTF_8)
         val GLOBAL_EVENT_BODY = "event: ready\ndata: {\"scope\":\"global\"}\n\n".toByteArray(StandardCharsets.UTF_8)
         val PROJECT_EVENT_BODY = "event: ready\ndata: {\"scope\":\"project\"}\n\n".toByteArray(StandardCharsets.UTF_8)
+        val APP_PATH_BODY = "{\"directory\":\"/workspace\",\"worktree\":\"/workspace\"}"
+            .toByteArray(StandardCharsets.UTF_8)
+        val APP_PROJECT_BODY =
+            "{\"id\":\"project-e2e\",\"worktree\":\"/workspace\",\"name\":\"E2E\"}"
+                .toByteArray(StandardCharsets.UTF_8)
+        val APP_SESSION_STATUS_BODY = "{\"session-snapshot\":{\"type\":\"idle\"}}"
+            .toByteArray(StandardCharsets.UTF_8)
+        val EMPTY_OBJECT_BODY = "{}".toByteArray(StandardCharsets.UTF_8)
+        val EMPTY_ARRAY_BODY = "[]".toByteArray(StandardCharsets.UTF_8)
         val SSE_KEEPALIVE_BODY = ": keepalive\n\n".toByteArray(StandardCharsets.UTF_8)
         val BAD_REQUEST_BODY = "bad request\n".toByteArray(StandardCharsets.US_ASCII)
         val NOT_FOUND_BODY = "not found\n".toByteArray(StandardCharsets.US_ASCII)
@@ -384,10 +498,12 @@ internal class SyntheticOpenCodeServer(
         const val MAXIMUM_HEADER_LINE_BYTES = 8 * 1024
         const val MAXIMUM_HEADER_BYTES = 32 * 1024
         const val MAXIMUM_HEADER_COUNT = 64
+        const val MAXIMUM_QUERY_FIELDS = 8
         const val MAXIMUM_ECHO_BODY_BYTES = 2L * 1024L * 1024L
         const val MAXIMUM_RESPONSE_BODY_BYTES = 64 * 1024
         const val BODY_BUFFER_BYTES = 16 * 1024
         const val SSE_KEEPALIVE_INTERVAL_MILLIS = 100L
+        const val APP_DIRECTORY = "/workspace"
     }
 }
 
@@ -440,12 +556,41 @@ internal object TunnelHttpProbe {
         }
     }
 
+    fun json(port: Int, path: String): String {
+        if (!path.startsWith('/') || path.length > MAXIMUM_PROBE_PATH_CHARS ||
+            path.any { it.code !in 0x21..0x7e }
+        ) {
+            throw TunnelProbeException()
+        }
+        return withDeadlineSocket(port) { socket ->
+            val output = socket.getOutputStream()
+            writeRequestHead(output, "GET", path, contentLength = null)
+            output.flush()
+            val input = socket.getInputStream()
+            val response = readResponseHead(input)
+            if (response.status != 200 || !response.contentType.startsWith("application/json")) {
+                throw TunnelProbeException()
+            }
+            val body = readExactBody(
+                input,
+                response.contentLength ?: throw TunnelProbeException(),
+                MAXIMUM_SMALL_RESPONSE_BYTES,
+            )
+            expectEndOfStream(input)
+            String(body, StandardCharsets.UTF_8)
+        }
+    }
+
     fun firstSseEvent(port: Int, path: String, expectedData: String) {
         openSseSession(port, path, expectedData).use { }
     }
 
     fun openSseSession(port: Int, path: String, expectedData: String): LiveSseSession {
-        if (path != "/global/event" && path != "/event") throw TunnelProbeException()
+        if (path.length > MAXIMUM_PROBE_PATH_CHARS || path.any { it.code !in 0x21..0x7e } ||
+            path.substringBefore('?') !in setOf("/global/event", "/event")
+        ) {
+            throw TunnelProbeException()
+        }
         val connection = DeadlineSocket.open(port, LIVE_SSE_HARD_TIMEOUT_MILLIS)
         try {
             val socket = connection.socket
@@ -610,6 +755,7 @@ internal object TunnelHttpProbe {
     private const val MAXIMUM_HEADER_BYTES = 32 * 1024
     private const val MAXIMUM_HEADER_COUNT = 64
     private const val MAXIMUM_SMALL_RESPONSE_BYTES = 64L * 1024L
+    private const val MAXIMUM_PROBE_PATH_CHARS = 1024
     private const val MAXIMUM_ECHO_REQUEST_BYTES = 2 * 1024 * 1024
     private const val WRITE_CHUNK_BYTES = 16 * 1024
     private const val MAXIMUM_SSE_LINE_BYTES = 8 * 1024

@@ -128,6 +128,31 @@ Recorded expanded K6V evidence: exact candidate `01ba5437276fb5074da5c654219668a
 
 Earlier phase-one evidence remains recorded for exact candidate `459c2b57ebf465d6b933ea939f59fa739128ec59` (tree `a6ce1019adfa351bc15e09bc479220a967bdf323`) and [workflow run 29716724485](https://github.com/ycfeng/ocdeck-android/actions/runs/29716724485). It covered only the former single GoMobile-then-Kotlin v1/plain scenario and is superseded for current K6V scope by the expanded evidence above.
 
+## Kotlin Release-Like App STCP E2E
+
+The dedicated App E2E task installs the non-publishable `kotlinRelease` target APK and its test APK, then exercises the real application assembly through the pure Kotlin STCP backend. Build the generated GoMobile AAR first because the shared host-test configuration still validates the retained bridge, then start a new Gradle invocation. The optional summary parent must exist and `<new-summary-path>` itself must not exist:
+
+```powershell
+.\frpc-stcp-visitor-go\build-aar.ps1
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcAppE2eTest `
+  -PrequireGoMobileBridge=true `
+  "-Pocdeck.frp.appE2e.deviceSerial=<serial>" `
+  "-Pocdeck.frp.appE2e.summaryFile=<new-summary-path>"
+```
+
+```bash
+bash frpc-stcp-visitor-go/build-aar.sh
+./gradlew --no-daemon :frpc-stcp-visitor:frpcAppE2eTest -PrequireGoMobileBridge=true \
+  "-Pocdeck.frp.appE2e.deviceSerial=<serial>" \
+  "-Pocdeck.frp.appE2e.summaryFile=<new-summary-path>"
+```
+
+Omit `ocdeck.frp.appE2e.deviceSerial` only when exactly one eligible device is connected, and omit `ocdeck.frp.appE2e.summaryFile` for a non-acceptance local run. The host provisions the pinned official frp tools, loopback-only TLS `frps`, provider `frpc`, a bounded synthetic OpenCode REST/SSE fixture, and one owned dynamic `adb reverse`. It installs the ABI-matching `kotlinRelease` APK plus a test-only debuggable instrumentation APK; the target App remains Release-Like and non-debuggable. Per-run credentials are streamed into the test package's private storage through bounded stdin and `run-as`, never Gradle properties, instrumentation arguments, shared storage, or result evidence. Cleanup force-stops and removes both packages, private files, reverse mapping, processes, sockets, and temporary material owned by the run.
+
+The instrumentation uses the real `OpenCodeApplication`/`AppContainer`, `ServerRepository`, `FrpcStcpVisitorManager`, `OpenCodeRepository`, `OpenCodeEventClient`, `InMemoryOpenCodeStore`, and `ProjectSnapshotCoordinator`. Its strict 13 checks cover Kotlin backend selection, listener readiness plus application health, REST snapshot application, global and project SSE reduction into the Store, foreground reconciliation, data retention while disconnected, a strictly advanced control epoch without changing the visitor generation after `frps` restart, generation-two snapshot/SSE recovery, post-restart foreground calibration, stream closure, visitor closure, and listener-port release. Recovery must occur through the real SSE/connection path before the test reads the final transport identity; an explicit connection poll cannot manufacture the pass. The structured summary records only device API/ABI/runtime page size, fixed checks, initial/recovered generation and control epoch, and `authorizesKotlinDefault=false`.
+
+This task is currently a dedicated manual/device gate rather than part of ordinary push or pull-request CI. The implementation has passed locally on both an official Android 16KB x86_64 test image and a physical `arm64-v8a` device, closing the split device matrix for the current worktree. Final pre-K7 evidence still requires clean exact-SHA reruns. The gate does not cover Doze, real network switching, long outages, performance, resource-leak stress, soak, or a formal stable-release cycle, and it never authorizes Kotlin-default assembly.
+
 With an emulator or device connected, run the instrumentation suite:
 
 ```powershell

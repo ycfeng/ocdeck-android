@@ -27,6 +27,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 internal data class AndroidInteropScenario(
@@ -159,6 +161,70 @@ internal data class AndroidInteropRestartMarker(
 ) {
     override fun toString(): String = "AndroidInteropRestartMarker(step=$step)"
 }
+
+@Serializable
+private data class AppE2eInvocation(
+    val schemaVersion: Int,
+    val runId: String,
+    val frpsPort: Int,
+    val authToken: String,
+    val user: String,
+    val serverUser: String,
+    val serverName: String,
+    val secretKey: String,
+    val restartMarkers: AppE2eRestartMarkers,
+) {
+    override fun toString(): String =
+        "AppE2eInvocation(schemaVersion=$schemaVersion, runId=<redacted>, frpsPort=$frpsPort, " +
+            "authToken=<redacted>, user=<redacted>, serverUser=<redacted>, " +
+            "serverName=<redacted>, secretKey=<redacted>)"
+}
+
+@Serializable
+private data class AppE2eRestartMarkers(
+    val deviceReadyFile: String,
+    val deviceDisconnectedFile: String,
+    val frpsRestartedFile: String,
+) {
+    val allFiles: List<String>
+        get() = listOf(deviceReadyFile, deviceDisconnectedFile, frpsRestartedFile)
+
+    override fun toString(): String = "AppE2eRestartMarkers(configured=true)"
+}
+
+@Serializable
+private data class AppE2eResult(
+    val schemaVersion: Int,
+    val runId: String,
+    val status: String,
+    val checks: List<String>,
+    val bindPort: Int? = null,
+    val initialGeneration: Long? = null,
+    val initialControlEpoch: Long? = null,
+    val recoveredGeneration: Long? = null,
+    val recoveredControlEpoch: Long? = null,
+    val failedStage: String? = null,
+    val failureCode: String? = null,
+) {
+    override fun toString(): String =
+        "AppE2eResult(schemaVersion=$schemaVersion, runId=<redacted>, status=$status, " +
+            "checkCount=${checks.size}, bindPort=$bindPort, initialGeneration=$initialGeneration, " +
+            "initialControlEpoch=$initialControlEpoch, recoveredGeneration=$recoveredGeneration, " +
+            "recoveredControlEpoch=$recoveredControlEpoch, failedStage=$failedStage, failureCode=$failureCode)"
+}
+
+@Serializable
+private data class AppE2eSummary(
+    val schemaVersion: Int,
+    val device: AndroidInteropSummaryDevice,
+    val status: String,
+    val checks: List<String>,
+    val initialGeneration: Long,
+    val initialControlEpoch: Long,
+    val recoveredGeneration: Long,
+    val recoveredControlEpoch: Long,
+    val authorizesKotlinDefault: Boolean,
+)
 
 internal fun awaitAndroidInteropRestartMarker(
     expected: AndroidInteropRestartMarker,
@@ -566,6 +632,24 @@ object FrpcAndroidInteropHost {
     }
 }
 
+object FrpcAppE2eHost {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        try {
+            if (args.isNotEmpty()) throw InteropFailure("frpcAppE2eTest does not accept arguments")
+            FrpcAndroidInteropRunner().runAppE2e()
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: InteropFailure) {
+            System.err.println("frpc App E2E failed: ${failure.message.orEmpty()}")
+            exitProcess(1)
+        } catch (_: Exception) {
+            System.err.println("frpc App E2E failed: unexpected host coordinator failure")
+            exitProcess(1)
+        }
+    }
+}
+
 private class FrpcAndroidInteropRunner {
     private val secureRandom = SecureRandom()
     private var stage = "initialization"
@@ -654,7 +738,7 @@ private class FrpcAndroidInteropRunner {
             stage = "Android device discovery"
             val adbExecutable = configuredAdbExecutable()
             val discovery = AdbCommandRunner(adbExecutable, serial = null, redactor = redactor)
-            val serial = selectDevice(discovery)
+            val serial = selectDevice(discovery, DEVICE_SERIAL_PROPERTY)
             val adb = AdbCommandRunner(adbExecutable, serial, redactor)
             resources.configureAdb(adb)
             val device = readDeviceMetadata(adb)
@@ -779,6 +863,204 @@ private class FrpcAndroidInteropRunner {
         selectedFailure?.let { throw it }
     }
 
+    fun runAppE2e() {
+        if (!System.getenv("ADB_SERVER_SOCKET").isNullOrBlank()) {
+            throw InteropFailure("remote adb servers are not supported by the App E2E gate")
+        }
+        val resources = AndroidInteropResourceOwner(
+            testPackage = APP_TEST_PACKAGE,
+            managedPackages = listOf(APP_TARGET_PACKAGE, APP_TEST_PACKAGE),
+            appFixtureEnabled = true,
+            workspacePrefix = "ocdeck-frp-app-e2e-",
+        )
+        var selectedFailure: Throwable? = null
+        val shutdownHook = Thread(
+            { resources.cleanup() },
+            "frpc-app-e2e-shutdown-cleanup",
+        ).apply { isDaemon = false }
+        Runtime.getRuntime().addShutdownHook(shutdownHook)
+        try {
+            stage = "App E2E temporary workspace creation"
+            val temporaryDirectory = resources.createTemporaryWorkspace()
+            val cacheDirectory = configuredCacheDirectory()
+            val summaryFile = configuredAppE2eSummaryFile()
+            val secrets = AndroidInteropSecrets.create(secureRandom)
+            redactor = InteropRedactor(
+                temporaryDirectory.toString(),
+                cacheDirectory.toString(),
+                secrets.authToken,
+                secrets.stcpSecret,
+            )
+
+            stage = "App E2E official frp provisioning"
+            val binaries = FrpReleaseProvisioner(cacheDirectory).provision()
+
+            stage = "App E2E synthetic OpenCode server startup"
+            val syntheticServer = resources.createSyntheticServer()
+            val frpsPort = allocateLoopbackPort()
+            val frpsConfig = temporaryDirectory.resolve("frps-app-e2e.toml")
+            val providerConfig = temporaryDirectory.resolve("frpc-provider-app-e2e.toml")
+            stage = "App E2E temporary TLS material creation"
+            val tlsMaterial = InteropTlsMaterial.create(temporaryDirectory, secureRandom)
+            writePrivateFile(frpsConfig, frpsToml(frpsPort, secrets.authToken, tlsMaterial))
+            writePrivateFile(
+                providerConfig,
+                providerToml(frpsPort, syntheticServer.port, secrets.authToken, secrets.stcpSecret),
+            )
+            redactor = redactor.including(
+                binaries.frpc.toString(),
+                binaries.frps.toString(),
+                frpsConfig.toString(),
+                providerConfig.toString(),
+                tlsMaterial.certificatePath.toString(),
+                tlsMaterial.privateKeyPath.toString(),
+            )
+            val frpsLaunch = AndroidInteropProcessLaunch(
+                label = "app-e2e-frps",
+                executable = binaries.frps,
+                arguments = listOf("-c", frpsConfig.toString()),
+                workingDirectory = temporaryDirectory,
+                redactor = redactor,
+            )
+            val providerLaunch = AndroidInteropProcessLaunch(
+                label = "app-e2e-provider-frpc",
+                executable = binaries.frpc,
+                arguments = listOf("-c", providerConfig.toString()),
+                workingDirectory = temporaryDirectory,
+                redactor = redactor,
+            )
+
+            stage = "App E2E frps startup"
+            val frps = resources.startFrps(frpsLaunch::start)
+            awaitFrpsReady(frpsPort, frps)
+
+            stage = "App E2E provider frpc startup"
+            val provider = resources.startProvider(providerLaunch::start)
+            provider.awaitOutput(PROVIDER_PROXY_READY_PATTERN, PROCESS_READY_TIMEOUT_MILLIS, stage)
+
+            stage = "App E2E Android device discovery"
+            val adbExecutable = configuredAppE2eAdbExecutable()
+            val discovery = AdbCommandRunner(adbExecutable, serial = null, redactor = redactor)
+            val serial = selectDevice(discovery, APP_E2E_DEVICE_SERIAL_PROPERTY)
+            val adb = AdbCommandRunner(adbExecutable, serial, redactor)
+            resources.configureAdb(adb)
+            val device = readDeviceMetadata(adb)
+
+            stage = "App E2E APK discovery"
+            val appApk = configuredAppE2eTargetApk(device.abi)
+            val testApk = configuredAppE2eTestApk()
+            redactor = redactor.including(appApk.toString(), testApk.toString())
+
+            stage = "App E2E package preflight"
+            requirePackageAbsent(adb, APP_TARGET_PACKAGE, "target App package")
+            requirePackageAbsent(adb, APP_TEST_PACKAGE, "App E2E instrumentation package")
+
+            stage = "App E2E target APK installation"
+            installPackage(resources, adb, APP_TARGET_PACKAGE, appApk, "target App", testOnly = false)
+            stage = "App E2E instrumentation APK installation"
+            installPackage(resources, adb, APP_TEST_PACKAGE, testApk, "App E2E instrumentation", testOnly = true)
+
+            stage = "App E2E adb reverse creation"
+            val reverseBaseline = adb.run(
+                label = "App E2E adb reverse ownership preflight",
+                arguments = listOf("reverse", "--list"),
+                timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+            )
+            resources.registerReverseTarget(
+                frpsPort,
+                reversePortsForTarget(reverseBaseline.standardOutput, frpsPort).toSet(),
+            )
+            val reverse = adb.run(
+                label = "App E2E adb reverse creation",
+                arguments = listOf("reverse", "tcp:0", "tcp:$frpsPort"),
+                timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+            )
+            val deviceFrpsPort = parseReversePort(reverse.standardOutput)
+            resources.registerReverse(deviceFrpsPort)
+
+            stage = "App E2E instrumentation"
+            val runId = UUID.randomUUID().toString()
+            val files = AppE2ePrivateFiles.create(runId)
+            resources.registerPrivateFiles(files.allRelativePaths)
+            val invocation = AppE2eInvocation(
+                schemaVersion = APP_E2E_SCHEMA_VERSION,
+                runId = runId,
+                frpsPort = deviceFrpsPort,
+                authToken = secrets.authToken,
+                user = VISITOR_USER,
+                serverUser = PROVIDER_USER,
+                serverName = PROVIDER_PROXY_NAME,
+                secretKey = secrets.stcpSecret,
+                restartMarkers = files.restartMarkers,
+            )
+            writeAppE2eInvocation(adb, files.configFile, invocation)
+            val instrumentation = runAppE2eRestartInstrumentation(
+                resources = resources,
+                adb = adb,
+                invocation = invocation,
+                files = files,
+                frpsPort = frpsPort,
+                frpsLaunch = frpsLaunch,
+                provider = provider,
+                syntheticServer = syntheticServer,
+            )
+            val result = readAppE2eResult(instrumentation)
+            validateAppE2eResult(result, invocation)
+            requireInstrumentationSucceeded(instrumentation, "App E2E")
+            syntheticServer.requireHealthy()
+            resources.requireFrpsAlive(stage)
+            provider.requireAlive(stage)
+
+            stage = "App E2E summary"
+            summaryFile?.let { output ->
+                writeAppE2eSummary(
+                    output,
+                    AppE2eSummary(
+                        schemaVersion = APP_E2E_SUMMARY_SCHEMA_VERSION,
+                        device = AndroidInteropSummaryDevice(device.apiLevel, device.abi, device.pageSize),
+                        status = result.status,
+                        checks = result.checks,
+                        initialGeneration = result.initialGeneration
+                            ?: throw InteropFailure("App E2E result omitted its STCP generation"),
+                        initialControlEpoch = result.initialControlEpoch
+                            ?: throw InteropFailure("App E2E result omitted its control epoch"),
+                        recoveredGeneration = result.recoveredGeneration
+                            ?: throw InteropFailure("App E2E result omitted its recovered STCP generation"),
+                        recoveredControlEpoch = result.recoveredControlEpoch
+                            ?: throw InteropFailure("App E2E result omitted its recovered control epoch"),
+                        authorizesKotlinDefault = false,
+                    ),
+                )
+            }
+            println(
+                "frpc App E2E passed: api=${device.apiLevel} abi=${device.abi} " +
+                    "pageSize=${device.pageSize} checks=${result.checks.size}",
+            )
+        } catch (failure: Throwable) {
+            selectedFailure = when (failure) {
+                is Error, is CancellationException -> failure
+                is Exception -> safeFailure(stage, failure, resources)
+                else -> failure
+            }
+        } finally {
+            stage = "App E2E resource cleanup"
+            val cleanupFailure = resources.cleanup()
+            try {
+                Runtime.getRuntime().removeShutdownHook(shutdownHook)
+            } catch (_: IllegalStateException) {
+                // JVM shutdown has already started; the hook owns cleanup.
+            }
+            if (cleanupFailure != null) {
+                val candidate = when (cleanupFailure) {
+                    is Error, is CancellationException -> cleanupFailure
+                    else -> InteropFailure("App E2E resource cleanup failed")
+                }
+                selectedFailure = preferFailure(selectedFailure, candidate)
+            }
+        }
+        selectedFailure?.let { throw it }
+    }
+
     private fun runBackend(
         resources: AndroidInteropResourceOwner,
         adb: AdbCommandRunner,
@@ -886,6 +1168,311 @@ private class FrpcAndroidInteropRunner {
         }
         selectedFailure?.let { throw it }
         return result ?: throw InteropFailure("$backend did not return a semantic result")
+    }
+
+    private fun installPackage(
+        resources: AndroidInteropResourceOwner,
+        adb: AdbCommandRunner,
+        packageName: String,
+        apk: Path,
+        label: String,
+        testOnly: Boolean,
+    ) {
+        resources.markPackageInstallAttempted(packageName)
+        val arguments = buildList {
+            addAll(listOf("install", "--no-streaming"))
+            if (testOnly) add("-t")
+            add(apk.toString())
+        }
+        val install = adb.run(
+            label = "$label APK installation",
+            arguments = arguments,
+            timeoutMillis = APK_INSTALL_TIMEOUT_MILLIS,
+        )
+        if (!install.standardOutput.lineSequence().any { it.trim() == "Success" }) {
+            throw InteropFailure("$label APK installation did not report success")
+        }
+        requirePackageInstalled(adb, packageName, "$label package")
+        resources.markPackageInstalled(packageName)
+    }
+
+    private fun writeAppE2eInvocation(adb: AdbCommandRunner, fileName: String, invocation: AppE2eInvocation) {
+        val bytes = ANDROID_INTEROP_JSON.encodeToString(invocation).toByteArray(StandardCharsets.UTF_8)
+        try {
+            writeAppE2ePrivateFile(adb, "App E2E invocation", fileName, bytes)
+        } finally {
+            bytes.fill(0)
+        }
+    }
+
+    private fun writeAppE2ePrivateFile(
+        adb: AdbCommandRunner,
+        label: String,
+        fileName: String,
+        bytes: ByteArray,
+    ) {
+        if (!APP_E2E_SAFE_FILE.matches(fileName) || bytes.size !in 1..MAXIMUM_PRIVATE_FILE_BYTES) {
+            throw InteropFailure("App E2E private file write was invalid")
+        }
+        adb.run(
+            label = "$label directory preparation",
+            arguments = listOf("shell", "run-as", APP_TEST_PACKAGE, "mkdir", "-p", "files"),
+            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+        )
+        adb.run(
+            label = "$label write",
+            arguments = listOf(
+                "shell",
+                "-T",
+                "run-as",
+                APP_TEST_PACKAGE,
+                "dd",
+                "of=files/$fileName",
+                "bs=1",
+                "count=${bytes.size}",
+            ),
+            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+            standardInput = bytes,
+        )
+        adb.run(
+            label = "$label permission",
+            arguments = listOf(
+                "shell",
+                "run-as",
+                APP_TEST_PACKAGE,
+                "chmod",
+                "600",
+                "files/$fileName",
+            ),
+            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+        )
+    }
+
+    private fun runAppE2eInstrumentation(
+        adb: AdbCommandRunner,
+        invocation: AppE2eInvocation,
+        files: AppE2ePrivateFiles,
+    ): AdbCommandResult = adb.run(
+        label = "App E2E instrumentation",
+        arguments = listOf(
+            "shell",
+            "am",
+            "instrument",
+            "-w",
+            "-r",
+            "-e",
+            "class",
+            "$APP_E2E_TEST_CLASS#$APP_E2E_TEST_METHOD",
+            "-e",
+            "ocdeck.appE2e.enabled",
+            "true",
+            "-e",
+            "ocdeck.appE2e.runId",
+            invocation.runId,
+            "-e",
+            "ocdeck.appE2e.configFile",
+            files.configFile,
+            "$APP_TEST_PACKAGE/$TEST_RUNNER",
+        ),
+        timeoutMillis = APP_E2E_INSTRUMENTATION_TIMEOUT_MILLIS,
+        requireSuccess = false,
+    )
+
+    private fun runAppE2eRestartInstrumentation(
+        resources: AndroidInteropResourceOwner,
+        adb: AdbCommandRunner,
+        invocation: AppE2eInvocation,
+        files: AppE2ePrivateFiles,
+        frpsPort: Int,
+        frpsLaunch: AndroidInteropProcessLaunch,
+        provider: ManagedInteropProcess,
+        syntheticServer: SyntheticOpenCodeServer,
+    ): AdbCommandResult {
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "frpc-app-e2e-instrumentation").apply { isDaemon = true }
+        }
+        val asyncFailure = AtomicReference<Throwable?>(null)
+        val future = try {
+            executor.submit<AdbCommandResult> {
+                try {
+                    runAppE2eInstrumentation(adb, invocation, files)
+                } catch (failure: Throwable) {
+                    asyncFailure.compareAndSet(null, failure)
+                    throw failure
+                }
+            }
+        } catch (failure: Throwable) {
+            executor.shutdownNow()
+            throw failure
+        }
+        val deadline = InteropDeadline.afterMillis(APP_E2E_INSTRUMENTATION_TIMEOUT_MILLIS)
+        var result: AdbCommandResult? = null
+        var selectedFailure: Throwable? = null
+        try {
+            stage = "App E2E restart device ready"
+            awaitAppE2eMarker(
+                adb,
+                invocation.restartMarkers.deviceReadyFile,
+                future,
+            )
+            val providerReadyRevision = provider.outputRevision()
+
+            stage = "App E2E frps stop"
+            resources.stopFrps()
+
+            stage = "App E2E disconnect retention"
+            awaitAppE2eMarker(
+                adb,
+                invocation.restartMarkers.deviceDisconnectedFile,
+                future,
+            )
+
+            stage = "App E2E fixture advance"
+            syntheticServer.advanceAppFixture()
+            stage = "App E2E frps restart"
+            val restarted = resources.startFrps(frpsLaunch::start)
+            awaitFrpsReady(frpsPort, restarted)
+            provider.awaitOutputAfter(
+                PROVIDER_PROXY_READY_PATTERN,
+                providerReadyRevision,
+                PROVIDER_RECONNECT_TIMEOUT_MILLIS,
+                stage,
+            )
+            writeAppE2ePrivateFile(
+                adb = adb,
+                label = "App E2E frps restarted marker",
+                fileName = invocation.restartMarkers.frpsRestartedFile,
+                bytes = MARKER_FRPS_RESTARTED.toByteArray(StandardCharsets.UTF_8),
+            )
+
+            stage = "App E2E instrumentation completion"
+            result = awaitInstrumentation(future, deadline.remainingMillis())
+        } catch (failure: Throwable) {
+            selectedFailure = failure
+        }
+        if (selectedFailure != null) {
+            stopAsyncInstrumentation(resources, future)?.let { cleanupFailure ->
+                selectedFailure = preferFailure(selectedFailure, cleanupFailure)
+            }
+        }
+        shutdownInstrumentationExecutor(executor, future, selectedFailure != null)?.let { cleanupFailure ->
+            selectedFailure = preferFailure(selectedFailure, cleanupFailure)
+        }
+        asyncFailure.get()?.let { failure ->
+            selectedFailure = preferFailure(selectedFailure, failure)
+        }
+        selectedFailure?.let { throw it }
+        return result ?: throw InteropFailure("App E2E restart instrumentation did not return a result")
+    }
+
+    private fun awaitAppE2eMarker(
+        adb: AdbCommandRunner,
+        fileName: String,
+        instrumentation: Future<AdbCommandResult>,
+    ) {
+        val deadline = InteropDeadline.afterMillis(MARKER_WAIT_TIMEOUT_MILLIS)
+        while (!deadline.isExpired()) {
+            val result = adb.run(
+                label = "App E2E restart marker read",
+                arguments = listOf("shell", "run-as", APP_TEST_PACKAGE, "ls", "files/$fileName"),
+                timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+                requireSuccess = false,
+            )
+            if (result.exitCode == 0) return
+            if (instrumentation.isDone) {
+                awaitInstrumentation(instrumentation, ASYNC_OBSERVE_TIMEOUT_MILLIS)
+                throw InteropFailure("App E2E instrumentation ended before its restart marker")
+            }
+            sleepBounded(MARKER_POLL_MILLIS)
+        }
+        throw InteropFailure("App E2E restart marker was not observed within its deadline")
+    }
+
+    private fun readAppE2eResult(instrumentation: AdbCommandResult): AppE2eResult {
+        val prefix = "INSTRUMENTATION_STATUS: $APP_E2E_RESULT_STATUS_KEY="
+        val candidates = instrumentation.standardOutput.lineSequence()
+            .filter { it.startsWith(prefix) }
+            .map { it.removePrefix(prefix) }
+            .toList()
+        if (candidates.size != 1) {
+            requireInstrumentationSucceeded(instrumentation, "App E2E")
+            throw InteropFailure("App E2E instrumentation omitted its bounded semantic result")
+        }
+        val output = candidates.single()
+        val byteCount = output.toByteArray(StandardCharsets.UTF_8).size
+        if (byteCount !in 1..MAXIMUM_RESULT_BYTES) {
+            throw InteropFailure("App E2E returned an invalid bounded result")
+        }
+        return try {
+            ANDROID_INTEROP_JSON.decodeFromString(output)
+        } catch (_: Exception) {
+            val diagnostic = try {
+                val value = ANDROID_INTEROP_JSON.parseToJsonElement(output).jsonObject
+                val status = value["status"]?.jsonPrimitive?.content?.takeIf(SAFE_RESULT_VALUE::matches)
+                val failedStage = value["failedStage"]?.jsonPrimitive?.content?.takeIf(SAFE_RESULT_VALUE::matches)
+                val failureCode = value["failureCode"]?.jsonPrimitive?.content?.takeIf(SAFE_RESULT_VALUE::matches)
+                " status=${status ?: "invalid"} stage=${failedStage ?: "none"} code=${failureCode ?: "none"}"
+            } catch (_: Exception) {
+                val bounded = output
+                    .replace(UUID_TEXT, "<redacted>")
+                    .map { character -> if (character.code in 0x20..0x7e) character else '?' }
+                    .joinToString("")
+                    .take(256)
+                " content=$bounded"
+            }
+            throw InteropFailure("App E2E result did not match the bounded JSON schema ($byteCount bytes)$diagnostic")
+        }
+    }
+
+    private fun validateAppE2eResult(result: AppE2eResult, invocation: AppE2eInvocation) {
+        if (result.schemaVersion != APP_E2E_SCHEMA_VERSION || result.runId != invocation.runId ||
+            result.status != STATUS_PASSED || result.checks != APP_E2E_EXPECTED_CHECKS ||
+            result.bindPort !in 1..65_535 || (result.initialGeneration ?: 0L) <= 0L ||
+            (result.initialControlEpoch ?: 0L) <= 0L ||
+            result.recoveredGeneration != result.initialGeneration ||
+            (result.recoveredControlEpoch ?: 0L) <= (result.initialControlEpoch ?: 0L) ||
+            result.failedStage != null || result.failureCode != null
+        ) {
+            val stage = result.failedStage?.takeIf(SAFE_RESULT_VALUE::matches) ?: "none"
+            val code = result.failureCode?.takeIf(SAFE_RESULT_VALUE::matches) ?: "none"
+            val status = result.status.takeIf(SAFE_RESULT_VALUE::matches) ?: "invalid"
+            throw InteropFailure(
+                "App E2E returned an invalid semantic result: " +
+                    "status=$status stage=$stage code=$code checkCount=${result.checks.size}",
+            )
+        }
+    }
+
+    private fun writeAppE2eSummary(path: Path, summary: AppE2eSummary) {
+        val target = path.toAbsolutePath().normalize()
+        val parent = target.parent ?: throw InteropFailure("App E2E summary path was invalid")
+        if (!Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(parent) ||
+            Files.exists(target, LinkOption.NOFOLLOW_LINKS)
+        ) {
+            throw InteropFailure("App E2E summary destination was invalid")
+        }
+        val bytes = ANDROID_INTEROP_JSON.encodeToString(summary).toByteArray(StandardCharsets.UTF_8)
+        if (bytes.size !in 1..MAXIMUM_SUMMARY_BYTES) {
+            bytes.fill(0)
+            throw InteropFailure("App E2E summary exceeded its bounded schema")
+        }
+        val temporary = parent.resolve(".${target.fileName}.${UUID.randomUUID()}.tmp")
+        try {
+            writePrivateFile(temporary, bytes)
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE)
+            if (!Files.isRegularFile(target, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(target) ||
+                Files.size(target) !in 1..MAXIMUM_SUMMARY_BYTES
+            ) {
+                throw InteropFailure("App E2E summary was not published safely")
+            }
+        } catch (failure: InteropFailure) {
+            throw failure
+        } catch (_: Exception) {
+            throw InteropFailure("App E2E summary could not be published atomically")
+        } finally {
+            bytes.fill(0)
+            Files.deleteIfExists(temporary)
+        }
     }
 
     private fun runInstrumentation(
@@ -1194,7 +1781,32 @@ private class FrpcAndroidInteropRunner {
             "FAILURES!!!" in result.standardOutput ||
             "INSTRUMENTATION_FAILED" in result.standardOutput
         ) {
-            throw InteropFailure("$backend instrumentation did not complete successfully")
+            val lines = result.standardOutput.lineSequence().map(String::trim).toList()
+            val exceptionType = lines.firstNotNullOfOrNull { line ->
+                if (!line.startsWith("INSTRUMENTATION_STATUS: stack=")) return@firstNotNullOfOrNull null
+                INSTRUMENTATION_EXCEPTION.find(line.substringAfter('='))?.value
+            }
+            val testLine = INSTRUMENTATION_TEST_LINE.find(result.standardOutput)?.value
+            val diagnostic = lines.asSequence()
+                .filter { line ->
+                    line.startsWith("INSTRUMENTATION_STATUS: class=") ||
+                        line.startsWith("INSTRUMENTATION_STATUS: test=") ||
+                        line.startsWith("INSTRUMENTATION_STATUS: shortMsg=") ||
+                        line.startsWith("INSTRUMENTATION_STATUS_CODE:") ||
+                        line.startsWith("INSTRUMENTATION_RESULT: shortMsg=") ||
+                        line.startsWith("INSTRUMENTATION_FAILED:") ||
+                        line.startsWith("INSTRUMENTATION_CODE:")
+                }
+                .map { line -> line.replace(UUID_TEXT, "<redacted>") }
+                .take(8)
+                .joinToString(" | ")
+                .take(512)
+                .ifEmpty { "unavailable" }
+            val exception = exceptionType?.let { " exception=$it" }.orEmpty()
+            val location = testLine?.let { " location=$it" }.orEmpty()
+            throw InteropFailure(
+                "$backend instrumentation did not complete successfully:$exception$location $diagnostic",
+            )
         }
     }
 
@@ -1294,7 +1906,7 @@ private class FrpcAndroidInteropRunner {
         else -> current
     }
 
-    private fun selectDevice(discovery: AdbCommandRunner): String {
+    private fun selectDevice(discovery: AdbCommandRunner, serialProperty: String): String {
         val output = discovery.run(
             label = "Android device discovery",
             arguments = listOf("devices", "-l"),
@@ -1309,7 +1921,7 @@ private class FrpcAndroidInteropRunner {
                 fields.takeIf { it.size >= 2 && it[1] == "device" }?.first()
             }
             .toList()
-        val requested = System.getProperty(DEVICE_SERIAL_PROPERTY)?.takeIf(String::isNotBlank)
+        val requested = System.getProperty(serialProperty)?.takeIf(String::isNotBlank)
         if (requested != null) {
             if (!SAFE_DEVICE_SERIAL.matches(requested) || requested !in authorized) {
                 throw InteropFailure("configured Android device was not uniquely authorized")
@@ -1353,26 +1965,32 @@ private class FrpcAndroidInteropRunner {
         return AndroidDeviceMetadata(api, abi, pageSize)
     }
 
-    private fun requirePackageAbsent(adb: AdbCommandRunner) {
+    private fun requirePackageAbsent(adb: AdbCommandRunner) =
+        requirePackageAbsent(adb, TEST_PACKAGE, "instrumentation package")
+
+    private fun requirePackageAbsent(adb: AdbCommandRunner, packageName: String, label: String) {
         val result = adb.run(
-            label = "instrumentation package preflight",
-            arguments = listOf("shell", "pm", "path", TEST_PACKAGE),
+            label = "$label preflight",
+            arguments = listOf("shell", "pm", "path", packageName),
             timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
             requireSuccess = false,
         )
         if (result.standardOutput.lineSequence().any { it.trim().startsWith("package:") }) {
-            throw InteropFailure("instrumentation package was already installed; refusing to overwrite it")
+            throw InteropFailure("$label was already installed; refusing to overwrite it")
         }
     }
 
-    private fun requirePackageInstalled(adb: AdbCommandRunner) {
+    private fun requirePackageInstalled(adb: AdbCommandRunner) =
+        requirePackageInstalled(adb, TEST_PACKAGE, "instrumentation package")
+
+    private fun requirePackageInstalled(adb: AdbCommandRunner, packageName: String, label: String) {
         val result = adb.run(
-            label = "instrumentation package verification",
-            arguments = listOf("shell", "pm", "path", TEST_PACKAGE),
+            label = "$label verification",
+            arguments = listOf("shell", "pm", "path", packageName),
             timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
         )
         if (result.standardOutput.lineSequence().none { it.trim().startsWith("package:") }) {
-            throw InteropFailure("instrumentation package verification did not find the expected package")
+            throw InteropFailure("$label verification did not find the expected package")
         }
     }
 
@@ -1398,6 +2016,20 @@ private class FrpcAndroidInteropRunner {
         }
     }
 
+    private fun configuredAppE2eSummaryFile(): Path? = configuredOptionalPath(
+        APP_E2E_SUMMARY_FILE_PROPERTY,
+        "App E2E summary",
+    )
+
+    private fun configuredOptionalPath(property: String, label: String): Path? {
+        val configured = System.getProperty(property)?.takeIf(String::isNotBlank) ?: return null
+        return try {
+            Path.of(configured).toAbsolutePath().normalize()
+        } catch (_: Exception) {
+            throw InteropFailure("configured $label path was invalid")
+        }
+    }
+
     private fun configuredAdbExecutable(): Path = try {
         System.getProperty(ADB_PROPERTY)
             ?.takeIf(String::isNotBlank)
@@ -1407,6 +2039,22 @@ private class FrpcAndroidInteropRunner {
         throw failure
     } catch (_: Exception) {
         throw InteropFailure("configured adb executable path was invalid")
+    }
+
+    private fun configuredAppE2eAdbExecutable(): Path = configuredExecutablePath(
+        APP_E2E_ADB_PROPERTY,
+        "Gradle did not provide the Android SDK adb executable for App E2E",
+    )
+
+    private fun configuredExecutablePath(property: String, missingMessage: String): Path = try {
+        System.getProperty(property)
+            ?.takeIf(String::isNotBlank)
+            ?.let(Path::of)
+            ?: throw InteropFailure(missingMessage)
+    } catch (failure: InteropFailure) {
+        throw failure
+    } catch (_: Exception) {
+        throw InteropFailure("configured executable path was invalid")
     }
 
     private fun configuredTestApk(): Path {
@@ -1438,6 +2086,50 @@ private class FrpcAndroidInteropRunner {
         }
         return candidates.singleOrNull { it.fileName.toString() == TEST_APK_FILE_NAME }
             ?: throw InteropFailure("the expected Android test APK was missing or ambiguous")
+    }
+
+    private fun configuredAppE2eTargetApk(abi: String): Path {
+        val candidates = configuredApkCandidates(APP_E2E_APP_APK_DIRECTORY_PROPERTY, "App E2E target APK")
+        return candidates.singleOrNull { path ->
+            val name = path.fileName.toString()
+            "-kotlin-release_" in name && name.endsWith("_$abi.apk")
+        } ?: throw InteropFailure("the ABI-matched App E2E target APK was missing or ambiguous")
+    }
+
+    private fun configuredAppE2eTestApk(): Path {
+        val candidates = configuredApkCandidates(APP_E2E_TEST_APK_DIRECTORY_PROPERTY, "App E2E test APK")
+        return candidates.singleOrNull { it.fileName.toString() == APP_E2E_TEST_APK_FILE_NAME }
+            ?: throw InteropFailure("the expected App E2E test APK was missing or ambiguous")
+    }
+
+    private fun configuredApkCandidates(property: String, label: String): List<Path> {
+        val directory = try {
+            System.getProperty(property)
+                ?.takeIf(String::isNotBlank)
+                ?.let(Path::of)
+                ?.toAbsolutePath()
+                ?.normalize()
+                ?: throw InteropFailure("Gradle did not provide the $label directory")
+        } catch (failure: InteropFailure) {
+            throw failure
+        } catch (_: Exception) {
+            throw InteropFailure("configured $label directory was invalid")
+        }
+        if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(directory)) {
+            throw InteropFailure("$label directory was missing")
+        }
+        val candidates = ArrayList<Path>()
+        Files.newDirectoryStream(directory, "*.apk").use { entries: DirectoryStream<Path> ->
+            entries.forEach { path ->
+                if (candidates.size >= MAXIMUM_APK_CANDIDATES) {
+                    throw InteropFailure("$label directory contained too many entries")
+                }
+                if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path)) {
+                    candidates.add(path.toAbsolutePath().normalize())
+                }
+            }
+        }
+        return candidates
     }
 
     private fun configuredCacheDirectory(): Path = try {
@@ -1564,7 +2256,12 @@ private class FrpcAndroidInteropRunner {
         )
     }
 
-    private inner class AndroidInteropResourceOwner {
+    private inner class AndroidInteropResourceOwner(
+        private val testPackage: String = TEST_PACKAGE,
+        private val managedPackages: List<String> = listOf(TEST_PACKAGE),
+        private val appFixtureEnabled: Boolean = false,
+        private val workspacePrefix: String = "ocdeck-frp-android-interop-",
+    ) {
         private val lock = Any()
         private val cleanupComplete = CountDownLatch(1)
         private var cleanupStarted = false
@@ -1575,8 +2272,8 @@ private class FrpcAndroidInteropRunner {
         private var frps: ManagedInteropProcess? = null
         private var provider: ManagedInteropProcess? = null
         private var adb: AdbCommandRunner? = null
-        private var packageInstallAttempted = false
-        private var packageInstalled = false
+        private val packageInstallAttempted = LinkedHashSet<String>()
+        private val packageInstalled = LinkedHashSet<String>()
         private var reversePort: Int? = null
         private var reverseTargetPort: Int? = null
         private var reverseBaselinePorts = emptySet<Int>()
@@ -1584,7 +2281,7 @@ private class FrpcAndroidInteropRunner {
 
         fun createTemporaryWorkspace(): Path = synchronized(lock) {
             requireActive()
-            Files.createTempDirectory("ocdeck-frp-android-interop-").also { created ->
+            Files.createTempDirectory(workspacePrefix).also { created ->
                 try {
                     createPrivateDirectory(created)
                 } catch (failure: Throwable) {
@@ -1597,7 +2294,7 @@ private class FrpcAndroidInteropRunner {
 
         fun createSyntheticServer(): SyntheticOpenCodeServer = synchronized(lock) {
             requireActive()
-            SyntheticOpenCodeServer().also { syntheticServer = it }
+            SyntheticOpenCodeServer(appFixtureEnabled = appFixtureEnabled).also { syntheticServer = it }
         }
 
         fun startFrps(factory: () -> ManagedInteropProcess): ManagedInteropProcess = synchronized(lock) {
@@ -1630,15 +2327,18 @@ private class FrpcAndroidInteropRunner {
             adb = runner
         }
 
-        fun markPackageInstallAttempted() = synchronized(lock) {
+        fun markPackageInstallAttempted(packageName: String = testPackage) = synchronized(lock) {
             requireActive()
-            packageInstallAttempted = true
+            if (packageName !in managedPackages || !packageInstallAttempted.add(packageName)) {
+                throw InteropFailure("Android package installation ownership was invalid")
+            }
         }
 
-        fun markPackageInstalled() = synchronized(lock) {
+        fun markPackageInstalled(packageName: String = testPackage) = synchronized(lock) {
             requireActive()
-            check(packageInstallAttempted)
-            packageInstalled = true
+            if (packageName !in packageInstallAttempted || !packageInstalled.add(packageName)) {
+                throw InteropFailure("Android package installation state was invalid")
+            }
         }
 
         fun registerReverseTarget(port: Int, baselinePorts: Set<Int>) = synchronized(lock) {
@@ -1658,7 +2358,7 @@ private class FrpcAndroidInteropRunner {
         fun registerPrivateFiles(names: List<String>) = synchronized(lock) {
             requireActive()
             if (names.isEmpty() || names.distinct().size != names.size ||
-                names.any { !SAFE_PRIVATE_FILE.matches(it) || it in privateFiles }
+                names.any { !SAFE_PRIVATE_PATH.matches(it) || it in privateFiles }
             ) {
                 throw InteropFailure("private file names were invalid or not unique")
             }
@@ -1666,15 +2366,18 @@ private class FrpcAndroidInteropRunner {
         }
 
         fun forceStopInstrumentation() {
-            val runner = synchronized(lock) {
+            val (runner, packages) = synchronized(lock) {
                 requireActive()
-                adb
-            } ?: throw InteropFailure("adb was not configured")
-            runner.run(
-                label = "instrumentation force stop",
-                arguments = listOf("shell", "am", "force-stop", TEST_PACKAGE),
-                timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
-            )
+                Pair(adb, managedPackages.asReversed().filter(packageInstalled::contains))
+            }
+            val configuredRunner = runner ?: throw InteropFailure("adb was not configured")
+            packages.forEachIndexed { index, packageName ->
+                configuredRunner.run(
+                    label = "instrumentation force stop ${index + 1}",
+                    arguments = listOf("shell", "am", "force-stop", packageName),
+                    timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+                )
+            }
         }
 
         fun forceStopAndDeletePrivateFiles() {
@@ -1693,7 +2396,7 @@ private class FrpcAndroidInteropRunner {
                 try {
                     runner.run(
                         label = "instrumentation private file cleanup",
-                        arguments = listOf("shell", "run-as", TEST_PACKAGE, "rm", "-f") +
+                        arguments = listOf("shell", "run-as", testPackage, "rm", "-f") +
                             files.map { "files/$it" },
                         timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
                     )
@@ -1724,20 +2427,27 @@ private class FrpcAndroidInteropRunner {
             var failure: Throwable? = null
             try {
                 val runner = synchronized(lock) { adb }
-                if (runner != null && packageInstalled) {
-                    failure = cleanupStep(failure) {
-                        runner.run(
-                            label = "instrumentation cleanup force stop",
-                            arguments = listOf("shell", "am", "force-stop", TEST_PACKAGE),
-                            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
-                        )
+                if (runner != null) {
+                    val installedPackages = synchronized(lock) {
+                        managedPackages.asReversed().filter(packageInstalled::contains)
                     }
-                    val files = synchronized(lock) { privateFiles.toList() }
+                    installedPackages.forEachIndexed { index, packageName ->
+                        failure = cleanupStep(failure) {
+                            runner.run(
+                                label = "instrumentation cleanup force stop ${index + 1}",
+                                arguments = listOf("shell", "am", "force-stop", packageName),
+                                timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+                            )
+                        }
+                    }
+                    val files = synchronized(lock) {
+                        if (testPackage in packageInstalled) privateFiles.toList() else emptyList()
+                    }
                     if (files.isNotEmpty()) {
                         failure = cleanupStep(failure) {
                             runner.run(
                                 label = "instrumentation cleanup private files",
-                                arguments = listOf("shell", "run-as", TEST_PACKAGE, "rm", "-f") +
+                                arguments = listOf("shell", "run-as", testPackage, "rm", "-f") +
                                     files.map { "files/$it" },
                                 timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
                             )
@@ -1775,14 +2485,17 @@ private class FrpcAndroidInteropRunner {
                         }
                     }
                 }
-                if (runner != null && packageInstallAttempted) {
-                    failure = cleanupStep(failure) {
-                        runner.run(
-                            label = "instrumentation APK uninstall",
-                            arguments = listOf("uninstall", TEST_PACKAGE),
-                            timeoutMillis = APK_INSTALL_TIMEOUT_MILLIS,
-                            requireSuccess = packageInstalled,
-                        )
+                if (runner != null) {
+                    managedPackages.asReversed().filter(packageInstallAttempted::contains).forEach { packageName ->
+                        val label = if (packageName == testPackage) "instrumentation" else "target App"
+                        failure = cleanupStep(failure) {
+                            runner.run(
+                                label = "$label APK uninstall",
+                                arguments = listOf("uninstall", packageName),
+                                timeoutMillis = APK_INSTALL_TIMEOUT_MILLIS,
+                                requireSuccess = packageName in packageInstalled,
+                            )
+                        }
                     }
                 }
                 failure = cleanupStep(failure) { provider?.stop() }
@@ -1906,6 +2619,35 @@ private class FrpcAndroidInteropRunner {
         }
     }
 
+    private data class AppE2ePrivateFiles(
+        val configFile: String,
+        val restartMarkers: AppE2eRestartMarkers,
+        val allRelativePaths: List<String>,
+    ) {
+        override fun toString(): String = "AppE2ePrivateFiles(count=${allRelativePaths.size})"
+
+        companion object {
+            fun create(runId: String): AppE2ePrivateFiles {
+                if (!SAFE_RUN_ID.matches(runId)) throw InteropFailure("App E2E private file identity was invalid")
+                val configFile = "app-e2e-$runId-config.json"
+                val restartMarkers = AppE2eRestartMarkers(
+                    deviceReadyFile = "app-e2e-$runId-device-ready.json",
+                    deviceDisconnectedFile = "app-e2e-$runId-device-disconnected.json",
+                    frpsRestartedFile = "app-e2e-$runId-frps-restarted.json",
+                )
+                val names = listOf(configFile) + restartMarkers.allFiles
+                if (names.any { !APP_E2E_SAFE_FILE.matches(it) }) {
+                    throw InteropFailure("App E2E private file names were invalid")
+                }
+                return AppE2ePrivateFiles(
+                    configFile = configFile,
+                    restartMarkers = restartMarkers,
+                    allRelativePaths = names,
+                )
+            }
+        }
+    }
+
     private data class AndroidInteropSecrets(
         val authToken: String,
         val stcpSecret: String,
@@ -1941,7 +2683,12 @@ private class FrpcAndroidInteropRunner {
         val SAFE_TOML_VALUE = Regex("[A-Za-z0-9_-]{16,256}")
         val SAFE_DEVICE_SERIAL = Regex("[A-Za-z0-9._:-]{1,128}")
         val SAFE_PRIVATE_FILE = Regex("[A-Za-z0-9_-]{1,112}\\.(json|marker)")
+        val APP_E2E_SAFE_FILE = Regex("[a-z0-9][a-z0-9._-]{0,127}\\.json")
+        val SAFE_PRIVATE_PATH = Regex("(?:[A-Za-z0-9_-]{1,112}\\.(?:json|marker)|app-e2e/[a-z0-9][a-z0-9._-]{0,127}\\.json)")
         val SAFE_RESULT_VALUE = Regex("[A-Za-z0-9_]{1,96}")
+        val UUID_TEXT = Regex("[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}")
+        val INSTRUMENTATION_EXCEPTION = Regex("[A-Za-z_$][A-Za-z0-9_.$]*(?:Exception|Error)")
+        val INSTRUMENTATION_TEST_LINE = Regex("KotlinReleaseStcpAppE2eTest\\.kt:[0-9]{1,5}")
         val FRPS_READY_PATTERN = Regex("(?m)frps started successfully")
         val PROVIDER_PROXY_READY_PATTERN = Regex("(?m)\\[$PROVIDER_PROXY_NAME] start proxy success")
         const val TEST_PACKAGE = "io.github.ycfeng.ocdeck.frpcstcpvisitor.test"
@@ -1950,6 +2697,14 @@ private class FrpcAndroidInteropRunner {
         const val TEST_CLASS =
             "io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcStcpVisitorAndroidInteropTest"
         const val TEST_METHOD = "runConfiguredBackend"
+        const val APP_TARGET_PACKAGE = "io.github.ycfeng.ocdeck.kotlinrelease"
+        const val APP_TEST_PACKAGE = "io.github.ycfeng.ocdeck.kotlinrelease.test"
+        const val APP_E2E_TEST_APK_FILE_NAME = "app-kotlinRelease-androidTest.apk"
+        const val APP_E2E_TEST_CLASS = "io.github.ycfeng.ocdeck.interop.KotlinReleaseStcpAppE2eTest"
+        const val APP_E2E_TEST_METHOD = "runConfiguredAppFlow"
+        const val APP_E2E_RESULT_STATUS_KEY = "ocdeckAppE2eResult"
+        const val APP_E2E_SCHEMA_VERSION = 1
+        const val APP_E2E_SUMMARY_SCHEMA_VERSION = 1
         const val PROVIDER_USER = "interop-server"
         const val VISITOR_USER = "interop-visitor"
         const val PROVIDER_PROXY_NAME = "interop-opencode"
@@ -1958,6 +2713,11 @@ private class FrpcAndroidInteropRunner {
         const val DEVICE_SERIAL_PROPERTY = "ocdeck.frp.androidInterop.deviceSerial"
         const val SUITE_PROPERTY = "ocdeck.frp.androidInterop.suite"
         const val SUMMARY_FILE_PROPERTY = "ocdeck.frp.androidInterop.summaryFile"
+        const val APP_E2E_ADB_PROPERTY = "ocdeck.frp.appE2e.adb"
+        const val APP_E2E_APP_APK_DIRECTORY_PROPERTY = "ocdeck.frp.appE2e.appApkDirectory"
+        const val APP_E2E_TEST_APK_DIRECTORY_PROPERTY = "ocdeck.frp.appE2e.testApkDirectory"
+        const val APP_E2E_DEVICE_SERIAL_PROPERTY = "ocdeck.frp.appE2e.deviceSerial"
+        const val APP_E2E_SUMMARY_FILE_PROPERTY = "ocdeck.frp.appE2e.summaryFile"
         const val FRP_CACHE_PROPERTY = "ocdeck.frp.interop.cacheDir"
         const val MARKER_DEVICE_READY = "device_ready"
         const val MARKER_FRPS_STOPPED = "frps_stopped"
@@ -1973,6 +2733,7 @@ private class FrpcAndroidInteropRunner {
         const val ADB_SHORT_TIMEOUT_MILLIS = 15_000L
         const val APK_INSTALL_TIMEOUT_MILLIS = 60_000L
         const val INSTRUMENTATION_TIMEOUT_MILLIS = 360_000L
+        const val APP_E2E_INSTRUMENTATION_TIMEOUT_MILLIS = 420_000L
         const val MARKER_WAIT_TIMEOUT_MILLIS = 90_000L
         const val MARKER_POLL_MILLIS = 100L
         const val ASYNC_OBSERVE_TIMEOUT_MILLIS = 1L
@@ -1986,6 +2747,21 @@ private class FrpcAndroidInteropRunner {
                 "case \"\$unit\" in kB) echo \$((value * 1024)); exit 0;; " +
                 "B) echo \"\$value\"; exit 0;; esac;; esac; " +
                 "done < /proc/self/smaps; exit 1"
+        val APP_E2E_EXPECTED_CHECKS = listOf(
+            "kotlin_backend",
+            "stcp_ready",
+            "snapshot_store",
+            "global_sse_store",
+            "project_sse_store",
+            "foreground_reconciliation",
+            "disconnect_data_retained",
+            "control_epoch_advanced",
+            "restart_reconciliation",
+            "post_restart_foreground",
+            "streams_closed",
+            "visitor_closed",
+            "port_released",
+        )
     }
 }
 

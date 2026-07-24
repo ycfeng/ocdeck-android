@@ -128,6 +128,31 @@ Host summary 是严格的结构化证据，不是 task 状态的替代品。它�
 
 更早的第一阶段证据仍记录于精确候选 `459c2b57ebf465d6b933ea939f59fa739128ec59`（tree `a6ce1019adfa351bc15e09bc479220a967bdf323`）和 [workflow run 29716724485](https://github.com/ycfeng/ocdeck-android/actions/runs/29716724485)。它只覆盖旧的单一 GoMobile 后 Kotlin v1/plain 场景；对于当前 K6V 范围，已由上述扩展证据取代。
 
+## Kotlin Release-Like App STCP E2E
+
+专用 App E2E 任务会安装不可发布的 `kotlinRelease` target APK 及其 test APK，并通过纯 Kotlin STCP backend 验证真实应用装配。共享 Host test 配置仍会校验保留的 bridge，因此先生成 GoMobile AAR，再启动新的 Gradle invocation。可选 summary 的父目录必须存在，且 `<new-summary-path>` 在运行前必须不存在：
+
+```powershell
+.\frpc-stcp-visitor-go\build-aar.ps1
+.\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcAppE2eTest `
+  -PrequireGoMobileBridge=true `
+  "-Pocdeck.frp.appE2e.deviceSerial=<serial>" `
+  "-Pocdeck.frp.appE2e.summaryFile=<new-summary-path>"
+```
+
+```bash
+bash frpc-stcp-visitor-go/build-aar.sh
+./gradlew --no-daemon :frpc-stcp-visitor:frpcAppE2eTest -PrequireGoMobileBridge=true \
+  "-Pocdeck.frp.appE2e.deviceSerial=<serial>" \
+  "-Pocdeck.frp.appE2e.summaryFile=<new-summary-path>"
+```
+
+只有恰好连接一台合格设备时才可省略 `ocdeck.frp.appE2e.deviceSerial`；普通本地运行不需要验收 summary 时可省略 `ocdeck.frp.appE2e.summaryFile`。Host 会准备固定版本的官方 frp 工具、仅监听 loopback 的 TLS `frps`、provider `frpc`、有界合成 OpenCode REST/SSE fixture 和一条由本次运行拥有的动态 `adb reverse`。它安装匹配设备 ABI 的 `kotlinRelease` APK 及仅 test APK 可调试的 instrumentation APK；target App 仍保持 Release-Like 且不可调试。每次运行的一次性凭据通过有界 stdin 和 `run-as` 写入 test package 私有存储，绝不进入 Gradle property、instrumentation argument、共享存储或结果证据。清理会 force-stop 并移除本次运行拥有的两个 package、私有文件、reverse mapping、进程、socket 和临时材料。
+
+Instrumentation 使用真实 `OpenCodeApplication`/`AppContainer`、`ServerRepository`、`FrpcStcpVisitorManager`、`OpenCodeRepository`、`OpenCodeEventClient`、`InMemoryOpenCodeStore` 与 `ProjectSnapshotCoordinator`。严格的 13 项 checks 覆盖 Kotlin backend 选择、listener readiness 与应用 health、REST snapshot 写入、global/project SSE 归约到 Store、前台 reconciliation、断线期间数据保留、`frps` 重启后 visitor generation 不变且 control epoch 严格增加、第二代 snapshot/SSE 恢复、重启后前台校准、stream 关闭、visitor 关闭和 listener 端口释放。测试必须先通过真实 SSE/连接链路自动恢复，再读取最终 transport identity；不能用显式连接轮询制造通过。结构化 summary 只记录设备 API/ABI/runtime page size、固定 checks、初始/恢复 generation 与 control epoch，以及 `authorizesKotlinDefault=false`。
+
+该任务目前是独立的手动/设备门禁，不属于普通 push 或 Pull Request CI。实现已在官方 Android 16KB x86_64 测试镜像和物理 `arm64-v8a` 设备上分别本地通过，当前工作树的分离设备矩阵已关闭；最终 pre-K7 证据仍要求在 clean exact-SHA 上复跑。该门禁不覆盖 Doze、真实网络切换、长时间断网、性能、资源泄漏压力、soak 或正式稳定发布周期，也绝不授权 Kotlin 默认装配。
+
 连接 emulator 或设备后，运行 instrumentation 测试集：
 
 ```powershell

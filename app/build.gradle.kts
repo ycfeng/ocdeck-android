@@ -1,4 +1,5 @@
 import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
+import com.android.build.api.variant.DeviceTestBuilder
 import com.android.build.api.variant.HostTestBuilder
 import java.net.URI
 import java.util.Properties
@@ -228,6 +229,9 @@ androidComponents {
     pureKotlinBuildTypes.forEach { buildType ->
         beforeVariants(selector().withBuildType(buildType)) { variantBuilder ->
             variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
+            if (buildType == "kotlinRelease") {
+                variantBuilder.deviceTests.getValue(DeviceTestBuilder.ANDROID_TEST_TYPE).enable = true
+            }
         }
     }
     onVariants { variant ->

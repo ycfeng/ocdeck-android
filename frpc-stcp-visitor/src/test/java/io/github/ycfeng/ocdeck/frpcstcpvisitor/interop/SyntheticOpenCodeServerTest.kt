@@ -36,4 +36,34 @@ class SyntheticOpenCodeServerTest {
             server.close()
         }
     }
+
+    @Test
+    fun appFixtureSupportsSnapshotQueriesAndGenerationAdvance() {
+        val server = SyntheticOpenCodeServer(appFixtureEnabled = true)
+        try {
+            check(
+                TunnelHttpProbe.json(server.port, "/session?directory=%2Fworkspace&roots=true&limit=70") ==
+                    """[{"id":"session-snapshot","directory":"/workspace","title":"snapshot-1","time":{"updated":100}}]""",
+            )
+            check(server.advanceAppFixture() == 2)
+            check(
+                TunnelHttpProbe.json(server.port, "/session?directory=%2Fworkspace&roots=true&limit=70") ==
+                    """[{"id":"session-snapshot","directory":"/workspace","title":"snapshot-2","time":{"updated":200}}]""",
+            )
+            TunnelHttpProbe.openSseSession(
+                server.port,
+                "/event?directory=%2Fworkspace",
+                """{"type":"session.updated","properties":{"info":{"id":"session-project-sse","title":"project-sse-2","directory":"/workspace","time":{"updated":"201"}}}}""",
+            ).use { }
+            try {
+                TunnelHttpProbe.json(server.port, "/session?directory=%2Fwrong&roots=true&limit=70")
+                error("App fixture accepted an invalid directory query")
+            } catch (_: TunnelProbeException) {
+                // Expected: the fixture verifies the real App request contract.
+            }
+            server.requireHealthy()
+        } finally {
+            server.close()
+        }
+    }
 }
