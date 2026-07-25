@@ -201,6 +201,12 @@ tasks.register<JavaExec>("frpcAppE2eTest") {
         providers.gradleProperty("ocdeck.frp.appE2e.deviceSerial").orNull?.let { serial ->
             systemProperty("ocdeck.frp.appE2e.deviceSerial", serial)
         }
+        providers.gradleProperty("ocdeck.frp.appE2e.suite").orNull?.let { suite ->
+            systemProperty("ocdeck.frp.appE2e.suite", suite)
+        }
+        providers.gradleProperty("ocdeck.frp.appE2e.outageMillis").orNull?.let { outageMillis ->
+            systemProperty("ocdeck.frp.appE2e.outageMillis", outageMillis)
+        }
         providers.gradleProperty("ocdeck.frp.appE2e.summaryFile").orNull?.let { summaryFile ->
             systemProperty("ocdeck.frp.appE2e.summaryFile", summaryFile)
         }

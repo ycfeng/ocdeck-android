@@ -10,6 +10,8 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStopSessionResult
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcVisitorReadyResult
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcVisitorRuntimeState
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -132,6 +134,96 @@ class FrpcStcpVisitorManagerContractTest {
             assertEquals("$label must not start another session", 1, client.startCount)
             assertEquals("$label must not re-ensure the visitor", 1, client.ensureCount)
         }
+    }
+
+    @Test
+    fun nativeRecoveryTimeoutKeepsGenerationForLaterEpochRefresh() = runTest {
+        val client = ContractFrpcStcpVisitorClient()
+        val probes = ContractHealthProbeFactory()
+        val manager = manager(client, probes)
+        val server = contractServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+        client.onGetState = { sessionId, _ ->
+            client.runtimeState(
+                sessionId = sessionId,
+                sessionPhase = "connecting",
+                visitorPhase = "starting",
+                listenerBound = false,
+                reportedBoundControlEpoch = 0,
+            )
+        }
+        client.onWaitVisitorReady = { _, visitorName, desiredRevision, _, call ->
+            if (call == 2) {
+                throw KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT)
+            }
+            readyResult(visitorName, desiredRevision, controlEpoch = 2)
+        }
+
+        val timeout = failureOf {
+            manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+        }
+        runCurrent()
+
+        assertTrue(timeout is KotlinFrpcStcpVisitorException)
+        assertEquals(KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT, (timeout as KotlinFrpcStcpVisitorException).failure)
+        assertEquals("timeout must retain the established session", 1, client.startCount)
+        assertEquals("timeout must not reconfigure the visitor", 1, client.ensureCount)
+        assertTrue("timeout must not clean the recoverable session", client.stopAttempts.isEmpty())
+        assertEquals("timeout must not run application health", 1, probes.probeCount)
+
+        val recovered = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+
+        assertEquals(initial.generation, recovered.generation)
+        assertEquals(initial.tunnel.sessionId, recovered.tunnel.sessionId)
+        assertEquals(2L, recovered.tunnel.controlEpoch)
+        assertEquals(1, client.startCount)
+        assertEquals(1, client.ensureCount)
+        assertEquals(3, client.waitReadyCount)
+        assertEquals(2, probes.probeCount)
+        assertTrue(client.stopAttempts.isEmpty())
+    }
+
+    @Test
+    fun wrappedNativeRecoveryTimeoutStillFailsTheGeneration() = runTest {
+        val client = ContractFrpcStcpVisitorClient()
+        val probes = ContractHealthProbeFactory()
+        val manager = manager(client, probes)
+        val server = contractServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+        client.onGetState = { sessionId, _ ->
+            client.runtimeState(
+                sessionId = sessionId,
+                sessionPhase = "connecting",
+                visitorPhase = "starting",
+                listenerBound = false,
+                reportedBoundControlEpoch = 0,
+            )
+        }
+        client.onWaitVisitorReady = { _, _, _, _, call ->
+            if (call == 2) {
+                throw IllegalStateException(
+                    "wrapped invariant failure",
+                    KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT),
+                )
+            }
+            error("unexpected wait call")
+        }
+
+        val failure = failureOf {
+            manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+        }
+        runCurrent()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(listOf(initial.tunnel.sessionId), client.stopAttempts)
+        client.onGetState = null
+        client.onWaitVisitorReady = null
+        val recovered = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+        assertTrue(recovered.generation.ordinal > initial.generation.ordinal)
+        assertEquals(2, client.startCount)
+        assertEquals(2, client.ensureCount)
     }
 
     @Test

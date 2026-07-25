@@ -350,7 +350,11 @@ class FrpcStcpVisitorManager(
                     failGeneration(state, fatal)
                     throw fatal
                 }
-                failGeneration(state, exception)
+                if (exception.isRetryableEpochRefreshTimeout()) {
+                    failEpochRefresh(state, flight, exception)
+                } else {
+                    failGeneration(state, exception)
+                }
             }
         }
     }
@@ -532,6 +536,19 @@ class FrpcStcpVisitorManager(
         }
         if (!accepted) {
             scheduleCleanup(state)
+        }
+    }
+
+    private suspend fun failEpochRefresh(
+        state: GenerationState,
+        flight: EpochRefreshFlight,
+        throwable: Throwable,
+    ) {
+        stateMutex.withLock {
+            if (isCurrentLocked(state) && state.epochRefresh === flight) {
+                state.epochRefresh = null
+                flight.completion.completeExceptionally(throwable)
+            }
         }
     }
 
@@ -798,6 +815,9 @@ private fun Throwable.isLocalPortConflict(): Boolean = causeChain().any { throwa
         throwable is KotlinFrpcStcpVisitorException &&
         throwable.failure == KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT
 }
+
+private fun Throwable.isRetryableEpochRefreshTimeout(): Boolean =
+    this is KotlinFrpcStcpVisitorException && failure == KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT
 
 private fun saturatingDeadlineMillis(startMillis: Long, timeoutMillis: Long): Long =
     if (startMillis > Long.MAX_VALUE - timeoutMillis) Long.MAX_VALUE else startMillis + timeoutMillis

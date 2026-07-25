@@ -45,6 +45,12 @@ class SyntheticOpenCodeServerTest {
                 TunnelHttpProbe.json(server.port, "/session?directory=%2Fworkspace&roots=true&limit=70") ==
                     """[{"id":"session-snapshot","directory":"/workspace","title":"snapshot-1","time":{"updated":100}}]""",
             )
+            check(
+                TunnelHttpProbe.json(
+                    server.port,
+                    "/session/session-snapshot/message?directory=%2Fworkspace&limit=200",
+                ) == "[]",
+            )
             check(server.advanceAppFixture() == 2)
             check(
                 TunnelHttpProbe.json(server.port, "/session?directory=%2Fworkspace&roots=true&limit=70") ==

@@ -68,6 +68,7 @@ internal class InteropRedactor private constructor(
             value = value.replace(sensitive, REDACTED)
         }
         value = URL_PATTERN.replace(value, REDACTED)
+        value = LOOPBACK_ENDPOINT_PATTERN.replace(value, REDACTED)
         value = KEY_VALUE_PATTERN.replace(value) { match ->
             "${match.groupValues[1]}${match.groupValues[2]}$REDACTED"
         }
@@ -84,6 +85,9 @@ internal class InteropRedactor private constructor(
         const val MAXIMUM_REDACTION_INPUT_CHARS = 16 * 1024
         const val MAXIMUM_REDACTION_OUTPUT_CHARS = 4 * 1024
         val URL_PATTERN = Regex("(?i)https?://[^\\s\\\"']+")
+        val LOOPBACK_ENDPOINT_PATTERN = Regex(
+            "(?i)(?<![a-z0-9_.-])(?:127(?:\\.\\d{1,3}){3}|localhost|\\[?::1]?):(\\d{1,5})(?!\\d)",
+        )
         val KEY_VALUE_PATTERN = Regex(
             "(?i)\\b(token|secret|password|authorization|cookie)(\\s*[:=]\\s*)([^\\s,;]+)",
         )

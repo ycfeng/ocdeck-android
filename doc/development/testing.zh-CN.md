@@ -137,6 +137,7 @@ Host summary 是严格的结构化证据，不是 task 状态的替代品。它�
 .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcAppE2eTest `
   -PrequireGoMobileBridge=true `
   "-Pocdeck.frp.appE2e.deviceSerial=<serial>" `
+  "-Pocdeck.frp.appE2e.suite=<core|lifecycle|process>" `
   "-Pocdeck.frp.appE2e.summaryFile=<new-summary-path>"
 ```
 
@@ -144,14 +145,17 @@ Host summary 是严格的结构化证据，不是 task 状态的替代品。它�
 bash frpc-stcp-visitor-go/build-aar.sh
 ./gradlew --no-daemon :frpc-stcp-visitor:frpcAppE2eTest -PrequireGoMobileBridge=true \
   "-Pocdeck.frp.appE2e.deviceSerial=<serial>" \
+  "-Pocdeck.frp.appE2e.suite=<core|lifecycle|process>" \
   "-Pocdeck.frp.appE2e.summaryFile=<new-summary-path>"
 ```
 
-只有恰好连接一台合格设备时才可省略 `ocdeck.frp.appE2e.deviceSerial`；普通本地运行不需要验收 summary 时可省略 `ocdeck.frp.appE2e.summaryFile`。Host 会准备固定版本的官方 frp 工具、仅监听 loopback 的 TLS `frps`、provider `frpc`、有界合成 OpenCode REST/SSE fixture 和一条由本次运行拥有的动态 `adb reverse`。它安装匹配设备 ABI 的 `kotlinRelease` APK 及仅 test APK 可调试的 instrumentation APK；target App 仍保持 Release-Like 且不可调试。每次运行的一次性凭据通过有界 stdin 和 `run-as` 写入 test package 私有存储，绝不进入 Gradle property、instrumentation argument、共享存储或结果证据。清理会 force-stop 并移除本次运行拥有的两个 package、私有文件、reverse mapping、进程、socket 和临时材料。
+只有恰好连接一台合格设备时才可省略 `ocdeck.frp.appE2e.deviceSerial`；省略 `ocdeck.frp.appE2e.suite` 时运行默认 `core` suite；普通本地运行不需要验收 summary 时可省略 `ocdeck.frp.appE2e.summaryFile`。`lifecycle` suite 可选传入范围为 60,000-300,000 ms 的 `ocdeck.frp.appE2e.outageMillis`，默认 120,000 ms。Host 会准备固定版本的官方 frp 工具、仅监听 loopback 的 TLS `frps`、provider `frpc`、有界合成 OpenCode REST/SSE fixture 和一条由本次运行拥有的动态 `adb reverse`。它安装匹配设备 ABI 的 `kotlinRelease` APK 及仅 test APK 可调试的 instrumentation APK；target App 仍保持 Release-Like 且不可调试。每次运行的一次性凭据通过有界 stdin 和 `run-as` 写入 test package 私有存储，绝不进入 Gradle property、instrumentation argument、共享存储或结果证据。清理会 force-stop 并移除本次运行拥有的两个 package、私有文件、reverse mapping、进程、socket、临时材料和强制 device-idle 状态。
 
-Instrumentation 使用真实 `OpenCodeApplication`/`AppContainer`、`ServerRepository`、`FrpcStcpVisitorManager`、`OpenCodeRepository`、`OpenCodeEventClient`、`InMemoryOpenCodeStore` 与 `ProjectSnapshotCoordinator`。严格的 13 项 checks 覆盖 Kotlin backend 选择、listener readiness 与应用 health、REST snapshot 写入、global/project SSE 归约到 Store、前台 reconciliation、断线期间数据保留、`frps` 重启后 visitor generation 不变且 control epoch 严格增加、第二代 snapshot/SSE 恢复、重启后前台校准、stream 关闭、visitor 关闭和 listener 端口释放。测试必须先通过真实 SSE/连接链路自动恢复，再读取最终 transport identity；不能用显式连接轮询制造通过。结构化 summary 只记录设备 API/ABI/runtime page size、固定 checks、初始/恢复 generation 与 control epoch，以及 `authorizesKotlinDefault=false`。
+Instrumentation 使用真实 `OpenCodeApplication`/`AppContainer`、`ServerRepository`、`FrpcStcpVisitorManager`、`OpenCodeRepository`、`OpenCodeEventClient`、`InMemoryOpenCodeStore` 与 `ProjectSnapshotCoordinator`。`core` suite 保留严格的 13 项 snapshot/SSE/restart/reconciliation 契约。19 项 `lifecycle` suite 还会真实驱动 `MainActivity` 多轮前后台切换，验证会话可见性和 Store 数据保留，进入并退出已确认的 deep Doze，保持跨多轮退避的断连窗口，在 provider `frpc` 尚未恢复时先让 `frps` 可用，并要求 visitor generation 不变、control epoch 严格增加后自动恢复。非终态恢复中的可重试 native readiness timeout 只让当前 refresh flight 失败，不再销毁已建立 generation，从而允许后续真实恢复安全完成。
 
-该任务目前是独立的手动/设备门禁，不属于普通 push 或 Pull Request CI。实现已在官方 Android 16KB x86_64 测试镜像和物理 `arm64-v8a` 设备上分别本地通过，当前工作树的分离设备矩阵已关闭；最终 pre-K7 证据仍要求在 clean exact-SHA 上复跑。该门禁不覆盖 Doze、真实网络切换、长时间断网、性能、资源泄漏压力、soak 或正式稳定发布周期，也绝不授权 Kotlin 默认装配。
+两阶段 `process` suite 会持久化一条 STCP server 及其 Keystore 凭据，关闭第一阶段 runtime 资源，再启动普通 target 进程、切到后台，并要求 `am kill` 清除已观测到的旧 PID；随后启动第二个 instrumentation 进程。新的 `OpenCodeApplication` 必须重新加载唯一持久化 server，重建 STCP/REST/SSE 状态，并通过显式 project/session route 后删除持久化 server、调用正常凭据清理链路。它不声称自动恢复导航，也不跨进程比较 generation/control epoch。聚合的 19 项 checks 包含 `process_terminated` 以及 prepare/recovery 契约。每份 summary 只记录 suite、`topology=adb_reverse`、`networkSwitchProven=false`、固定 checks、有界 identity 字段和 `authorizesKotlinDefault=false`；绝不记录 PID、server ID、endpoint、凭据、设备 serial 或私有路径。
+
+该任务目前是独立的手动/设备门禁，不属于普通 push 或 Pull Request CI。`core` 与 `lifecycle` suite 已在官方 Android 16KB x86_64 测试镜像和物理 `arm64-v8a` 设备上分别本地通过；`process` suite 已在物理 ARM 设备通过。最终 pre-K7 证据仍要求在 clean exact-SHA 上按适用的分离设备矩阵复跑。由于 Host 拓扑通过 `adb reverse` 访问 loopback `frps`，即使 `lifecycle` suite 也不能证明 Wi-Fi/蜂窝路由切换、DNS、NAT、VPN 或移动网络恢复；这些结论必须使用无 reverse mapping、fail-closed 的 external topology。性能、资源泄漏压力、soak 与正式稳定发布周期也仍是独立门禁，任何 suite 都不授权 Kotlin 默认装配。
 
 连接 emulator 或设备后，运行 instrumentation 测试集：
 

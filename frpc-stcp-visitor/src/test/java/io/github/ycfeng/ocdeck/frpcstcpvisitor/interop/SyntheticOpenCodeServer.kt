@@ -318,6 +318,10 @@ internal class SyntheticOpenCodeServer(
                 "roots" to "true",
                 "limit" to "70",
             )
+            "/session/session-snapshot/message" -> mapOf(
+                "directory" to APP_DIRECTORY,
+                "limit" to "200",
+            )
             else -> return
         }
         if (request.query != expected) throw SyntheticHttpException()
@@ -420,6 +424,7 @@ internal class SyntheticOpenCodeServer(
         "/session/status" -> APP_SESSION_STATUS_BODY
         "/provider", "/mcp", "/lsp", "/config" -> EMPTY_OBJECT_BODY
         "/agent", "/command", "/permission", "/question" -> EMPTY_ARRAY_BODY
+        "/session/session-snapshot/message" -> EMPTY_ARRAY_BODY
         else -> null
     }
 

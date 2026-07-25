@@ -34,6 +34,18 @@ class InteropProcessSupportTest {
     }
 
     @Test
+    fun redactorRemovesBareLoopbackEndpoints() {
+        val redacted = InteropRedactor().redact(
+            "listen=127.0.0.1:7000 provider=localhost:7001 ipv6=[::1]:7002",
+        )
+
+        assertEquals(
+            "listen=<redacted> provider=<redacted> ipv6=<redacted>",
+            redacted,
+        )
+    }
+
+    @Test
     fun oversizedDiagnosticDoesNotLeakSensitivePrefix() {
         val secret = "prefix-that-must-not-leak"
         val raw = "token=$secret " + "x".repeat(20 * 1024)
