@@ -112,6 +112,82 @@ class AppConnectionCoordinatorTest {
     }
 
     @Test
+    fun networkChangeDuringActiveCheckQueuesOneMergedFollowUp() = runTest {
+        val oldIdentity = testTransport(configEpoch = 1L, controlEpoch = 1L)
+        val newIdentity = testTransport(configEpoch = 1L, controlEpoch = 2L)
+        val firstCheckGate = CompletableDeferred<Unit>()
+        var checks = 0
+        var invalidations = 0
+        val controller = RecordingForegroundController(setOf("server"))
+        val coordinator = AppConnectionCoordinator(
+            controller = controller,
+            healthChecker = ForegroundHealthChecker {
+                checks += 1
+                if (checks == 1) {
+                    firstCheckGate.await()
+                    Result.success(oldIdentity)
+                } else {
+                    Result.success(newIdentity)
+                }
+            },
+            scope = backgroundScope,
+            defaultNetworkChangeHandler = DefaultNetworkChangeHandler { invalidations += 1 },
+        )
+
+        coordinator.onForeground()
+        runCurrent()
+        coordinator.onDefaultNetworkChanged()
+        coordinator.onDefaultNetworkChanged()
+        runCurrent()
+
+        assertEquals(1, checks)
+        assertEquals(1, invalidations)
+        firstCheckGate.complete(Unit)
+        runCurrent()
+
+        assertEquals(2, checks)
+        assertEquals(listOf("server"), controller.readyServers)
+        assertEquals(listOf(newIdentity), controller.readyIdentities)
+        assertEquals(0, coordinator.activeFlightCount())
+    }
+
+    @Test
+    fun failedNetworkRecoveryQueuesOneBoundedFollowUp() = runTest {
+        val identity = testTransport(configEpoch = 1L, controlEpoch = 2L)
+        var checks = 0
+        var invalidations = 0
+        val controller = RecordingForegroundController(setOf("server"))
+        val coordinator = AppConnectionCoordinator(
+            controller = controller,
+            healthChecker = ForegroundHealthChecker {
+                checks += 1
+                if (checks == 1) {
+                    Result.failure(FrpcStcpReadinessTimeoutException("server", IllegalStateException()))
+                } else {
+                    Result.success(identity)
+                }
+            },
+            scope = backgroundScope,
+            defaultNetworkChangeHandler = DefaultNetworkChangeHandler { invalidations += 1 },
+        )
+
+        coordinator.onDefaultNetworkChanged()
+        runCurrent()
+
+        val recovery = coordinator.captureRecoverySnapshot()
+        assertEquals(1, invalidations)
+        assertEquals(2, checks)
+        assertEquals(listOf(identity), controller.readyIdentities)
+        assertEquals(0, coordinator.activeFlightCount())
+        assertEquals(2L, recovery.serverCheckStartedCount)
+        assertEquals(1L, recovery.serverCheckFailureCount)
+        assertEquals(1L, recovery.followUpQueuedCount)
+        assertEquals(1L, recovery.followUpStartedCount)
+        assertEquals(0, recovery.activeFlightCount)
+        assertEquals(0, recovery.pendingFollowUpCount)
+    }
+
+    @Test
     fun oneServerCheckRebuildsAllDesiredSlotsWhenControlEpochChanges() = runTest {
         val oldIdentity = testTransport(configEpoch = 1L, controlEpoch = 1L)
         val newIdentity = testTransport(configEpoch = 1L, controlEpoch = 2L)
@@ -195,10 +271,12 @@ private class RecordingForegroundController(
     private val desired: Set<String>,
 ) : ForegroundConnectionController {
     val readyServers = mutableListOf<String>()
+    val readyIdentities = mutableListOf<ServerTransportIdentity>()
 
     override fun desiredServerIds(): Set<String> = desired
 
     override fun onForegroundConnectionReady(serverId: String, transportIdentity: ServerTransportIdentity) {
         readyServers += serverId
+        readyIdentities += transportIdentity
     }
 }

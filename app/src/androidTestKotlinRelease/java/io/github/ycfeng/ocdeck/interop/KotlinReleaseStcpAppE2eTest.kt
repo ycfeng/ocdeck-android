@@ -1,7 +1,10 @@
 package io.github.ycfeng.ocdeck.interop
 
 import android.app.Instrumentation
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.Process
@@ -10,6 +13,7 @@ import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.ycfeng.ocdeck.BuildConfig
 import io.github.ycfeng.ocdeck.OpenCodeApplication
+import io.github.ycfeng.ocdeck.core.network.PublicEndpointValidator
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeNotificationTarget
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
 import io.github.ycfeng.ocdeck.core.store.SessionListWindowState
@@ -18,6 +22,7 @@ import io.github.ycfeng.ocdeck.data.server.FrpcTransportProtocol
 import io.github.ycfeng.ocdeck.data.server.FrpcWireProtocol
 import io.github.ycfeng.ocdeck.data.server.NewServerFrpcStcpVisitor
 import io.github.ycfeng.ocdeck.data.server.ServerConfig
+import io.github.ycfeng.ocdeck.data.server.ServerConnection
 import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -115,6 +120,15 @@ class KotlinReleaseStcpAppE2eTest {
         var deviceIdleForced = false
 
         try {
+            if (invocation.suite == SUITE_NETWORK) {
+                updateStage(STAGE_NETWORK_INITIAL_WIFI)
+                awaitValidatedTransport(
+                    instrumentation.targetContext,
+                    NetworkCapabilities.TRANSPORT_WIFI,
+                    invocation.frpsHost,
+                )
+                checks += CHECK_INITIAL_WIFI_VALIDATED
+            }
             updateStage(STAGE_SERVER_CONFIGURATION)
             server = container.serverRepository.addServer(
                 baseUrl = "http://127.0.0.1:$bindPort/",
@@ -123,9 +137,10 @@ class KotlinReleaseStcpAppE2eTest {
                 password = null,
                 frpcStcpVisitor = NewServerFrpcStcpVisitor(
                     enabled = true,
-                    serverAddr = "127.0.0.1",
+                    serverAddr = invocation.frpsHost,
                     serverPort = invocation.frpsPort,
                     authToken = invocation.authToken,
+                    tlsServerCertificateSha256 = invocation.tlsServerCertificateSha256,
                     user = invocation.user,
                     serverUser = invocation.serverUser,
                     serverName = invocation.serverName,
@@ -180,7 +195,8 @@ class KotlinReleaseStcpAppE2eTest {
             }
             checks += CHECK_PROJECT_SSE_STORE
 
-            if (invocation.suite == SUITE_CORE) {
+            when (invocation.suite) {
+                SUITE_CORE -> {
                 updateStage(STAGE_FOREGROUND_RECONCILIATION)
                 val revisionBeforeForeground = container.openCodeStore.captureProjectDataRevision(
                     server.id,
@@ -193,7 +209,8 @@ class KotlinReleaseStcpAppE2eTest {
                         state.sessionTitle(SESSION_SNAPSHOT) == "snapshot-1"
                 }
                 checks += CHECK_FOREGROUND_RECONCILIATION
-            } else {
+                }
+                SUITE_LIFECYCLE -> {
                 updateStage(STAGE_ACTIVITY_FOREGROUND)
                 val revisionBeforeActivity = container.openCodeStore.captureProjectDataRevision(
                     server.id,
@@ -257,8 +274,26 @@ class KotlinReleaseStcpAppE2eTest {
                 awaitProject(container.openCodeStore.observeProject(server.id, PROJECT_DIRECTORY)) { state ->
                     state.activeSessionId == null && state.hasGenerationOneData()
                 }
+                }
+                SUITE_NETWORK -> Unit
+                else -> throw AppE2eAssertionException()
             }
 
+            if (invocation.suite == SUITE_NETWORK) {
+                val recovered = runNetworkSwitchScenario(
+                    instrumentation = instrumentation,
+                    invocation = invocation,
+                    container = container,
+                    server = server,
+                    initialConnection = connection,
+                    initialGeneration = initialGeneration,
+                    initialControlEpoch = initialControlEpoch,
+                    checks = checks,
+                    updateStage = updateStage,
+                )
+                recoveredGeneration = recovered.first
+                recoveredControlEpoch = recovered.second
+            } else {
             updateStage(STAGE_RESTART_DISCONNECT)
             writePrivateMarker(
                 instrumentation,
@@ -375,6 +410,7 @@ class KotlinReleaseStcpAppE2eTest {
                     (invocation.suite == SUITE_CORE || state.activeSessionId == SESSION_SNAPSHOT)
             }
             checks += CHECK_POST_RESTART_FOREGROUND
+            }
         } catch (failure: Throwable) {
             primaryFailure = failure
         }
@@ -424,8 +460,8 @@ class KotlinReleaseStcpAppE2eTest {
             recoveredGeneration = recoveredGeneration,
             recoveredControlEpoch = recoveredControlEpoch,
             suite = invocation.suite,
-            topology = TOPOLOGY_ADB_REVERSE,
-            networkSwitchProven = false,
+            topology = topologyFor(invocation.suite),
+            networkSwitchProven = invocation.suite == SUITE_NETWORK,
             phase = invocation.phase,
             processId = Process.myPid(),
         )
@@ -439,6 +475,126 @@ class KotlinReleaseStcpAppE2eTest {
         PHASE_PROCESS_PREPARE -> runProcessPrepare(invocation, checks, updateStage)
         PHASE_PROCESS_RECOVER -> runProcessRecover(invocation, checks, updateStage)
         else -> throw AppE2eAssertionException()
+    }
+
+    private suspend fun runNetworkSwitchScenario(
+        instrumentation: Instrumentation,
+        invocation: AppE2eInvocation,
+        container: io.github.ycfeng.ocdeck.app.AppContainer,
+        server: ServerConfig,
+        initialConnection: ServerConnection,
+        initialGeneration: Long,
+        initialControlEpoch: Long,
+        checks: MutableSet<String>,
+        updateStage: (String) -> Unit,
+    ): Pair<Long, Long> {
+        updateStage(STAGE_NETWORK_CELLULAR_WAIT)
+        writePrivateMarker(instrumentation, invocation.restartMarkers.deviceReadyFile)
+        awaitPrivateMarker(
+            instrumentation,
+            invocation.restartMarkers.frpsOnlyFile,
+            MARKER_NETWORK_CELLULAR_DISCONNECTED,
+        )
+        awaitValidatedTransport(
+            instrumentation.targetContext,
+            NetworkCapabilities.TRANSPORT_CELLULAR,
+            invocation.frpsHost,
+        )
+        checks += CHECK_CELLULAR_VALIDATED
+
+        updateStage(STAGE_NETWORK_CELLULAR_RETENTION)
+        awaitStreamsUnavailable(container, server.id)
+        awaitProject(container.openCodeStore.observeProject(server.id, PROJECT_DIRECTORY)) { state ->
+            state.hasGenerationOneData()
+        }
+        checks += CHECK_CELLULAR_DATA_RETAINED
+        writePrivateMarker(instrumentation, invocation.restartMarkers.deviceDisconnectedFile)
+
+        updateStage(STAGE_NETWORK_CELLULAR_RECOVERY)
+        awaitPrivateMarker(
+            instrumentation,
+            invocation.restartMarkers.frpsRestartedFile,
+            MARKER_NETWORK_CELLULAR_RECOVERED,
+        )
+        withTimeout(RECOVERY_TIMEOUT_MILLIS) {
+            container.openCodeStore.observeGlobalConnection(server.id).first { it == SseConnectionStatus.Open }
+        }
+        awaitProject(container.openCodeStore.observeProject(server.id, PROJECT_DIRECTORY)) { state ->
+            state.connectionStatus == SseConnectionStatus.Open &&
+                state.sessionTitle(SESSION_SNAPSHOT) == "snapshot-2" &&
+                state.sessionTitle(SESSION_PROJECT_SSE) == "project-sse-2"
+        }
+        val cellularConnection = container.serverRepository.getConnection(server.id)
+        val cellularGeneration = cellularConnection.stcpGeneration?.ordinal ?: throw AppE2eAssertionException()
+        val cellularControlEpoch = cellularConnection.stcpControlEpoch ?: throw AppE2eAssertionException()
+        if (cellularGeneration != initialGeneration || cellularControlEpoch <= initialControlEpoch ||
+            cellularConnection.transportIdentity.isOlderThan(initialConnection.transportIdentity)
+        ) {
+            throw AppE2eAssertionException()
+        }
+        checks += CHECK_CELLULAR_EPOCH_ADVANCED
+        checks += CHECK_CELLULAR_RECONCILIATION
+        writePrivateMarker(instrumentation, invocation.restartMarkers.providerWindowObservedFile)
+
+        updateStage(STAGE_NETWORK_WIFI_WAIT)
+        awaitPrivateMarker(
+            instrumentation,
+            invocation.restartMarkers.wifiDisconnectedFile,
+            MARKER_NETWORK_WIFI_DISCONNECTED,
+        )
+        awaitValidatedTransport(
+            instrumentation.targetContext,
+            NetworkCapabilities.TRANSPORT_WIFI,
+            invocation.frpsHost,
+        )
+        checks += CHECK_WIFI_RESTORED_VALIDATED
+
+        updateStage(STAGE_NETWORK_WIFI_RETENTION)
+        awaitStreamsUnavailable(container, server.id)
+        awaitProject(container.openCodeStore.observeProject(server.id, PROJECT_DIRECTORY)) { state ->
+            state.hasGenerationTwoData()
+        }
+        checks += CHECK_WIFI_RETURN_DATA_RETAINED
+        writePrivateMarker(instrumentation, invocation.restartMarkers.wifiRetentionObservedFile)
+
+        updateStage(STAGE_NETWORK_WIFI_RECOVERY)
+        awaitPrivateMarker(
+            instrumentation,
+            invocation.restartMarkers.wifiRecoveredFile,
+            MARKER_NETWORK_WIFI_RECOVERED,
+        )
+        withTimeout(RECOVERY_TIMEOUT_MILLIS) {
+            container.openCodeStore.observeGlobalConnection(server.id).first { it == SseConnectionStatus.Open }
+        }
+        awaitProject(container.openCodeStore.observeProject(server.id, PROJECT_DIRECTORY)) { state ->
+            state.connectionStatus == SseConnectionStatus.Open &&
+                state.sessionTitle(SESSION_SNAPSHOT) == "snapshot-3" &&
+                state.sessionTitle(SESSION_PROJECT_SSE) == "project-sse-3"
+        }
+        val wifiConnection = container.serverRepository.getConnection(server.id)
+        val wifiGeneration = wifiConnection.stcpGeneration?.ordinal ?: throw AppE2eAssertionException()
+        val wifiControlEpoch = wifiConnection.stcpControlEpoch ?: throw AppE2eAssertionException()
+        if (wifiGeneration != initialGeneration || wifiControlEpoch <= cellularControlEpoch ||
+            wifiConnection.transportIdentity.isOlderThan(cellularConnection.transportIdentity)
+        ) {
+            throw AppE2eAssertionException()
+        }
+        checks += CHECK_WIFI_RETURN_EPOCH_ADVANCED
+        checks += CHECK_WIFI_RETURN_RECONCILIATION
+        writePrivateMarker(instrumentation, invocation.restartMarkers.wifiRecoveryObservedFile)
+        return wifiGeneration to wifiControlEpoch
+    }
+
+    private suspend fun awaitStreamsUnavailable(
+        container: io.github.ycfeng.ocdeck.app.AppContainer,
+        serverId: String,
+    ) {
+        withTimeout(RECOVERY_TIMEOUT_MILLIS) {
+            container.openCodeStore.observeGlobalConnection(serverId).first { it != SseConnectionStatus.Open }
+        }
+        awaitProject(container.openCodeStore.observeProject(serverId, PROJECT_DIRECTORY)) { state ->
+            state.connectionStatus != SseConnectionStatus.Open
+        }
     }
 
     private suspend fun runProcessPrepare(
@@ -470,9 +626,10 @@ class KotlinReleaseStcpAppE2eTest {
                 password = null,
                 frpcStcpVisitor = NewServerFrpcStcpVisitor(
                     enabled = true,
-                    serverAddr = "127.0.0.1",
+                    serverAddr = invocation.frpsHost,
                     serverPort = invocation.frpsPort,
                     authToken = invocation.authToken,
+                    tlsServerCertificateSha256 = invocation.tlsServerCertificateSha256,
                     user = invocation.user,
                     serverUser = invocation.serverUser,
                     serverName = invocation.serverName,
@@ -781,6 +938,51 @@ class KotlinReleaseStcpAppE2eTest {
         sessionTitle(SESSION_SNAPSHOT) == "snapshot-2" &&
             sessionTitle(SESSION_PROJECT_SSE) == "project-sse-2"
 
+    private fun OpenCodeProjectState.hasRequiredFixtureData(): Boolean =
+        sessionTitle(SESSION_SNAPSHOT) != null &&
+            sessionTitle(SESSION_GLOBAL_SSE) != null &&
+            sessionTitle(SESSION_PROJECT_SSE) != null
+
+    private suspend fun awaitValidatedTransport(
+        context: Context,
+        transport: Int,
+        externalHost: String? = null,
+    ) =
+        withTimeout(NETWORK_TRANSPORT_TIMEOUT_MILLIS) {
+            val connectivity = context.getSystemService(ConnectivityManager::class.java)
+                ?: throw AppE2eAssertionException()
+            val opposite = if (transport == NetworkCapabilities.TRANSPORT_WIFI) {
+                NetworkCapabilities.TRANSPORT_CELLULAR
+            } else {
+                NetworkCapabilities.TRANSPORT_WIFI
+            }
+            while (true) {
+                val network = connectivity.activeNetwork
+                val capabilities = network?.let(connectivity::getNetworkCapabilities)
+                if (capabilities != null &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                    capabilities.hasTransport(transport) &&
+                    !capabilities.hasTransport(opposite)
+                ) {
+                    externalHost?.let { requirePublicResolution(network, it) }
+                    return@withTimeout
+                }
+                delay(MARKER_POLL_MILLIS)
+            }
+        }
+
+    private fun requirePublicResolution(network: android.net.Network, host: String) {
+        if (!PublicEndpointValidator.isValidPublicEndpointSyntax(host)) throw AppE2eAssertionException()
+        if (IPV4_LITERAL.matches(host) || ':' in host) return
+        val addresses = try {
+            network.getAllByName(host)
+        } catch (_: Exception) {
+            throw AppE2eAssertionException()
+        }
+        if (!PublicEndpointValidator.areAllResolvedAddressesPublic(addresses)) throw AppE2eAssertionException()
+    }
+
     private fun launchMainActivity(instrumentation: Instrumentation, serverId: String) {
         val intent = Intent().apply {
             setClassName(TARGET_PACKAGE, MAIN_ACTIVITY_CLASS)
@@ -820,10 +1022,11 @@ class KotlinReleaseStcpAppE2eTest {
 
     private fun validateInvocation(invocation: AppE2eInvocation, runId: String) {
         if (invocation.schemaVersion != SCHEMA_VERSION || invocation.runId != runId ||
-            invocation.suite !in setOf(SUITE_CORE, SUITE_LIFECYCLE, SUITE_PROCESS) ||
+            invocation.suite !in setOf(SUITE_CORE, SUITE_LIFECYCLE, SUITE_PROCESS, SUITE_NETWORK) ||
             !isValidPhase(invocation.suite, invocation.phase) ||
-            invocation.outageMillis !in MINIMUM_OUTAGE_MILLIS..MAXIMUM_OUTAGE_MILLIS ||
-            invocation.frpsPort !in 1..65_535 || invocation.authToken.isBlank() ||
+            !isValidOutage(invocation.suite, invocation.outageMillis) ||
+            invocation.frpsHost.isBlank() || invocation.frpsPort !in 1..65_535 || invocation.authToken.isBlank() ||
+            !isValidTlsCertificatePin(invocation.suite, invocation.tlsServerCertificateSha256) ||
             invocation.user.isBlank() || invocation.serverUser.isBlank() ||
             invocation.serverName.isBlank() || invocation.secretKey.isBlank()
         ) {
@@ -938,7 +1141,7 @@ class KotlinReleaseStcpAppE2eTest {
         val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val SAFE_RUN_ID = Regex("[a-z0-9][a-z0-9-]{0,63}")
         val SAFE_FILE_NAME = Regex("[a-z0-9][a-z0-9._-]{0,127}")
-        const val SCHEMA_VERSION = 3
+        const val SCHEMA_VERSION = 5
         const val ARG_ENABLED = "ocdeck.appE2e.enabled"
         const val ARG_RUN_ID = "ocdeck.appE2e.runId"
         const val ARG_CONFIG_FILE = "ocdeck.appE2e.configFile"
@@ -949,10 +1152,12 @@ class KotlinReleaseStcpAppE2eTest {
         const val SUITE_CORE = "core"
         const val SUITE_LIFECYCLE = "lifecycle"
         const val SUITE_PROCESS = "process"
+        const val SUITE_NETWORK = "network"
         const val PHASE_SINGLE = "single"
         const val PHASE_PROCESS_PREPARE = "process_prepare"
         const val PHASE_PROCESS_RECOVER = "process_recover"
         const val TOPOLOGY_ADB_REVERSE = "adb_reverse"
+        const val TOPOLOGY_EXTERNAL = "external"
         const val PROJECT_DIRECTORY = "/workspace"
         const val SESSION_SNAPSHOT = "session-snapshot"
         const val SESSION_GLOBAL_SSE = "session-global-sse"
@@ -998,6 +1203,13 @@ class KotlinReleaseStcpAppE2eTest {
         const val STAGE_PROCESS_RESTORED_SNAPSHOT = "process_restored_snapshot"
         const val STAGE_PROCESS_RESTORED_STREAMS = "process_restored_streams"
         const val STAGE_PROCESS_RESTORED_ACTIVITY = "process_restored_activity"
+        const val STAGE_NETWORK_INITIAL_WIFI = "network_initial_wifi"
+        const val STAGE_NETWORK_CELLULAR_WAIT = "network_cellular_wait"
+        const val STAGE_NETWORK_CELLULAR_RETENTION = "network_cellular_retention"
+        const val STAGE_NETWORK_CELLULAR_RECOVERY = "network_cellular_recovery"
+        const val STAGE_NETWORK_WIFI_WAIT = "network_wifi_wait"
+        const val STAGE_NETWORK_WIFI_RETENTION = "network_wifi_retention"
+        const val STAGE_NETWORK_WIFI_RECOVERY = "network_wifi_recovery"
         const val CHECK_KOTLIN_BACKEND = "kotlin_backend"
         const val CHECK_STCP_READY = "stcp_ready"
         const val CHECK_SNAPSHOT_STORE = "snapshot_store"
@@ -1028,6 +1240,15 @@ class KotlinReleaseStcpAppE2eTest {
         const val CHECK_STREAMS_RESTORED = "streams_restored"
         const val CHECK_ACTIVITY_ROUTE_RESTORED = "activity_route_restored"
         const val CHECK_SERVER_DELETED = "server_deleted"
+        const val CHECK_INITIAL_WIFI_VALIDATED = "initial_wifi_validated"
+        const val CHECK_CELLULAR_VALIDATED = "cellular_validated"
+        const val CHECK_CELLULAR_DATA_RETAINED = "cellular_data_retained"
+        const val CHECK_CELLULAR_EPOCH_ADVANCED = "cellular_epoch_advanced"
+        const val CHECK_CELLULAR_RECONCILIATION = "cellular_reconciliation"
+        const val CHECK_WIFI_RESTORED_VALIDATED = "wifi_restored_validated"
+        const val CHECK_WIFI_RETURN_DATA_RETAINED = "wifi_return_data_retained"
+        const val CHECK_WIFI_RETURN_EPOCH_ADVANCED = "wifi_return_epoch_advanced"
+        const val CHECK_WIFI_RETURN_RECONCILIATION = "wifi_return_reconciliation"
         val CORE_EXPECTED_CHECKS = linkedSetOf(
             CHECK_KOTLIN_BACKEND,
             CHECK_STCP_READY,
@@ -1086,16 +1307,47 @@ class KotlinReleaseStcpAppE2eTest {
             CHECK_VISITOR_CLOSED,
             CHECK_PORT_RELEASED,
         )
+        val NETWORK_EXPECTED_CHECKS = linkedSetOf(
+            CHECK_KOTLIN_BACKEND,
+            CHECK_INITIAL_WIFI_VALIDATED,
+            CHECK_STCP_READY,
+            CHECK_SNAPSHOT_STORE,
+            CHECK_GLOBAL_SSE_STORE,
+            CHECK_PROJECT_SSE_STORE,
+            CHECK_CELLULAR_VALIDATED,
+            CHECK_CELLULAR_DATA_RETAINED,
+            CHECK_CELLULAR_EPOCH_ADVANCED,
+            CHECK_CELLULAR_RECONCILIATION,
+            CHECK_WIFI_RESTORED_VALIDATED,
+            CHECK_WIFI_RETURN_DATA_RETAINED,
+            CHECK_WIFI_RETURN_EPOCH_ADVANCED,
+            CHECK_WIFI_RETURN_RECONCILIATION,
+            CHECK_STREAMS_CLOSED,
+            CHECK_VISITOR_CLOSED,
+            CHECK_PORT_RELEASED,
+        )
         fun expectedChecks(suite: String): Set<String> = when (suite) {
             SUITE_CORE -> CORE_EXPECTED_CHECKS
             SUITE_LIFECYCLE -> LIFECYCLE_EXPECTED_CHECKS
+            SUITE_NETWORK -> NETWORK_EXPECTED_CHECKS
             else -> throw AppE2eAssertionException()
         }
         fun isValidPhase(suite: String, phase: String): Boolean = when (suite) {
-            SUITE_CORE, SUITE_LIFECYCLE -> phase == PHASE_SINGLE
+            SUITE_CORE, SUITE_LIFECYCLE, SUITE_NETWORK -> phase == PHASE_SINGLE
             SUITE_PROCESS -> phase in setOf(PHASE_PROCESS_PREPARE, PHASE_PROCESS_RECOVER)
             else -> false
         }
+        fun isValidOutage(suite: String, outageMillis: Long): Boolean =
+            if (suite == SUITE_NETWORK) outageMillis == 0L
+            else outageMillis in MINIMUM_OUTAGE_MILLIS..MAXIMUM_OUTAGE_MILLIS
+
+        fun topologyFor(suite: String): String =
+            if (suite == SUITE_NETWORK) TOPOLOGY_EXTERNAL else TOPOLOGY_ADB_REVERSE
+        fun isValidTlsCertificatePin(suite: String, pin: String?): Boolean =
+            if (suite == SUITE_NETWORK) pin != null && TLS_SERVER_CERTIFICATE_SHA256.matches(pin)
+            else pin == null
+        val TLS_SERVER_CERTIFICATE_SHA256 = Regex("[0-9a-f]{64}")
+        val IPV4_LITERAL = Regex("(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}")
         const val MAXIMUM_JSON_BYTES = 64 * 1024
         const val JSON_BUFFER_BYTES = 8 * 1024
         const val SCENARIO_TIMEOUT_MILLIS = 600_000L
@@ -1107,6 +1359,10 @@ class KotlinReleaseStcpAppE2eTest {
         const val PORT_RELEASE_POLL_MILLIS = 100L
         const val MARKER_FRPS_RESTARTED = "frps_restarted"
         const val MARKER_FRPS_ONLY = "frps_only"
+        const val MARKER_NETWORK_CELLULAR_DISCONNECTED = "network_cellular_disconnected"
+        const val MARKER_NETWORK_CELLULAR_RECOVERED = "network_cellular_recovered"
+        const val MARKER_NETWORK_WIFI_DISCONNECTED = "network_wifi_disconnected"
+        const val MARKER_NETWORK_WIFI_RECOVERED = "network_wifi_recovered"
         const val DEVICE_IDLE = "IDLE"
         const val DEVICE_ACTIVE = "ACTIVE"
         const val DEVICE_IDLE_TIMEOUT_MILLIS = 30_000L
@@ -1115,6 +1371,7 @@ class KotlinReleaseStcpAppE2eTest {
         const val LIFECYCLE_CYCLE_COUNT = 3
         const val MINIMUM_OUTAGE_MILLIS = 60_000L
         const val MAXIMUM_OUTAGE_MILLIS = 300_000L
+        const val NETWORK_TRANSPORT_TIMEOUT_MILLIS = 90_000L
     }
 }
 
@@ -1125,8 +1382,10 @@ private data class AppE2eInvocation(
     val suite: String,
     val phase: String,
     val outageMillis: Long,
+    val frpsHost: String,
     val frpsPort: Int,
     val authToken: String,
+    val tlsServerCertificateSha256: String?,
     val user: String,
     val serverUser: String,
     val serverName: String,
@@ -1135,8 +1394,10 @@ private data class AppE2eInvocation(
 ) {
     override fun toString(): String =
         "AppE2eInvocation(schemaVersion=$schemaVersion, runId=<redacted>, suite=$suite, phase=$phase, " +
-            "outageMillis=$outageMillis, frpsPort=$frpsPort, " +
-            "authToken=<redacted>, user=<redacted>, serverUser=<redacted>, " +
+            "outageMillis=$outageMillis, frpsHost=<redacted>, frpsPort=$frpsPort, " +
+            "authToken=<redacted>, tlsServerCertificateSha256=" +
+            "${if (tlsServerCertificateSha256 == null) "null" else "<redacted>"}, " +
+            "user=<redacted>, serverUser=<redacted>, " +
             "serverName=<redacted>, secretKey=<redacted>)"
 }
 
@@ -1147,6 +1408,10 @@ private data class AppE2eRestartMarkers(
     val frpsOnlyFile: String,
     val providerWindowObservedFile: String,
     val frpsRestartedFile: String,
+    val wifiDisconnectedFile: String,
+    val wifiRetentionObservedFile: String,
+    val wifiRecoveredFile: String,
+    val wifiRecoveryObservedFile: String,
 ) {
     val allFiles: List<String>
         get() = listOf(
@@ -1155,6 +1420,10 @@ private data class AppE2eRestartMarkers(
             frpsOnlyFile,
             providerWindowObservedFile,
             frpsRestartedFile,
+            wifiDisconnectedFile,
+            wifiRetentionObservedFile,
+            wifiRecoveredFile,
+            wifiRecoveryObservedFile,
         )
 
     override fun toString(): String = "AppE2eRestartMarkers(configured=true)"

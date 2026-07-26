@@ -6,6 +6,7 @@ import io.github.ycfeng.ocdeck.data.server.NewServerSshTunnel
 import io.github.ycfeng.ocdeck.data.server.ServerConfig
 import io.github.ycfeng.ocdeck.data.server.ServerConfigMutationOutcomeUnknownException
 import io.github.ycfeng.ocdeck.data.server.ServerEditorRepository
+import io.github.ycfeng.ocdeck.data.server.ServerFrpcStcpVisitorConfig
 import io.github.ycfeng.ocdeck.data.server.ServerSshTunnelConfig
 import io.github.ycfeng.ocdeck.data.server.SshHostKeyPolicy
 import io.github.ycfeng.ocdeck.ui.text.UiText
@@ -346,6 +347,109 @@ class AddServerViewModelTest {
     }
 
     @Test
+    fun stcpTlsCertificatePinRequiresLowercaseSha256() {
+        val repository = RecordingServerEditorRepository()
+        val viewModel = AddServerViewModel(repository)
+        viewModel.onConnectionModeChanged(ServerConnectionMode.FrpcStcp)
+        viewModel.onFrpcServerAddrChanged("frps.example.com")
+        viewModel.onFrpcServerNameChanged("opencode")
+        viewModel.onFrpcSecretKeyChanged("synthetic-stcp-secret")
+        viewModel.onFrpcTlsServerCertificateSha256Changed("A".repeat(64))
+
+        viewModel.save()
+
+        assertEquals(0, repository.addCalls)
+        assertEquals(
+            UiText.Resource(R.string.server_error_frpc_tls_certificate_pin_invalid),
+            viewModel.uiState.value.error,
+        )
+    }
+
+    @Test
+    fun validStcpTlsCertificatePinIsPassedToRepositoryWithoutAppearingInStateSummary() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        try {
+            val repository = RecordingServerEditorRepository()
+            val viewModel = AddServerViewModel(repository)
+            val pin = "ab".repeat(32)
+            viewModel.onConnectionModeChanged(ServerConnectionMode.FrpcStcp)
+            viewModel.onFrpcServerAddrChanged("frps.example.com")
+            viewModel.onFrpcServerNameChanged("opencode")
+            viewModel.onFrpcSecretKeyChanged("synthetic-stcp-secret")
+            viewModel.onFrpcTlsServerCertificateSha256Changed(pin)
+
+            viewModel.save()
+            runCurrent()
+
+            assertEquals(pin, repository.lastFrpcStcpVisitor?.tlsServerCertificateSha256)
+            assertFalse(viewModel.uiState.value.toString().contains(pin))
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun editLoadsSavedStcpTlsCertificatePinAsMaskedPresenceOnly() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        try {
+            val server = ServerConfig(
+                id = "server-1",
+                name = "Remote",
+                baseUrl = "http://127.0.0.1:4096",
+                frpcStcpVisitor = ServerFrpcStcpVisitorConfig(
+                    serverAddr = "frps.example.com",
+                    serverName = "opencode",
+                    secretKeyKey = "secret-alias",
+                    tlsServerCertificateSha256Key = "pin-alias",
+                ),
+            )
+            val viewModel = AddServerViewModel(RecordingServerEditorRepository(server), server.id)
+            runCurrent()
+
+            assertEquals("", viewModel.uiState.value.frpcTlsServerCertificateSha256)
+            assertTrue(viewModel.uiState.value.hasSavedFrpcTlsServerCertificateSha256)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun changingStcpEndpointRequiresANewSavedCertificatePin() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        try {
+            val server = ServerConfig(
+                id = "server-1",
+                name = "Remote",
+                baseUrl = "http://127.0.0.1:4096",
+                frpcStcpVisitor = ServerFrpcStcpVisitorConfig(
+                    serverAddr = "frps.example.com",
+                    serverPort = 7000,
+                    serverName = "opencode",
+                    secretKeyKey = "secret-alias",
+                    tlsServerCertificateSha256Key = "pin-alias",
+                ),
+            )
+            val repository = RecordingServerEditorRepository(server)
+            val viewModel = AddServerViewModel(repository, server.id)
+            runCurrent()
+
+            viewModel.onFrpcServerAddrChanged("new-frps.example.com")
+            viewModel.save()
+
+            assertEquals(
+                UiText.Resource(R.string.server_error_frpc_tls_certificate_pin_required_for_changed_endpoint),
+                viewModel.uiState.value.error,
+            )
+            assertEquals(0, repository.updateCalls)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
     fun unknownSaveOutcomeUsesDedicatedLocalizedError() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(dispatcher)
@@ -406,6 +510,7 @@ private class RecordingServerEditorRepository(
     var addCalls = 0
     var updateCalls = 0
     var lastPassword: String? = null
+    var lastFrpcStcpVisitor: NewServerFrpcStcpVisitor? = null
 
     override suspend fun getServer(serverId: String): ServerConfig = requireNotNull(server)
 
@@ -419,6 +524,7 @@ private class RecordingServerEditorRepository(
     ): ServerConfig {
         addCalls += 1
         lastPassword = password
+        lastFrpcStcpVisitor = frpcStcpVisitor
         return ServerConfig(
             id = "server-$addCalls",
             name = name,
@@ -438,6 +544,7 @@ private class RecordingServerEditorRepository(
     ): ServerConfig {
         updateCalls += 1
         lastPassword = password
+        lastFrpcStcpVisitor = frpcStcpVisitor
         return requireNotNull(server)
     }
 }

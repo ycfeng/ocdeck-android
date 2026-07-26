@@ -4,7 +4,9 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.compression.FrpSnappyFra
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.compression.FrpSnappyFramedOutputStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpClientStreamLease
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlConfig
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlIdentity
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlReconnectDiagnostics
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpUnixTimeSource
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpWireProtocol
@@ -939,7 +941,32 @@ class KotlinFrpcStcpVisitorClientTest {
             control.retry(attempt = 1)
             waitUntil { client.getState(sessionId).phase == "reconnecting" }
             val reconnecting = client.getState(sessionId)
+            assertEquals("transport failed", reconnecting.lastError)
             assertEquals("pending", reconnecting.visitors.getValue("visitor").phase)
+
+            control.establishmentFailure = FrpControlFailure.RECONNECT_WAITING_LOGIN
+            control.retry(attempt = 1)
+            assertEquals("control reconnect waiting login", client.getState(sessionId).lastError)
+            control.reconnectDiagnostics = FrpControlReconnectDiagnostics(
+                establishAttemptCount = 1L,
+                loginTimerScheduledCount = 1L,
+                currentAttempt = 1L,
+                loginTimerScheduledAttempt = 1L,
+            )
+            assertEquals("control reconnect login timer scheduled", client.getState(sessionId).lastError)
+            control.reconnectDiagnostics = control.reconnectDiagnostics.copy(
+                loginTimerFiredCount = 1L,
+                loginTimerFiredAttempt = 1L,
+            )
+            assertEquals("control reconnect login timer fired", client.getState(sessionId).lastError)
+            control.retry(attempt = 2, failure = FrpControlFailure.YAMUX_TRANSPORT_FAILED)
+            assertEquals("yamux transport failed", client.getState(sessionId).lastError)
+            control.establishmentFailure = FrpControlFailure.RECONNECT_WAITING_LOGIN_AFTER_TIMEOUT
+            assertEquals(
+                "control reconnect waiting login after timeout",
+                client.getState(sessionId).lastError,
+            )
+            control.establishmentFailure = null
 
             control.open(epoch = 2L, transport = 2L)
             listenerFactory.takeBinding()
@@ -956,6 +983,36 @@ class KotlinFrpcStcpVisitorClientTest {
             releaseBind.complete(Unit)
             stopRelease.complete(Unit)
             control.releaseStop()
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun defaultNetworkChangeInvalidatesEveryOpenControl() = runBlocking {
+        val controlFactory = FakeControlFactory()
+        val sessionSequence = AtomicInteger(0)
+        val parentScope = newParentScope()
+        val client = newClient(
+            parentScope,
+            controlFactory,
+            FakeListenerFactory(),
+            sessionIdSource = FrpSessionIdSource { "network-change-${sessionSequence.incrementAndGet()}" },
+        )
+        val firstSession = client.startSession(sessionConfig())
+        val secondSession = client.startSession(sessionConfig())
+        val controls = controlFactory.snapshot()
+        try {
+            controls[0].open(epoch = 1L, transport = 1L)
+            controls[1].open(epoch = 1L, transport = 1L)
+
+            client.reconnectAfterDefaultNetworkChange()
+
+            assertEquals(listOf(1, 1), controls.map { it.invalidateCount.get() })
+            assertEquals("reconnecting", client.getState(firstSession).phase)
+            assertEquals("reconnecting", client.getState(secondSession).phase)
+        } finally {
+            controls.forEach(FakeSessionControl::releaseStop)
             client.close()
             parentScope.cancel()
         }
@@ -2256,23 +2313,40 @@ private class FakeSessionControl(
     private val stopped = CompletableDeferred<Unit>()
     private val closed = AtomicBoolean(false)
     val closeCount = AtomicInteger(0)
+    val invalidateCount = AtomicInteger(0)
     val closeCalled = CompletableDeferred<Unit>()
+    var establishmentFailure: FrpControlFailure? = null
+    var reconnectDiagnostics = FrpControlReconnectDiagnostics()
 
     override val state: StateFlow<FrpControlState> = mutableState
 
     override fun start() = Unit
+
+    override fun invalidateTransport(): FrpControlIdentity? {
+        val identity = (mutableState.value as? FrpControlState.Open)?.identity ?: return null
+        invalidateCount.incrementAndGet()
+        retry(attempt = 1)
+        return identity
+    }
+
+    override fun reconnectEstablishmentFailure(): FrpControlFailure? = establishmentFailure
+
+    override fun reconnectDiagnostics(): FrpControlReconnectDiagnostics = reconnectDiagnostics
 
     fun open(epoch: Long, transport: Long): FrpControlIdentity =
         FrpControlIdentity(generation, epoch, transport).also { identity ->
             mutableState.value = FrpControlState.Open(identity)
         }
 
-    fun retry(attempt: Int) {
+    fun retry(
+        attempt: Int,
+        failure: FrpControlFailure = FrpControlFailure.TRANSPORT_FAILED,
+    ) {
         mutableState.value = FrpControlState.Retrying(
             generation = generation,
             attempt = attempt,
             delayMillis = 100L,
-            failure = io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlFailure.TRANSPORT_FAILED,
+            failure = failure,
         )
     }
 

@@ -27,6 +27,9 @@ class GoMobileFrpcStcpVisitorClient private constructor(
     ) : this(json, bridge)
 
     override suspend fun startSession(config: FrpcSessionConfig): String = withContext(Dispatchers.IO) {
+        require(config.tlsServerCertificateSha256 == null) {
+            "GoMobile STCP does not support a pinned TLS server certificate"
+        }
         bridge.startSession(json.encodeToString(config))
     }
 

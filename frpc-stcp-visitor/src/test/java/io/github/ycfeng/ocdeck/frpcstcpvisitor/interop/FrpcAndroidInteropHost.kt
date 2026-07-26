@@ -30,6 +30,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+private val APP_E2E_TLS_CERTIFICATE_PIN = Regex("[0-9a-f]{64}")
+
 @Serializable
 internal data class AndroidInteropScenario(
     val kind: String,
@@ -49,6 +51,9 @@ internal fun resolveAndroidRuntimePageSize(
         "Android device page size failed with adb exit code ${getconfResult.exitCode}",
     )
 }
+
+internal fun isValidAppE2eTlsCertificatePin(suite: String, pin: String?): Boolean =
+    if (suite == "network") pin?.matches(APP_E2E_TLS_CERTIFICATE_PIN) == true else pin == null
 
 @Serializable
 internal data class AndroidInteropRestartMarkers(
@@ -169,8 +174,10 @@ private data class AppE2eInvocation(
     val suite: String,
     val phase: String,
     val outageMillis: Long,
+    val frpsHost: String,
     val frpsPort: Int,
     val authToken: String,
+    val tlsServerCertificateSha256: String?,
     val user: String,
     val serverUser: String,
     val serverName: String,
@@ -179,8 +186,10 @@ private data class AppE2eInvocation(
 ) {
     override fun toString(): String =
         "AppE2eInvocation(schemaVersion=$schemaVersion, runId=<redacted>, suite=$suite, phase=$phase, " +
-            "outageMillis=$outageMillis, frpsPort=$frpsPort, " +
-            "authToken=<redacted>, user=<redacted>, serverUser=<redacted>, " +
+            "outageMillis=$outageMillis, frpsHost=<redacted>, frpsPort=$frpsPort, " +
+            "authToken=<redacted>, tlsServerCertificateSha256=" +
+            "${if (tlsServerCertificateSha256 == null) "null" else "<redacted>"}, " +
+            "user=<redacted>, serverUser=<redacted>, " +
             "serverName=<redacted>, secretKey=<redacted>)"
 }
 
@@ -191,6 +200,10 @@ private data class AppE2eRestartMarkers(
     val frpsOnlyFile: String,
     val providerWindowObservedFile: String,
     val frpsRestartedFile: String,
+    val wifiDisconnectedFile: String,
+    val wifiRetentionObservedFile: String,
+    val wifiRecoveredFile: String,
+    val wifiRecoveryObservedFile: String,
 ) {
     val allFiles: List<String>
         get() = listOf(
@@ -199,6 +212,10 @@ private data class AppE2eRestartMarkers(
             frpsOnlyFile,
             providerWindowObservedFile,
             frpsRestartedFile,
+            wifiDisconnectedFile,
+            wifiRetentionObservedFile,
+            wifiRecoveredFile,
+            wifiRecoveryObservedFile,
         )
 
     override fun toString(): String = "AppE2eRestartMarkers(configured=true)"
@@ -775,7 +792,6 @@ private class FrpcAndroidInteropRunner {
             val adb = AdbCommandRunner(adbExecutable, serial, redactor)
             resources.configureAdb(adb)
             val device = readDeviceMetadata(adb)
-
             stage = "instrumentation package preflight"
             requirePackageAbsent(adb)
 
@@ -919,12 +935,20 @@ private class FrpcAndroidInteropRunner {
             val summaryFile = configuredAppE2eSummaryFile()
             val suite = configuredAppE2eSuite()
             val outageMillis = configuredAppE2eOutageMillis(suite)
+            stage = "App E2E external configuration"
+            val externalConfig = configuredAppE2eExternalConfig(suite)
             val secrets = AndroidInteropSecrets.create(secureRandom)
+            val authToken = externalConfig?.authToken ?: secrets.authToken
             redactor = InteropRedactor(
                 temporaryDirectory.toString(),
                 cacheDirectory.toString(),
-                secrets.authToken,
+                authToken,
                 secrets.stcpSecret,
+                externalConfig?.frpsHost.orEmpty(),
+                externalConfig?.tlsServerCertificateSha256.orEmpty(),
+                externalConfig?.tlsTrustedCaCertificatePem.orEmpty(),
+                System.getenv(APP_E2E_EXTERNAL_CONFIG_FILE_ENVIRONMENT).orEmpty(),
+                System.getProperty(APP_E2E_DEVICE_SERIAL_PROPERTY).orEmpty(),
             )
 
             stage = "App E2E official frp provisioning"
@@ -932,31 +956,56 @@ private class FrpcAndroidInteropRunner {
 
             stage = "App E2E synthetic OpenCode server startup"
             val syntheticServer = resources.createSyntheticServer()
-            val frpsPort = allocateLoopbackPort()
-            val frpsConfig = temporaryDirectory.resolve("frps-app-e2e.toml")
+            val frpsHost = externalConfig?.frpsHost ?: IPV4_LOOPBACK_TEXT
+            val frpsPort = externalConfig?.frpsPort ?: allocateLoopbackPort()
             val providerConfig = temporaryDirectory.resolve("frpc-provider-app-e2e.toml")
-            stage = "App E2E temporary TLS material creation"
-            val tlsMaterial = InteropTlsMaterial.create(temporaryDirectory, secureRandom)
-            writePrivateFile(frpsConfig, frpsToml(frpsPort, secrets.authToken, tlsMaterial))
+            val providerTrustedCaFile = externalConfig?.let { config ->
+                val path = temporaryDirectory.resolve("frpc-provider-app-e2e-ca.pem")
+                val bytes = appE2eTrustedCaCertificateBytes(config)
+                try {
+                    writePrivateFile(path, bytes)
+                } finally {
+                    bytes.fill(0)
+                }
+                path
+            }
             writePrivateFile(
                 providerConfig,
-                providerToml(frpsPort, syntheticServer.port, secrets.authToken, secrets.stcpSecret),
+                providerToml(
+                    frpsPort = frpsPort,
+                    syntheticPort = syntheticServer.port,
+                    authToken = authToken,
+                    stcpSecret = secrets.stcpSecret,
+                    frpsHost = frpsHost,
+                    trustedCaFile = providerTrustedCaFile,
+                ),
             )
             redactor = redactor.including(
                 binaries.frpc.toString(),
-                binaries.frps.toString(),
-                frpsConfig.toString(),
                 providerConfig.toString(),
-                tlsMaterial.certificatePath.toString(),
-                tlsMaterial.privateKeyPath.toString(),
+                providerTrustedCaFile?.toString().orEmpty(),
             )
-            val frpsLaunch = AndroidInteropProcessLaunch(
-                label = "app-e2e-frps",
-                executable = binaries.frps,
-                arguments = listOf("-c", frpsConfig.toString()),
-                workingDirectory = temporaryDirectory,
-                redactor = redactor,
-            )
+            val frpsLaunch = if (externalConfig == null) {
+                stage = "App E2E temporary TLS material creation"
+                val frpsConfig = temporaryDirectory.resolve("frps-app-e2e.toml")
+                val tlsMaterial = InteropTlsMaterial.create(temporaryDirectory, secureRandom)
+                writePrivateFile(frpsConfig, frpsToml(frpsPort, authToken, tlsMaterial))
+                redactor = redactor.including(
+                    binaries.frps.toString(),
+                    frpsConfig.toString(),
+                    tlsMaterial.certificatePath.toString(),
+                    tlsMaterial.privateKeyPath.toString(),
+                )
+                AndroidInteropProcessLaunch(
+                    label = "app-e2e-frps",
+                    executable = binaries.frps,
+                    arguments = listOf("-c", frpsConfig.toString()),
+                    workingDirectory = temporaryDirectory,
+                    redactor = redactor,
+                )
+            } else {
+                null
+            }
             val providerLaunch = AndroidInteropProcessLaunch(
                 label = "app-e2e-provider-frpc",
                 executable = binaries.frpc,
@@ -965,9 +1014,11 @@ private class FrpcAndroidInteropRunner {
                 redactor = redactor,
             )
 
-            stage = "App E2E frps startup"
-            val frps = resources.startFrps(frpsLaunch::start)
-            awaitFrpsReady(frpsPort, frps)
+            frpsLaunch?.let { launch ->
+                stage = "App E2E frps startup"
+                val frps = resources.startFrps(launch::start)
+                awaitFrpsReady(frpsPort, frps)
+            }
 
             stage = "App E2E provider frpc startup"
             val provider = resources.startProvider(providerLaunch::start)
@@ -980,6 +1031,11 @@ private class FrpcAndroidInteropRunner {
             val adb = AdbCommandRunner(adbExecutable, serial, redactor)
             resources.configureAdb(adb)
             val device = readDeviceMetadata(adb)
+            if (suite == APP_E2E_SUITE_NETWORK) {
+                stage = "App E2E external network preflight"
+                requireExternalNetworkDevice(adb, device.abi)
+                resources.registerNetworkBaseline(wifiEnabled = true, mobileDataEnabled = true)
+            }
 
             stage = "App E2E APK discovery"
             val appApk = configuredAppE2eTargetApk(device.abi)
@@ -995,23 +1051,33 @@ private class FrpcAndroidInteropRunner {
             stage = "App E2E instrumentation APK installation"
             installPackage(resources, adb, APP_TEST_PACKAGE, testApk, "App E2E instrumentation", testOnly = true)
 
-            stage = "App E2E adb reverse creation"
-            val reverseBaseline = adb.run(
-                label = "App E2E adb reverse ownership preflight",
-                arguments = listOf("reverse", "--list"),
-                timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
-            )
-            resources.registerReverseTarget(
-                frpsPort,
-                reversePortsForTarget(reverseBaseline.standardOutput, frpsPort).toSet(),
-            )
-            val reverse = adb.run(
-                label = "App E2E adb reverse creation",
-                arguments = listOf("reverse", "tcp:0", "tcp:$frpsPort"),
-                timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
-            )
-            val deviceFrpsPort = parseReversePort(reverse.standardOutput)
-            resources.registerReverse(deviceFrpsPort)
+            val deviceFrpsHost: String
+            val deviceFrpsPort: Int
+            if (suite == APP_E2E_SUITE_NETWORK) {
+                stage = "App E2E external reverse rejection"
+                requireNoAdbReverse(adb)
+                deviceFrpsHost = frpsHost
+                deviceFrpsPort = frpsPort
+            } else {
+                stage = "App E2E adb reverse creation"
+                val reverseBaseline = adb.run(
+                    label = "App E2E adb reverse ownership preflight",
+                    arguments = listOf("reverse", "--list"),
+                    timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+                )
+                resources.registerReverseTarget(
+                    frpsPort,
+                    reversePortsForTarget(reverseBaseline.standardOutput, frpsPort).toSet(),
+                )
+                val reverse = adb.run(
+                    label = "App E2E adb reverse creation",
+                    arguments = listOf("reverse", "tcp:0", "tcp:$frpsPort"),
+                    timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+                )
+                deviceFrpsHost = IPV4_LOOPBACK_TEXT
+                deviceFrpsPort = parseReversePort(reverse.standardOutput)
+                resources.registerReverse(deviceFrpsPort)
+            }
 
             stage = "App E2E instrumentation"
             val runId = UUID.randomUUID().toString()
@@ -1023,8 +1089,10 @@ private class FrpcAndroidInteropRunner {
                 suite = suite,
                 phase = if (suite == APP_E2E_SUITE_PROCESS) APP_E2E_PHASE_PROCESS_PREPARE else APP_E2E_PHASE_SINGLE,
                 outageMillis = outageMillis,
+                frpsHost = deviceFrpsHost,
                 frpsPort = deviceFrpsPort,
-                authToken = secrets.authToken,
+                authToken = authToken,
+                tlsServerCertificateSha256 = externalConfig?.tlsServerCertificateSha256,
                 user = VISITOR_USER,
                 serverUser = PROVIDER_USER,
                 serverName = PROVIDER_PROXY_NAME,
@@ -1067,7 +1135,7 @@ private class FrpcAndroidInteropRunner {
                 )
             }
             syntheticServer.requireHealthy()
-            resources.requireFrpsAlive(stage)
+            if (frpsLaunch != null) resources.requireFrpsAlive(stage)
             resources.requireProviderAlive(stage)
 
             stage = "App E2E summary"
@@ -1078,8 +1146,8 @@ private class FrpcAndroidInteropRunner {
                         schemaVersion = APP_E2E_SUMMARY_SCHEMA_VERSION,
                         device = AndroidInteropSummaryDevice(device.apiLevel, device.abi, device.pageSize),
                         suite = suite,
-                        topology = TOPOLOGY_ADB_REVERSE,
-                        networkSwitchProven = false,
+                        topology = if (suite == APP_E2E_SUITE_NETWORK) TOPOLOGY_EXTERNAL else TOPOLOGY_ADB_REVERSE,
+                        networkSwitchProven = suite == APP_E2E_SUITE_NETWORK,
                         outageMillis = outageMillis,
                         status = STATUS_PASSED,
                         checks = execution.checks,
@@ -1344,7 +1412,7 @@ private class FrpcAndroidInteropRunner {
         invocation: AppE2eInvocation,
         files: AppE2ePrivateFiles,
         frpsPort: Int,
-        frpsLaunch: AndroidInteropProcessLaunch,
+        frpsLaunch: AndroidInteropProcessLaunch?,
         provider: ManagedInteropProcess,
         providerLaunch: AndroidInteropProcessLaunch,
         syntheticServer: SyntheticOpenCodeServer,
@@ -1355,7 +1423,7 @@ private class FrpcAndroidInteropRunner {
             invocation = invocation,
             files = files,
             frpsPort = frpsPort,
-            frpsLaunch = frpsLaunch,
+            frpsLaunch = frpsLaunch ?: throw InteropFailure("App E2E core suite omitted local frps"),
             provider = provider,
             syntheticServer = syntheticServer,
         )
@@ -1365,7 +1433,15 @@ private class FrpcAndroidInteropRunner {
             invocation = invocation,
             files = files,
             frpsPort = frpsPort,
-            frpsLaunch = frpsLaunch,
+            frpsLaunch = frpsLaunch ?: throw InteropFailure("App E2E lifecycle suite omitted local frps"),
+            providerLaunch = providerLaunch,
+            syntheticServer = syntheticServer,
+        )
+        APP_E2E_SUITE_NETWORK -> runAppE2eNetworkInstrumentation(
+            resources = resources,
+            adb = adb,
+            invocation = invocation,
+            files = files,
             providerLaunch = providerLaunch,
             syntheticServer = syntheticServer,
         )
@@ -1646,6 +1722,112 @@ private class FrpcAndroidInteropRunner {
         return result ?: throw InteropFailure("App E2E lifecycle instrumentation did not return a result")
     }
 
+    private fun runAppE2eNetworkInstrumentation(
+        resources: AndroidInteropResourceOwner,
+        adb: AdbCommandRunner,
+        invocation: AppE2eInvocation,
+        files: AppE2ePrivateFiles,
+        providerLaunch: AndroidInteropProcessLaunch,
+        syntheticServer: SyntheticOpenCodeServer,
+    ): AdbCommandResult {
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "frpc-app-e2e-network-instrumentation").apply { isDaemon = true }
+        }
+        val asyncFailure = AtomicReference<Throwable?>(null)
+        val future = try {
+            executor.submit<AdbCommandResult> {
+                try {
+                    runAppE2eInstrumentation(adb, invocation, files)
+                } catch (failure: Throwable) {
+                    asyncFailure.compareAndSet(null, failure)
+                    throw failure
+                }
+            }
+        } catch (failure: Throwable) {
+            executor.shutdownNow()
+            throw failure
+        }
+        val deadline = InteropDeadline.afterMillis(APP_E2E_INSTRUMENTATION_TIMEOUT_MILLIS)
+        var result: AdbCommandResult? = null
+        var selectedFailure: Throwable? = null
+        try {
+            stage = "App E2E network device ready"
+            awaitAppE2eMarker(adb, invocation.restartMarkers.deviceReadyFile, future)
+
+            stage = "App E2E cellular disconnect"
+            resources.stopProvider()
+            setWifiEnabled(adb, enabled = false)
+            awaitHostValidatedTransport(adb, HOST_TRANSPORT_CELLULAR)
+            writeAppE2ePrivateFile(
+                adb = adb,
+                label = "App E2E cellular disconnected marker",
+                fileName = invocation.restartMarkers.frpsOnlyFile,
+                bytes = MARKER_NETWORK_CELLULAR_DISCONNECTED.toByteArray(StandardCharsets.UTF_8),
+            )
+            awaitAppE2eMarker(adb, invocation.restartMarkers.deviceDisconnectedFile, future)
+
+            stage = "App E2E cellular recovery"
+            syntheticServer.advanceAppFixture()
+            val cellularProvider = resources.startProvider(providerLaunch::start)
+            cellularProvider.awaitOutput(PROVIDER_PROXY_READY_PATTERN, PROCESS_READY_TIMEOUT_MILLIS, stage)
+            writeAppE2ePrivateFile(
+                adb = adb,
+                label = "App E2E cellular recovered marker",
+                fileName = invocation.restartMarkers.frpsRestartedFile,
+                bytes = MARKER_NETWORK_CELLULAR_RECOVERED.toByteArray(StandardCharsets.UTF_8),
+            )
+            awaitAppE2eMarker(adb, invocation.restartMarkers.providerWindowObservedFile, future)
+
+            stage = "App E2E Wi-Fi disconnect"
+            resources.stopProvider()
+            setWifiEnabled(adb, enabled = true)
+            awaitHostValidatedTransport(adb, HOST_TRANSPORT_WIFI)
+            setMobileDataEnabled(adb, enabled = false)
+            awaitHostValidatedTransport(adb, HOST_TRANSPORT_WIFI)
+            writeAppE2ePrivateFile(
+                adb = adb,
+                label = "App E2E Wi-Fi disconnected marker",
+                fileName = invocation.restartMarkers.wifiDisconnectedFile,
+                bytes = MARKER_NETWORK_WIFI_DISCONNECTED.toByteArray(StandardCharsets.UTF_8),
+            )
+            awaitAppE2eMarker(adb, invocation.restartMarkers.wifiRetentionObservedFile, future)
+
+            stage = "App E2E Wi-Fi recovery"
+            syntheticServer.advanceAppFixture()
+            val wifiProvider = resources.startProvider(providerLaunch::start)
+            wifiProvider.awaitOutput(PROVIDER_PROXY_READY_PATTERN, PROCESS_READY_TIMEOUT_MILLIS, stage)
+            writeAppE2ePrivateFile(
+                adb = adb,
+                label = "App E2E Wi-Fi recovered marker",
+                fileName = invocation.restartMarkers.wifiRecoveredFile,
+                bytes = MARKER_NETWORK_WIFI_RECOVERED.toByteArray(StandardCharsets.UTF_8),
+            )
+            awaitAppE2eMarker(adb, invocation.restartMarkers.wifiRecoveryObservedFile, future)
+
+            stage = "App E2E mobile data restoration"
+            setMobileDataEnabled(adb, enabled = true)
+            awaitHostValidatedTransport(adb, HOST_TRANSPORT_WIFI)
+
+            stage = "App E2E network instrumentation completion"
+            result = awaitInstrumentation(future, deadline.remainingMillis())
+        } catch (failure: Throwable) {
+            selectedFailure = failure
+        }
+        if (selectedFailure != null) {
+            stopAsyncInstrumentation(resources, future)?.let { cleanupFailure ->
+                selectedFailure = preferFailure(selectedFailure, cleanupFailure)
+            }
+        }
+        shutdownInstrumentationExecutor(executor, future, selectedFailure != null)?.let { cleanupFailure ->
+            selectedFailure = preferFailure(selectedFailure, cleanupFailure)
+        }
+        asyncFailure.get()?.let { failure ->
+            selectedFailure = preferFailure(selectedFailure, failure)
+        }
+        selectedFailure?.let { throw it }
+        return result ?: throw InteropFailure("App E2E network instrumentation did not return a result")
+    }
+
     private fun awaitAppE2eOutage(instrumentation: Future<AdbCommandResult>, outageMillis: Long) {
         val deadline = InteropDeadline.afterMillis(outageMillis)
         while (!deadline.isExpired()) {
@@ -1702,6 +1884,94 @@ private class FrpcAndroidInteropRunner {
         )
     }
 
+    private fun requireExternalNetworkDevice(adb: AdbCommandRunner, abi: String) {
+        if (System.getProperty(APP_E2E_DEVICE_SERIAL_PROPERTY).isNullOrBlank() || abi != "arm64-v8a") {
+            throw InteropFailure("App E2E external network suite requires an explicit physical ARM device")
+        }
+        val qemu = adbShellValue(adb, "App E2E emulator preflight", "getprop", "ro.kernel.qemu")
+        val usbConfig = adbShellValue(adb, "App E2E USB preflight", "getprop", "sys.usb.config")
+        if (qemu !in setOf("", "0") || "adb" !in usbConfig.split(',')) {
+            throw InteropFailure("App E2E external network suite requires USB adb on a physical device")
+        }
+        requireNoAdbReverse(adb)
+        if (readToggleState(adb, "wifi_on") != true || readToggleState(adb, "mobile_data") != true) {
+            throw InteropFailure("App E2E external network suite requires Wi-Fi and mobile data enabled")
+        }
+        awaitHostValidatedTransport(adb, HOST_TRANSPORT_WIFI)
+        val snapshot = readHostConnectivitySnapshot(adb)
+        if (!hasValidatedTransport(snapshot, HOST_TRANSPORT_CELLULAR)) {
+            throw InteropFailure("App E2E external network suite requires validated cellular Internet")
+        }
+    }
+
+    private fun requireNoAdbReverse(adb: AdbCommandRunner) {
+        val reverse = adb.run(
+            label = "App E2E external adb reverse preflight",
+            arguments = listOf("reverse", "--list"),
+            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+        )
+        if (reverse.standardOutput.isNotBlank()) {
+            throw InteropFailure("App E2E external network suite forbids adb reverse mappings")
+        }
+    }
+
+    private fun setWifiEnabled(adb: AdbCommandRunner, enabled: Boolean) {
+        adb.run(
+            label = "App E2E Wi-Fi state change",
+            arguments = listOf("shell", "svc", "wifi", if (enabled) "enable" else "disable"),
+            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+        )
+    }
+
+    private fun setMobileDataEnabled(adb: AdbCommandRunner, enabled: Boolean) {
+        adb.run(
+            label = "App E2E mobile data state change",
+            arguments = listOf("shell", "svc", "data", if (enabled) "enable" else "disable"),
+            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+        )
+    }
+
+    private fun readToggleState(adb: AdbCommandRunner, setting: String): Boolean? =
+        when (adbShellValue(adb, "App E2E network setting read", "settings", "get", "global", setting)) {
+            "1" -> true
+            "0" -> false
+            else -> null
+        }
+
+    private fun awaitToggleState(adb: AdbCommandRunner, setting: String, expected: Boolean) {
+        val deadline = InteropDeadline.afterMillis(NETWORK_SWITCH_TIMEOUT_MILLIS)
+        while (!deadline.isExpired()) {
+            if (readToggleState(adb, setting) == expected) return
+            sleepBounded(minOf(NETWORK_SWITCH_POLL_MILLIS, deadline.remainingMillis()))
+        }
+        throw InteropFailure("Android network toggle state was not restored")
+    }
+
+    private fun adbShellValue(adb: AdbCommandRunner, label: String, vararg command: String): String =
+        adb.run(
+            label = label,
+            arguments = listOf("shell") + command,
+            timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+        ).standardOutput.trim()
+
+    private fun awaitHostValidatedTransport(adb: AdbCommandRunner, transport: String) {
+        val deadline = InteropDeadline.afterMillis(NETWORK_SWITCH_TIMEOUT_MILLIS)
+        while (!deadline.isExpired()) {
+            val snapshot = readHostConnectivitySnapshot(adb)
+            if (hasValidatedActiveTransport(snapshot, transport)) {
+                return
+            }
+            sleepBounded(minOf(NETWORK_SWITCH_POLL_MILLIS, deadline.remainingMillis()))
+        }
+        throw InteropFailure("App E2E validated network transport did not change within its deadline")
+    }
+
+    private fun readHostConnectivitySnapshot(adb: AdbCommandRunner): String = adb.run(
+        label = "App E2E connectivity state read",
+        arguments = listOf("shell", "dumpsys", "connectivity"),
+        timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
+    ).standardOutput
+
     private fun readAppE2eResult(instrumentation: AdbCommandResult): AppE2eResult {
         val prefix = "INSTRUMENTATION_STATUS: $APP_E2E_RESULT_STATUS_KEY="
         val candidates = instrumentation.standardOutput.lineSequence()
@@ -1739,9 +2009,18 @@ private class FrpcAndroidInteropRunner {
     }
 
     private fun validateAppE2eResult(result: AppE2eResult, invocation: AppE2eInvocation) {
+        val invocationPinValid = if (invocation.suite == APP_E2E_SUITE_NETWORK) {
+            invocation.tlsServerCertificateSha256?.matches(APP_E2E_TLS_CERTIFICATE_PIN) == true
+        } else {
+            invocation.tlsServerCertificateSha256 == null
+        }
+        if (!invocationPinValid) {
+            throw InteropFailure("App E2E invocation TLS certificate pin was invalid")
+        }
         val expectedChecks = when {
             invocation.suite == APP_E2E_SUITE_CORE -> APP_E2E_CORE_EXPECTED_CHECKS
             invocation.suite == APP_E2E_SUITE_LIFECYCLE -> APP_E2E_LIFECYCLE_EXPECTED_CHECKS
+            invocation.suite == APP_E2E_SUITE_NETWORK -> APP_E2E_NETWORK_EXPECTED_CHECKS
             invocation.suite == APP_E2E_SUITE_PROCESS && invocation.phase == APP_E2E_PHASE_PROCESS_PREPARE ->
                 APP_E2E_PROCESS_PREPARE_EXPECTED_CHECKS
             invocation.suite == APP_E2E_SUITE_PROCESS && invocation.phase == APP_E2E_PHASE_PROCESS_RECOVER ->
@@ -1755,13 +2034,19 @@ private class FrpcAndroidInteropRunner {
             result.recoveredGeneration == result.initialGeneration &&
                 (result.recoveredControlEpoch ?: 0L) > (result.initialControlEpoch ?: 0L)
         }
+        val expectedTopology = if (invocation.suite == APP_E2E_SUITE_NETWORK) {
+            TOPOLOGY_EXTERNAL
+        } else {
+            TOPOLOGY_ADB_REVERSE
+        }
+        val expectedNetworkSwitchProof = invocation.suite == APP_E2E_SUITE_NETWORK
         if (result.schemaVersion != APP_E2E_SCHEMA_VERSION || result.runId != invocation.runId ||
             result.status != STATUS_PASSED || result.checks != expectedChecks ||
             result.bindPort !in 1..65_535 || (result.initialGeneration ?: 0L) <= 0L ||
             (result.initialControlEpoch ?: 0L) <= 0L ||
             !processResultValid ||
-            result.suite != invocation.suite || result.topology != TOPOLOGY_ADB_REVERSE ||
-            result.networkSwitchProven != false || result.phase != invocation.phase ||
+            result.suite != invocation.suite || result.topology != expectedTopology ||
+            result.networkSwitchProven != expectedNetworkSwitchProof || result.phase != invocation.phase ||
             result.failedStage != null || result.failureCode != null
         ) {
             val stage = result.failedStage?.takeIf(SAFE_RESULT_VALUE::matches) ?: "none"
@@ -2356,7 +2641,13 @@ private class FrpcAndroidInteropRunner {
         val suite = System.getProperty(APP_E2E_SUITE_PROPERTY)
             ?.takeIf(String::isNotBlank)
             ?: APP_E2E_SUITE_CORE
-        if (suite !in setOf(APP_E2E_SUITE_CORE, APP_E2E_SUITE_LIFECYCLE, APP_E2E_SUITE_PROCESS)) {
+        if (suite !in setOf(
+                APP_E2E_SUITE_CORE,
+                APP_E2E_SUITE_LIFECYCLE,
+                APP_E2E_SUITE_PROCESS,
+                APP_E2E_SUITE_NETWORK,
+            )
+        ) {
             throw InteropFailure("configured App E2E suite was invalid")
         }
         return suite
@@ -2364,11 +2655,42 @@ private class FrpcAndroidInteropRunner {
 
     private fun configuredAppE2eOutageMillis(suite: String): Long {
         val configured = System.getProperty(APP_E2E_OUTAGE_MILLIS_PROPERTY)?.takeIf(String::isNotBlank)
+        if (suite == APP_E2E_SUITE_NETWORK) {
+            if (configured != null) throw InteropFailure("App E2E outage duration is not valid for the network suite")
+            return 0L
+        }
         val value = configured?.toLongOrNull() ?: DEFAULT_APP_E2E_OUTAGE_MILLIS
         if (value !in MINIMUM_APP_E2E_OUTAGE_MILLIS..MAXIMUM_APP_E2E_OUTAGE_MILLIS) {
             throw InteropFailure("configured App E2E outage duration was invalid")
         }
-        return if (suite == APP_E2E_SUITE_LIFECYCLE) value else DEFAULT_APP_E2E_OUTAGE_MILLIS
+        return when (suite) {
+            APP_E2E_SUITE_LIFECYCLE -> value
+            else -> DEFAULT_APP_E2E_OUTAGE_MILLIS
+        }
+    }
+
+    private fun configuredAppE2eExternalConfig(suite: String): AppE2eExternalConfig? {
+        val path = configuredOptionalEnvironmentPath(
+            APP_E2E_EXTERNAL_CONFIG_FILE_ENVIRONMENT,
+            "App E2E external configuration",
+        )
+        if (suite == APP_E2E_SUITE_NETWORK) {
+            return path?.let(::loadAppE2eExternalConfig)
+                ?: throw InteropFailure("App E2E network suite requires an external configuration file")
+        }
+        if (path != null) {
+            throw InteropFailure("App E2E external configuration is only valid for the network suite")
+        }
+        return null
+    }
+
+    private fun configuredOptionalEnvironmentPath(environment: String, label: String): Path? {
+        val configured = System.getenv(environment)?.takeIf(String::isNotBlank) ?: return null
+        return try {
+            Path.of(configured).toAbsolutePath().normalize()
+        } catch (_: Exception) {
+            throw InteropFailure("configured $label path was invalid")
+        }
     }
 
     private fun configuredOptionalPath(property: String, label: String): Path? {
@@ -2556,9 +2878,18 @@ private class FrpcAndroidInteropRunner {
         syntheticPort: Int,
         authToken: String,
         stcpSecret: String,
-    ): String = """
+        frpsHost: String = "127.0.0.1",
+        trustedCaFile: Path? = null,
+    ): String {
+        val externalTls = trustedCaFile?.let { path ->
+            """
+            transport.tls.trustedCaFile = "${path.fileName}"
+            transport.tls.serverName = "${tomlHost(frpsHost)}"
+            """.trimIndent()
+        }.orEmpty()
+        return """
         user = "$PROVIDER_USER"
-        serverAddr = "127.0.0.1"
+        serverAddr = "${tomlHost(frpsHost)}"
         serverPort = $frpsPort
         loginFailExit = true
 
@@ -2576,6 +2907,7 @@ private class FrpcAndroidInteropRunner {
         transport.tcpMux = true
         transport.tls.enable = true
         transport.tls.disableCustomTLSFirstByte = true
+        $externalTls
 
         [[proxies]]
         name = "$PROVIDER_PROXY_NAME"
@@ -2586,10 +2918,14 @@ private class FrpcAndroidInteropRunner {
         allowUsers = ["$VISITOR_USER"]
         transport.useEncryption = false
         transport.useCompression = false
-    """.trimIndent() + "\n"
+        """.trimIndent() + "\n"
+    }
 
     private fun tomlValue(value: String): String = value.takeIf(SAFE_TOML_VALUE::matches)
         ?: throw InteropFailure("runtime credential generation was invalid")
+
+    private fun tomlHost(value: String): String = value.takeIf(SAFE_TOML_HOST::matches)
+        ?: throw InteropFailure("frps host configuration was invalid")
 
     private fun safeFailure(
         currentStage: String,
@@ -2627,6 +2963,7 @@ private class FrpcAndroidInteropRunner {
         private var reversePort: Int? = null
         private var reverseTargetPort: Int? = null
         private var reverseBaselinePorts = emptySet<Int>()
+        private var networkBaseline: Pair<Boolean, Boolean>? = null
         private val privateFiles = LinkedHashSet<String>()
 
         fun createTemporaryWorkspace(): Path = synchronized(lock) {
@@ -2688,6 +3025,12 @@ private class FrpcAndroidInteropRunner {
             requireActive()
             if (adb != null) throw InteropFailure("adb was already registered")
             adb = runner
+        }
+
+        fun registerNetworkBaseline(wifiEnabled: Boolean, mobileDataEnabled: Boolean) = synchronized(lock) {
+            requireActive()
+            if (networkBaseline != null) throw InteropFailure("Android network baseline was already registered")
+            networkBaseline = wifiEnabled to mobileDataEnabled
         }
 
         fun markPackageInstallAttempted(packageName: String = testPackage) = synchronized(lock) {
@@ -2801,6 +3144,18 @@ private class FrpcAndroidInteropRunner {
                                 arguments = listOf("shell", "am", "force-stop", packageName),
                                 timeoutMillis = ADB_SHORT_TIMEOUT_MILLIS,
                             )
+                        }
+                    }
+                    synchronized(lock) { networkBaseline }?.let { (wifiEnabled, mobileDataEnabled) ->
+                        failure = cleanupStep(failure) { setWifiEnabled(runner, wifiEnabled) }
+                        failure = cleanupStep(failure) { setMobileDataEnabled(runner, mobileDataEnabled) }
+                        if (wifiEnabled) {
+                            failure = cleanupStep(failure) {
+                                awaitHostValidatedTransport(runner, HOST_TRANSPORT_WIFI)
+                            }
+                        }
+                        failure = cleanupStep(failure) {
+                            awaitToggleState(runner, "mobile_data", mobileDataEnabled)
                         }
                     }
                     val files = synchronized(lock) {
@@ -2999,6 +3354,10 @@ private class FrpcAndroidInteropRunner {
                     frpsOnlyFile = "app-e2e-$runId-frps-only.json",
                     providerWindowObservedFile = "app-e2e-$runId-provider-window.json",
                     frpsRestartedFile = "app-e2e-$runId-frps-restarted.json",
+                    wifiDisconnectedFile = "app-e2e-$runId-wifi-disconnected.json",
+                    wifiRetentionObservedFile = "app-e2e-$runId-wifi-retention.json",
+                    wifiRecoveredFile = "app-e2e-$runId-wifi-recovered.json",
+                    wifiRecoveryObservedFile = "app-e2e-$runId-wifi-recovery.json",
                 )
                 val names = listOf(configFile) + restartMarkers.allFiles
                 if (names.any { !APP_E2E_SAFE_FILE.matches(it) }) {
@@ -3046,6 +3405,8 @@ private class FrpcAndroidInteropRunner {
     private companion object {
         val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val SAFE_TOML_VALUE = Regex("[A-Za-z0-9_-]{16,256}")
+        val SAFE_TOML_HOST = Regex("[A-Za-z0-9.:-]{1,253}")
+        val APP_E2E_TLS_CERTIFICATE_PIN = Regex("[0-9a-f]{64}")
         val SAFE_DEVICE_SERIAL = Regex("[A-Za-z0-9._:-]{1,128}")
         val SAFE_PRIVATE_FILE = Regex("[A-Za-z0-9_-]{1,112}\\.(json|marker)")
         val APP_E2E_SAFE_FILE = Regex("[a-z0-9][a-z0-9._-]{0,127}\\.json")
@@ -3069,15 +3430,18 @@ private class FrpcAndroidInteropRunner {
         const val APP_E2E_TEST_CLASS = "io.github.ycfeng.ocdeck.interop.KotlinReleaseStcpAppE2eTest"
         const val APP_E2E_TEST_METHOD = "runConfiguredAppFlow"
         const val APP_E2E_RESULT_STATUS_KEY = "ocdeckAppE2eResult"
-        const val APP_E2E_SCHEMA_VERSION = 3
-        const val APP_E2E_SUMMARY_SCHEMA_VERSION = 3
+        const val APP_E2E_SCHEMA_VERSION = 5
+        const val APP_E2E_SUMMARY_SCHEMA_VERSION = 5
         const val APP_E2E_SUITE_CORE = "core"
         const val APP_E2E_SUITE_LIFECYCLE = "lifecycle"
         const val APP_E2E_SUITE_PROCESS = "process"
+        const val APP_E2E_SUITE_NETWORK = "network"
         const val APP_E2E_PHASE_SINGLE = "single"
         const val APP_E2E_PHASE_PROCESS_PREPARE = "process_prepare"
         const val APP_E2E_PHASE_PROCESS_RECOVER = "process_recover"
         const val TOPOLOGY_ADB_REVERSE = "adb_reverse"
+        const val TOPOLOGY_EXTERNAL = "external"
+        const val IPV4_LOOPBACK_TEXT = "127.0.0.1"
         const val PROVIDER_USER = "interop-server"
         const val VISITOR_USER = "interop-visitor"
         const val PROVIDER_PROXY_NAME = "interop-opencode"
@@ -3093,12 +3457,17 @@ private class FrpcAndroidInteropRunner {
         const val APP_E2E_SUMMARY_FILE_PROPERTY = "ocdeck.frp.appE2e.summaryFile"
         const val APP_E2E_SUITE_PROPERTY = "ocdeck.frp.appE2e.suite"
         const val APP_E2E_OUTAGE_MILLIS_PROPERTY = "ocdeck.frp.appE2e.outageMillis"
+        const val APP_E2E_EXTERNAL_CONFIG_FILE_ENVIRONMENT = "OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE"
         const val FRP_CACHE_PROPERTY = "ocdeck.frp.interop.cacheDir"
         const val MARKER_DEVICE_READY = "device_ready"
         const val MARKER_FRPS_STOPPED = "frps_stopped"
         const val MARKER_DEVICE_DISCONNECTED = "device_disconnected"
         const val MARKER_FRPS_ONLY = "frps_only"
         const val MARKER_FRPS_RESTARTED = "frps_restarted"
+        const val MARKER_NETWORK_CELLULAR_DISCONNECTED = "network_cellular_disconnected"
+        const val MARKER_NETWORK_CELLULAR_RECOVERED = "network_cellular_recovered"
+        const val MARKER_NETWORK_WIFI_DISCONNECTED = "network_wifi_disconnected"
+        const val MARKER_NETWORK_WIFI_RECOVERED = "network_wifi_recovered"
         const val MAXIMUM_APK_CANDIDATES = 8
         const val CONCURRENT_TRAFFIC_REQUESTS = 5
         const val MAXIMUM_PRIVATE_FILE_BYTES = 16 * 1024
@@ -3118,6 +3487,10 @@ private class FrpcAndroidInteropRunner {
         const val ASYNC_EXECUTOR_FORCE_TIMEOUT_MILLIS = 5_000L
         const val TARGET_PROCESS_TIMEOUT_MILLIS = 30_000L
         const val TARGET_PROCESS_BACKGROUND_SETTLE_MILLIS = 5_000L
+        const val NETWORK_SWITCH_TIMEOUT_MILLIS = 90_000L
+        const val NETWORK_SWITCH_POLL_MILLIS = 500L
+        const val HOST_TRANSPORT_WIFI = "WIFI"
+        const val HOST_TRANSPORT_CELLULAR = "CELLULAR"
         const val OUTAGE_POLL_MILLIS = 250L
         const val DEFAULT_APP_E2E_OUTAGE_MILLIS = 120_000L
         const val MINIMUM_APP_E2E_OUTAGE_MILLIS = 60_000L
@@ -3185,6 +3558,25 @@ private class FrpcAndroidInteropRunner {
             "activity_route_restored",
             "streams_closed",
             "server_deleted",
+            "visitor_closed",
+            "port_released",
+        )
+        val APP_E2E_NETWORK_EXPECTED_CHECKS = listOf(
+            "kotlin_backend",
+            "initial_wifi_validated",
+            "stcp_ready",
+            "snapshot_store",
+            "global_sse_store",
+            "project_sse_store",
+            "cellular_validated",
+            "cellular_data_retained",
+            "cellular_epoch_advanced",
+            "cellular_reconciliation",
+            "wifi_restored_validated",
+            "wifi_return_data_retained",
+            "wifi_return_epoch_advanced",
+            "wifi_return_reconciliation",
+            "streams_closed",
             "visitor_closed",
             "port_released",
         )

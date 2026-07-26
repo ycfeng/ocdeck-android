@@ -8,7 +8,9 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.compression.FrpSnappyFra
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpClientStreamLease
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlClient
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlConfig
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlIdentity
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlReconnectDiagnostics
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpUnixTimeSource
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpWireProtocol
@@ -20,6 +22,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConn
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConnResp
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.BlockingIoThreadGuard
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTcpEndpoint
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.TcpDialRouteProvider
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.TcpTlsTransportConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.TcpTlsYamuxConnector
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.YamuxStreamBlockingIo
@@ -63,6 +66,14 @@ internal interface FrpSessionControl : AutoCloseable {
 
     fun start()
 
+    fun invalidateTransport(): FrpControlIdentity? = null
+
+    fun reconnectCleanupFailure(): FrpControlFailure? = null
+
+    fun reconnectEstablishmentFailure(): FrpControlFailure? = null
+
+    fun reconnectDiagnostics(): FrpControlReconnectDiagnostics = FrpControlReconnectDiagnostics()
+
     suspend fun openClientStream(expectedIdentity: FrpControlIdentity): FrpClientStreamLease
 
     suspend fun awaitStopped()
@@ -76,7 +87,9 @@ internal fun interface FrpSessionControlFactory {
     ): FrpSessionControl
 }
 
-internal object ProductionFrpSessionControlFactory : FrpSessionControlFactory {
+internal class ProductionFrpSessionControlFactory(
+    private val routeProvider: TcpDialRouteProvider? = null,
+) : FrpSessionControlFactory {
     override fun create(
         config: FrpcSessionConfig,
         parentScope: CoroutineScope,
@@ -93,8 +106,10 @@ internal object ProductionFrpSessionControlFactory : FrpSessionControlFactory {
             transportConfig = TcpTlsTransportConfig(
                 endpoint = FrpTcpEndpoint(config.serverAddr, config.serverPort),
                 tlsEnabled = true,
+                tlsServerCertificateSha256 = config.tlsServerCertificateSha256,
             ),
             parentScope = parentScope,
+            routeProvider = routeProvider,
         )
         return FrpControlAdapter(
             FrpControlClient(
@@ -126,6 +141,14 @@ private class FrpControlAdapter(
     override fun start() {
         delegate.start()
     }
+
+    override fun invalidateTransport(): FrpControlIdentity? = delegate.invalidateTransport()
+
+    override fun reconnectCleanupFailure(): FrpControlFailure? = delegate.reconnectCleanupFailure()
+
+    override fun reconnectEstablishmentFailure(): FrpControlFailure? = delegate.reconnectEstablishmentFailure()
+
+    override fun reconnectDiagnostics(): FrpControlReconnectDiagnostics = delegate.reconnectDiagnostics()
 
     override suspend fun openClientStream(expectedIdentity: FrpControlIdentity): FrpClientStreamLease =
         delegate.openClientStream(expectedIdentity)

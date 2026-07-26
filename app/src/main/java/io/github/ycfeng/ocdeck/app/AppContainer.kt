@@ -6,6 +6,8 @@ import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityRegistry
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeNotificationChannelRegistry
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeSystemNotifier
 import io.github.ycfeng.ocdeck.core.network.AppConnectionCoordinator
+import io.github.ycfeng.ocdeck.core.network.DefaultNetworkChangeHandler
+import io.github.ycfeng.ocdeck.core.network.DefaultNetworkMonitor
 import io.github.ycfeng.ocdeck.core.network.DefaultForegroundHealthChecker
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorManager
 import io.github.ycfeng.ocdeck.core.network.DefaultOpenCodeHealthProbeFactory
@@ -44,8 +46,9 @@ import kotlinx.serialization.json.Json
 internal fun createFrpcStcpVisitorClient(
     json: Json,
     useKotlinBackend: Boolean,
+    context: Context? = null,
 ): FrpcStcpVisitorClient = if (useKotlinBackend) {
-    KotlinFrpcStcpVisitorClient()
+    context?.let(::KotlinFrpcStcpVisitorClient) ?: KotlinFrpcStcpVisitorClient()
 } else {
     GoMobileFrpcStcpVisitorClient(json)
 }
@@ -81,6 +84,7 @@ class AppContainer(context: Context) {
         client = createFrpcStcpVisitorClient(
             json = json,
             useKotlinBackend = BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR,
+            context = applicationContext,
         ),
         healthProbeFactory = DefaultOpenCodeHealthProbeFactory(openCodeApiFactory),
     )
@@ -144,7 +148,14 @@ class AppContainer(context: Context) {
         controller = openCodeEventClient,
         healthChecker = DefaultForegroundHealthChecker(serverRepository),
         scope = applicationScope,
+        defaultNetworkChangeHandler = DefaultNetworkChangeHandler {
+            frpcStcpVisitorManager.reconnectAfterDefaultNetworkChange()
+        },
     )
+    val defaultNetworkMonitor = DefaultNetworkMonitor(
+        context = applicationContext,
+        onDefaultNetworkChanged = appConnectionCoordinator::onDefaultNetworkChanged,
+    ).also(DefaultNetworkMonitor::start)
     val promptOperationGate = PromptOperationGate(pathNormalizer)
     val promptSender = OpenCodePromptSender(
         gateway = openCodeRepository,

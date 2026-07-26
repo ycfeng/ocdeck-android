@@ -1,6 +1,10 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor
 
+import android.content.Context
+import android.net.ConnectivityManager
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlIdentity
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlReconnectDiagnostics
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpUnixTimeSource
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.SystemFrpUnixTimeSource
@@ -14,6 +18,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelay
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelayCleanupPhase
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.ProductionFrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.SocketFrpLocalListenerFactory
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.AndroidDefaultNetworkTcpDialRouteProvider
 import java.net.BindException
 import java.net.InetAddress
 import java.util.LinkedHashMap
@@ -60,10 +65,25 @@ class KotlinFrpcStcpVisitorClient private constructor(
     private val ioDispatcher: CoroutineDispatcher,
     private val lifecycleHooks: KotlinFrpcRuntimeLifecycleHooks,
     private val runtimeDelayer: FrpRuntimeDelayer,
-) : FrpcStcpVisitorClient, AutoCloseable {
+) : FrpcStcpVisitorClient, FrpcStcpVisitorNetworkChangeAware, AutoCloseable {
     constructor() : this(
         parentContext = Dispatchers.IO + CoroutineName("KotlinFrpcClientRoot"),
-        controlFactory = ProductionFrpSessionControlFactory,
+        controlFactory = ProductionFrpSessionControlFactory(),
+        listenerFactory = SocketFrpLocalListenerFactory(),
+        unixTimeSource = SystemFrpUnixTimeSource,
+        sessionIdSource = FrpSessionIdSource { UUID.randomUUID().toString() },
+        ioDispatcher = Dispatchers.IO.limitedParallelism(MAXIMUM_RELAY_IO_PARALLELISM, "FrpVisitorRelayIo"),
+        lifecycleHooks = KotlinFrpcRuntimeLifecycleHooks(),
+        runtimeDelayer = CoroutineFrpRuntimeDelayer,
+    )
+
+    constructor(context: Context) : this(
+        parentContext = Dispatchers.IO + CoroutineName("KotlinFrpcClientRoot"),
+        controlFactory = ProductionFrpSessionControlFactory(
+            AndroidDefaultNetworkTcpDialRouteProvider(
+                checkNotNull(context.applicationContext.getSystemService(ConnectivityManager::class.java)),
+            ),
+        ),
         listenerFactory = SocketFrpLocalListenerFactory(),
         unixTimeSource = SystemFrpUnixTimeSource,
         sessionIdSource = FrpSessionIdSource { UUID.randomUUID().toString() },
@@ -213,6 +233,20 @@ class KotlinFrpcStcpVisitorClient private constructor(
             phase = PHASE_CLOSED,
         )
 
+    override suspend fun reconnectAfterDefaultNetworkChange() {
+        currentCoroutineContext().ensureActive()
+        val snapshot = sessionsMutex.withLock {
+            ensureClientOpen()
+            sessions.values.toList()
+        }
+        val invalidated = snapshot.mapNotNull { session ->
+            session.invalidateTransport()?.let { identity -> session to identity }
+        }
+        invalidated.forEach { (session, identity) ->
+            session.awaitTransportInvalidated(identity, NETWORK_CHANGE_INVALIDATION_TIMEOUT_MILLIS)
+        }
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         launchClientCleanup()
@@ -285,6 +319,7 @@ class KotlinFrpcStcpVisitorClient private constructor(
         const val MAXIMUM_SESSION_ID_LENGTH = 128
         const val MAXIMUM_RELAY_IO_PARALLELISM = 64
         const val MAXIMUM_GLOBAL_RELAYS = 32
+        const val NETWORK_CHANGE_INVALIDATION_TIMEOUT_MILLIS = 5_000L
     }
 }
 
@@ -398,6 +433,7 @@ private class KotlinFrpcRuntimeSession(
     private var currentIdentity: FrpControlIdentity? = null
     private var highestTransportIdentity = 0L
     private var lastFailure: KotlinFrpcStcpVisitorFailure? = null
+    private var lastControlFailure: FrpControlFailure? = null
     private var listenerAttemptSequence = 0L
     private val visitors = LinkedHashMap<String, RuntimeVisitor>()
     private val relays = LinkedHashSet<RuntimeRelayRecord>()
@@ -453,7 +489,18 @@ private class KotlinFrpcRuntimeSession(
     fun state(): FrpcStcpVisitorState = mutableSnapshot.value.publicStateFor(
         controlState = control.state.value,
         stopping = stopRequested.get(),
+        reconnectEstablishmentFailure = control.reconnectEstablishmentFailure(),
+        reconnectCleanupFailure = control.reconnectCleanupFailure(),
+        reconnectDiagnostics = control.reconnectDiagnostics(),
     )
+
+    fun invalidateTransport(): FrpControlIdentity? = control.invalidateTransport()
+
+    suspend fun awaitTransportInvalidated(identity: FrpControlIdentity, timeoutMillis: Long) {
+        withTimeoutOrNull(timeoutMillis) {
+            control.state.first { state -> state !is FrpControlState.Open || state.identity != identity }
+        }
+    }
 
     fun requestStop(): CompletableDeferred<Unit> {
         stopRequested.set(true)
@@ -715,13 +762,18 @@ private class KotlinFrpcRuntimeSession(
         if (state.generation != generation || stopRequested.get()) return
         when (state) {
             is FrpControlState.Open -> handleControlOpen(state.identity)
-            is FrpControlState.Connecting -> transitionControlUnavailable(PHASE_CONNECTING, null)
-            is FrpControlState.Retrying -> transitionControlUnavailable(PHASE_RECONNECTING, null)
+            is FrpControlState.Connecting -> transitionControlUnavailable(PHASE_CONNECTING, null, null)
+            is FrpControlState.Retrying -> transitionControlUnavailable(
+                PHASE_RECONNECTING,
+                null,
+                state.failure,
+            )
             is FrpControlState.Failed -> transitionControlUnavailable(
                 PHASE_FAILED,
                 KotlinFrpcStcpVisitorFailure.CONTROL_FAILED,
+                state.failure,
             )
-            is FrpControlState.Closed -> transitionControlUnavailable(PHASE_CLOSED, null)
+            is FrpControlState.Closed -> transitionControlUnavailable(PHASE_CLOSED, null, null)
         }
         lifecycleHooks.afterControlState(state)
     }
@@ -738,6 +790,7 @@ private class KotlinFrpcRuntimeSession(
         controlEpoch = identity.controlEpoch
         phase = PHASE_OPEN
         lastFailure = null
+        lastControlFailure = null
         publishSnapshot()
         visitors.values.toList().forEach { visitor ->
             scheduleBindAttempt(visitor, identity)
@@ -747,6 +800,7 @@ private class KotlinFrpcRuntimeSession(
     private suspend fun transitionControlUnavailable(
         nextPhase: String,
         failure: KotlinFrpcStcpVisitorFailure?,
+        controlFailure: FrpControlFailure?,
     ) {
         currentIdentity = null
         invalidateAllRuntimeResources(
@@ -760,6 +814,7 @@ private class KotlinFrpcRuntimeSession(
         )
         phase = nextPhase
         lastFailure = failure
+        lastControlFailure = controlFailure
         publishSnapshot()
     }
 
@@ -1538,7 +1593,7 @@ private class KotlinFrpcRuntimeSession(
                 phase = phase,
                 configRevision = configRevision,
                 controlEpoch = controlEpoch,
-                lastError = lastFailure?.description,
+                lastError = lastControlFailure?.description ?: lastFailure?.description,
                 visitors = publicVisitors,
             ),
             currentIdentity = currentIdentity,
@@ -1846,7 +1901,13 @@ private data class RuntimeSnapshot(
         )
     }
 
-    fun publicStateFor(controlState: FrpControlState, stopping: Boolean): FrpcStcpVisitorState {
+    fun publicStateFor(
+        controlState: FrpControlState,
+        stopping: Boolean,
+        reconnectEstablishmentFailure: FrpControlFailure?,
+        reconnectCleanupFailure: FrpControlFailure?,
+        reconnectDiagnostics: FrpControlReconnectDiagnostics,
+    ): FrpcStcpVisitorState {
         val livePublicState = publicState.copy(
             visitors = publicState.visitors.mapValues { (name, visitor) ->
                 val ownerLive = waiterVisitors[name]?.listenerOwner?.isLive == true
@@ -1867,11 +1928,26 @@ private data class RuntimeSnapshot(
         }
         return when (controlState) {
             is FrpControlState.Connecting -> unavailablePublicState(livePublicState, PHASE_CONNECTING, null)
-            is FrpControlState.Retrying -> unavailablePublicState(livePublicState, PHASE_RECONNECTING, null)
+            is FrpControlState.Retrying -> unavailablePublicState(
+                livePublicState,
+                PHASE_RECONNECTING,
+                null,
+                sessionError = reconnectCleanupFailure?.description
+                    ?: reconnectEstablishmentFailure
+                        ?.withReconnectTimerDiagnostics(reconnectDiagnostics)
+                        ?.takeIf { failure ->
+                            controlState.attempt <= 1 ||
+                                failure == FrpControlFailure.RECONNECT_ABORTING_LOGIN_TIMEOUT ||
+                                failure == FrpControlFailure.RECONNECT_WAITING_LOGIN_AFTER_TIMEOUT
+                        }
+                        ?.description
+                    ?: controlState.failure.description,
+            )
             is FrpControlState.Failed -> unavailablePublicState(
                 livePublicState,
                 PHASE_FAILED,
                 KotlinFrpcStcpVisitorFailure.CONTROL_FAILED,
+                sessionError = controlState.failure.description,
             )
             is FrpControlState.Closed -> if (publicState.phase == PHASE_CLOSED) {
                 livePublicState
@@ -1886,6 +1962,17 @@ private data class RuntimeSnapshot(
         }
     }
 
+    private fun FrpControlFailure.withReconnectTimerDiagnostics(
+        diagnostics: FrpControlReconnectDiagnostics,
+    ): FrpControlFailure {
+        if (this != FrpControlFailure.RECONNECT_WAITING_LOGIN || diagnostics.currentAttempt <= 0L) return this
+        return when (diagnostics.currentAttempt) {
+            diagnostics.loginTimerFiredAttempt -> FrpControlFailure.RECONNECT_LOGIN_TIMER_FIRED
+            diagnostics.loginTimerScheduledAttempt -> FrpControlFailure.RECONNECT_LOGIN_TIMER_SCHEDULED
+            else -> this
+        }
+    }
+
     override fun toString(): String =
         "RuntimeSnapshot(phase=${publicState.phase}, configRevision=${publicState.configRevision}, " +
             "controlEpoch=${publicState.controlEpoch}, currentIdentityPresent=${currentIdentity != null}, " +
@@ -1896,9 +1983,10 @@ private data class RuntimeSnapshot(
         phase: String,
         failure: KotlinFrpcStcpVisitorFailure?,
         visitorPhase: String = if (failure == null) VISITOR_PHASE_PENDING else VISITOR_PHASE_FAILED,
+        sessionError: String? = failure?.description,
     ): FrpcStcpVisitorState = base.copy(
         phase = phase,
-        lastError = failure?.description,
+        lastError = sessionError,
         visitors = base.visitors.mapValues { (_, visitor) ->
             visitor.copy(
                 phase = visitorPhase,

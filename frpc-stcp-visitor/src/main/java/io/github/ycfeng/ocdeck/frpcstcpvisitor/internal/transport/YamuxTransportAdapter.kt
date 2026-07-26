@@ -38,7 +38,8 @@ internal class TcpTlsYamuxConnector(
     private val transportConfig: TcpTlsTransportConfig,
     private val parentScope: CoroutineScope,
     private val socketFactory: TcpSocketFactory = TcpSocketFactory(::Socket),
-    private val tlsSocketFactory: TlsClientSocketFactory = InsecureTlsClientSocketFactory,
+    private val routeProvider: TcpDialRouteProvider? = null,
+    private val tlsSocketFactory: TlsClientSocketFactory = tlsClientSocketFactory(transportConfig),
     private val transportDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
     private val yamuxConfig: YamuxConfig = productionFrpYamuxConfig(),
     private val beforeResultHandoff: suspend () -> Unit = {},
@@ -47,6 +48,7 @@ internal class TcpTlsYamuxConnector(
         val dialer = TcpTlsTransportDialer(
             config = transportConfig,
             socketFactory = socketFactory,
+            routeProvider = routeProvider,
             tlsSocketFactory = tlsSocketFactory,
             dispatcher = transportDispatcher,
         )
@@ -161,6 +163,11 @@ internal class YamuxMuxConnection(
         }
         if (closeStarted.get()) closeCompletion.await()
         preferMuxCloseFailure(sessionFailure, closeFailure.get())?.let { throw it }
+    }
+
+    override fun forceTerminationAfterClose() {
+        if (!closeStarted.get()) return
+        session.forceTerminationAfterPhysicalClose()
     }
 
     override fun close() {

@@ -6,6 +6,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.GoMobileBridgeUnavailableExceptio
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.serialization.SerializationException
 import retrofit2.HttpException
 import java.io.EOFException
@@ -144,6 +145,7 @@ object OpenCodeFailureClassifier {
                     it is SshHostKeyDiscoveryRequiredException ||
                     it is SshHostKeyPinRequiredException ||
                     it is SshHostKeyPinUnavailableException ||
+                    it is FrpcTlsServerCertificatePinUnavailableException ||
                     it is SshHostKeyDiscoveryException ||
                     it is SshHostKeyVerificationException ||
                     it is SessionMessagesTransportUnavailableException ||
@@ -188,5 +190,7 @@ internal fun Throwable.causeChain(): List<Throwable> {
 internal fun Throwable.fatalCauseOrNull(): Throwable? {
     val causes = causeChain()
     return causes.filterIsInstance<Error>().firstOrNull()
-        ?: causes.filterIsInstance<CancellationException>().firstOrNull()
+        ?: causes.filterIsInstance<CancellationException>().firstOrNull { cancellation ->
+            this !is FrpcStcpReadinessTimeoutException || cancellation !is TimeoutCancellationException
+        }
 }

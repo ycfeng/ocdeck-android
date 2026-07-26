@@ -105,13 +105,14 @@
 
 ## 安全与凭据事务
 
-- 敏感信息统一替换为严格一致的 `<redacted>`。敏感数据包括 API key、token、password、Authorization/cookie、Provider auth 与自定义 header、SSH password/private key/passphrase/host fingerprint、frp/STCP secret、环境变量、签名材料和含凭据的配置值。
+- 敏感信息统一替换为严格一致的 `<redacted>`。敏感数据包括 API key、token、password、Authorization/cookie、Provider auth 与自定义 header、SSH password/private key/passphrase/host fingerprint、frp/STCP secret 与 TLS 证书 pin、环境变量、签名材料和含凭据的配置值。
 - 使用统一 `Redactor`。已知 JSON、header、query、URL 与配置对象优先做结构化脱敏；正则只用于未知自由文本兜底。裸认证 scheme 值和 HTTP(S) URL userinfo/fragment 也必须脱敏。
 - 网络日志仅允许在 debug 构建中开启，并必须经过脱敏拦截器。错误 UI、崩溃报告、测试、snapshot、调试面板和文档不得暴露原始 header、凭据、完整敏感 body 或真实 secret。Provider 设置只能显示连接状态或 masked 状态，不能明文回显 key。
 - Repository、network 和 Store 层保存类型化语义失败原因，不得通过异常 `toString()` 或 `Throwable.message` 生成用户文案。UI 将这些原因映射到本地化资源，并为未知错误使用当前操作的 fallback；取消与 JVM `Error` 必须传播。
 - Server base URL 只接受带有效 host、无 userinfo/query/fragment 的 HTTP(S) URL。保存、连接和展示使用同一校验；异常旧值不得原样回显。
 - 保存同时使用非本机回环明文 HTTP 与有效 OpenCode Basic 认证的直连服务器前，必须显示明确但不阻断能力的确认弹窗。有效认证要求用户名非空白，并存在新密码或保留密码。Loopback 只做无 DNS 的纯语法分类；SSH/STCP 不使用此警告。选择“仍然保存”后必须正常保存并允许后续使用，取消则不得调用 Repository 写入。
 - 固定 SSH host fingerprint 必须通过 `HostKeyRepository` 或等价机制在用户认证前校验。禁止关闭严格校验后连接，再在认证完成后补验。
+- frp/STCP TLS 服务端证书 SHA-256 pin 按敏感 host fingerprint 处理，只能通过用途明确的 Android Keystore alias 持久化。配置仍引用 pin alias 但对应 secret 不可用时必须 fail closed，绝不能降级为 trust-all TLS。公网 external STCP 验证 endpoint 必须显式配置为公网 IP literal 或严格公网 DNS 名称。Harness 在安装前以及每个 validated Android network 上分别解析 DNS，并要求所有结果均为公网地址；DNS 路由不构成身份认证。Kotlin visitor 校验精确的 leaf certificate DER SHA-256 pin，provider `frpc` 通过有界 trusted-certificate 文件和配置的 IP 或 DNS server name 校验同一张非 CA leaf；任何无法强制 pin 的 backend 都必须 fail closed，不得静默忽略。
 - 新增或更新服务器凭据、保存 TOFU fingerprint 时，必须先把每个新 secret 写入用途明确且带随机 UUID 的候选 alias。候选构建完成后检查取消。配置写入、结果确认、connection config epoch 更新和 SSH/STCP 运行态失效必须放在 `NonCancellable` 提交段。
 - 配置写入抛异常时重新读取目标：已经持久化则按成功继续；只有明确未提交时才清理候选并重新抛出；结果无法确认时保留候选，并抛出不含 secret 的类型化 unknown-outcome 错误。
 - 提交成功后，在配置锁外重新读取全部服务器引用并 best-effort 删除旧 alias。清理失败不得回滚配置。`SecureCredentialStore` 写入/删除必须在 IO dispatcher 使用可报告失败的 SharedPreferences `commit()`，只捕获预期 `Exception`，并传播取消与 JVM `Error`。删除或轮换 alias 前，先确认其他服务器没有继续引用它。

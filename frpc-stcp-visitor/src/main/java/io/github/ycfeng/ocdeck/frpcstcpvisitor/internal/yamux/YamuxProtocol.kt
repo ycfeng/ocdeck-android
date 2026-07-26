@@ -1,6 +1,6 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux
 
-import java.io.IOException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpSafeIOException
 import kotlinx.coroutines.CancellationException
 
 internal object YamuxProtocol {
@@ -107,7 +107,7 @@ internal enum class YamuxResourceKind {
     WRITER_BYTES,
 }
 
-internal sealed class YamuxFailure(message: String) : IOException(message)
+internal sealed class YamuxFailure(message: String) : FrpSafeIOException(message)
 
 internal class YamuxProtocolFailure(
     val reason: YamuxProtocolError,

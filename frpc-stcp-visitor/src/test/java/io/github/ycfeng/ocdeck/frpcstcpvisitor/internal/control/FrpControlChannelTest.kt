@@ -176,6 +176,8 @@ class FrpControlChannelTest {
 
         assertTrue(config.authenticateHeartbeats)
         assertTrue(config.authenticateNewWorkConnections)
+        assertEquals(10_000L, config.loginTimeoutMillis)
+        assertEquals(60_000L, config.reconnectLoginTimeoutMillis)
         assertEquals(10_000L, config.workHandshakeTimeoutMillis)
         assertEquals(32, config.maxActiveWorkConnections)
         assertEquals(FrpControlConfig.DISABLED_HEARTBEAT_MILLIS, config.heartbeatIntervalMillis)
@@ -204,6 +206,14 @@ class FrpControlChannelTest {
     @Test
     fun workHandshakeTimeoutMustBePositive() {
         val failure = failureOf { FrpControlConfig(workHandshakeTimeoutMillis = 0L) }
+
+        assertTrue(failure is FrpControlException)
+        assertEquals(FrpControlFailure.INVALID_CONFIGURATION, (failure as FrpControlException).failure)
+    }
+
+    @Test
+    fun reconnectLoginTimeoutMustBePositive() {
+        val failure = failureOf { FrpControlConfig(reconnectLoginTimeoutMillis = 0L) }
 
         assertTrue(failure is FrpControlException)
         assertEquals(FrpControlFailure.INVALID_CONFIGURATION, (failure as FrpControlException).failure)

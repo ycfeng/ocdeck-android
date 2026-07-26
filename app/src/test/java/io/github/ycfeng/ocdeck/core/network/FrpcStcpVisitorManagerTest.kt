@@ -67,6 +67,22 @@ class FrpcStcpVisitorManagerTest {
     }
 
     @Test
+    fun passesTlsCertificatePinToTheKotlinSession() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val manager = manager(client, ScriptedHealthProbeFactory())
+        val server = stcpServer()
+
+        manager.ensureReadyVisitor(
+            server = server,
+            credentials = credentials().copy(tlsServerCertificateSha256 = TLS_CERTIFICATE_PIN),
+            openCodePassword = null,
+            configLease = manager.captureConfigLease(server.id),
+        )
+
+        assertEquals(TLS_CERTIFICATE_PIN, client.startedConfigs.single().tlsServerCertificateSha256)
+    }
+
+    @Test
     fun concurrentCallersShareOneGenerationAndOneProbe() = runTest {
         val probeGate = CompletableDeferred<Unit>()
         val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
@@ -213,6 +229,175 @@ class FrpcStcpVisitorManagerTest {
         assertFalse(manager.isReadyTransportCurrent(initial.generation, initial.tunnel.controlEpoch))
         assertEquals(1, client.startCount)
         assertEquals(1, client.ensureCount)
+    }
+
+    @Test
+    fun recoveryStageTracksControlVisitorAndManagerBarriers() = runTest {
+        val recoveryProbeGate = CompletableDeferred<Unit>()
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val probes = ScriptedHealthProbeFactory { attempt, _ ->
+            if (attempt == 2) recoveryProbeGate.await()
+            ServerHealthDto(healthy = true, version = "1.2.$attempt")
+        }
+        val manager = manager(client, probes)
+        val server = stcpServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, credentials(), null, lease)
+
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_OLD_OPEN,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionPhase = "reconnecting"
+        client.sessionLastError = "transport failed"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_TRANSPORT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "login timed out"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_LOGIN_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "transport tls handshake failed"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_TLS_HANDSHAKE,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "transport closed"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_TRANSPORT_CLOSED,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "yamux stream open timed out"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_YAMUX_STREAM_OPEN_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect waiting login"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_WAITING_LOGIN,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect waiting login after timeout"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_WAITING_LOGIN_AFTER_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect login timer scheduled"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_LOGIN_TIMER_SCHEDULED,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect login timer fired"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_LOGIN_TIMER_FIRED,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect waiting login"
+        client.currentControlEpoch = initial.tunnel.controlEpoch + 1L
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_WAITING_LOGIN_AFTER_NEW_EPOCH,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+        client.currentControlEpoch = initial.tunnel.controlEpoch
+
+        client.sessionLastError = "control crypto truncated nonce"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_CRYPTO_TRUNCATED_NONCE,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect closing client streams"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_CLOSING_CLIENT_STREAMS,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect closing failed establishment"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_CLOSING_FAILED_ESTABLISHMENT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionPhase = "open"
+        client.sessionLastError = null
+        client.currentControlEpoch = 2
+        client.visitorPhase = "starting"
+        assertEquals(
+            FrpcStcpRecoveryStage.VISITOR_NOT_READY,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.visitorPhase = "ready"
+        val recovery = async { manager.ensureReadyVisitor(server, credentials(), null, lease) }
+        runCurrent()
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_HEALTH_PROBING,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        recoveryProbeGate.complete(Unit)
+        val recovered = recovery.await()
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_READY,
+            manager.captureRecoveryStage(recovered.generation, initial.tunnel.controlEpoch),
+        )
+    }
+
+    @Test
+    fun recoveryDiagnosticsLatchNativeTimeoutAndLatestHealthFailure() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val probes = ScriptedHealthProbeFactory { attempt, _ ->
+            if (attempt == 2) throw ConnectException("refused")
+            ServerHealthDto(healthy = true, version = "1.2.$attempt")
+        }
+        val manager = manager(client, probes)
+        val server = stcpServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, credentials(), null, lease)
+        client.currentControlEpoch = 2L
+        client.onWaitReady = { _, _, _, _, attempt ->
+            if (attempt == 2) {
+                throw KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT)
+            }
+        }
+
+        val timeout = runCatching {
+            manager.ensureReadyVisitor(server, credentials(), null, lease)
+        }.exceptionOrNull()
+
+        assertTrue(timeout is KotlinFrpcStcpVisitorException)
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_NATIVE_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.onWaitReady = { _, _, _, _, _ -> }
+        val recovered = async { manager.ensureReadyVisitor(server, credentials(), null, lease) }
+        runCurrent()
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_HEALTH_CONNECT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        advanceTimeBy(10)
+        runCurrent()
+        assertEquals(2L, recovered.await().tunnel.controlEpoch)
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_READY,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
     }
 
     @Test
@@ -840,6 +1025,7 @@ class FrpcStcpVisitorManagerTest {
         healthProbeFactory = probes,
         readinessPolicy = FrpcStcpReadinessPolicy(
             nativeReadyTimeoutMillis = 1_000,
+            epochRefreshNativeReadyTimeoutMillis = 3_000,
             totalTimeoutMillis = 10_000,
             attemptTimeoutMillis = 1_000,
             initialRetryDelayMillis = 10,
@@ -873,6 +1059,9 @@ class FrpcStcpVisitorManagerTest {
 }
 
 private class FrpcManagerTestJvmError : Error()
+
+private const val TLS_CERTIFICATE_PIN =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 private class FrpcManagerTestCancellationException(
     @Suppress("UNUSED_PARAMETER") identity: Unit,
@@ -926,6 +1115,7 @@ private class ControllableFrpcStcpVisitorClient(
     var onStopSession: suspend (String, Int) -> Unit = { _, _ -> }
     var currentControlEpoch = 1L
     var sessionPhase = "open"
+    var sessionLastError: String? = null
     var visitorPhase = "ready"
     var listenerBound = true
     var reportedDesiredRevision: Long? = null
@@ -988,6 +1178,7 @@ private class ControllableFrpcStcpVisitorClient(
             sessionId = sessionId,
             phase = sessionPhase,
             controlEpoch = currentControlEpoch,
+            lastError = sessionLastError,
             visitors = if (visitorName == null) {
                 emptyMap()
             } else {

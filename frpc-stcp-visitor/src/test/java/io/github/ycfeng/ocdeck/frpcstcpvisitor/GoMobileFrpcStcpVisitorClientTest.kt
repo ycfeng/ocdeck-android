@@ -15,6 +15,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -67,6 +68,25 @@ class GoMobileFrpcStcpVisitorClientTest {
         )
 
         assertTrue(bridge.startedConfigJson!!.contains("\"serverPort\":7000"))
+    }
+
+    @Test
+    fun startSessionRejectsTlsCertificatePinsThatTheBridgeCannotEnforce() {
+        val bridge = FakeBridge()
+        val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                client.startSession(
+                    FrpcSessionConfig(
+                        serverAddr = "frps.example.com",
+                        authToken = "token-value",
+                        tlsServerCertificateSha256 = "0".repeat(64),
+                    ),
+                )
+            }
+        }
+        assertNull(bridge.startedConfigJson)
     }
 
     @Test

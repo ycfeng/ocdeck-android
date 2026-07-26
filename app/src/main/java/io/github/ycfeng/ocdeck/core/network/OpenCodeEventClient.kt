@@ -256,6 +256,17 @@ class OpenCodeEventClient internal constructor(
         }
     }
 
+    internal fun projectCalibrationStage(
+        serverId: String,
+        directory: String,
+        workspace: String? = null,
+    ): ProjectCalibrationStage {
+        val key = projectKey(serverId, directory, workspace)
+        return synchronized(lock) {
+            projectSlots[key]?.calibrationStage ?: ProjectCalibrationStage.None
+        }
+    }
+
     internal fun globalLifecycleState(serverId: String): ConnectionLifecycleState? = synchronized(lock) {
         globalSlots[serverId]?.let { slot ->
             ConnectionLifecycleState(
@@ -298,6 +309,7 @@ class OpenCodeEventClient internal constructor(
         slot.generation += 1
         slot.clearHandoffEvents()
         detachProjectLifecycleLocked(slot, replayBufferedEvents = true, actions = actions)
+        slot.calibrationStage = ProjectCalibrationStage.None
         slot.transportIdentity = knownTransport
         setProjectStatusLocked(slot, SseConnectionStatus.Connecting)
         createProjectOpenJobLocked(slot, attempt = 0, actions = actions)
@@ -344,6 +356,7 @@ class OpenCodeEventClient internal constructor(
         slot.desiredOpen = false
         slot.generation += 1
         detachProjectLifecycleLocked(slot, replayBufferedEvents = true, actions = actions)
+        slot.calibrationStage = ProjectCalibrationStage.None
         slot.transportIdentity = null
         setProjectStatusLocked(slot, SseConnectionStatus.Closed)
     }
@@ -935,6 +948,7 @@ class OpenCodeEventClient internal constructor(
                 transportIdentity = request.transportIdentity,
             ).also { snapshotToken ->
                 slot.calibration = ProjectCalibrationState(snapshotToken)
+                slot.calibrationStage = ProjectCalibrationStage.Requested
             }
         }
         val handle = snapshotCoordinator.request(token) { guardedStore, outcome ->
@@ -945,6 +959,7 @@ class OpenCodeEventClient internal constructor(
             val calibration = projectSlots[token.key]?.calibration
             if (calibration?.token == token) {
                 calibration.handle = handle
+                projectSlots[token.key]?.calibrationStage = ProjectCalibrationStage.Loading
             } else {
                 cancel = true
             }
@@ -961,20 +976,22 @@ class OpenCodeEventClient internal constructor(
         synchronized(lock) {
             val slot = projectSlots[token.key]
             val calibration = slot?.calibration
-            if (
-                slot == null ||
-                calibration?.token != token ||
-                !isCalibrationAuthorityCurrentLocked(token)
-            ) return@synchronized
+            if (slot == null || calibration?.token != token) return@synchronized
+            if (!isCalibrationAuthorityCurrentLocked(token)) {
+                slot.calibrationStage = ProjectCalibrationStage.Stale
+                return@synchronized
+            }
             slot.calibration = null
             val needsFollowUp = calibration.dirty
             when (outcome) {
                 is ProjectSnapshotOutcome.Success -> {
                     val loaded = outcome.loaded
                     if (loaded.transportIdentity != token.transportIdentity) {
+                        slot.calibrationStage = ProjectCalibrationStage.TransportChanged
                         replayEventsLocked(token.key, calibration.events, actions)
                         restartServerForTransportLocked(token.key.serverId, loaded.transportIdentity, actions)
                     } else if (!loaded.snapshot.matches(token.key)) {
+                        slot.calibrationStage = ProjectCalibrationStage.IdentityMismatch
                         guardedStore.setProjectLoading(
                             serverId = token.key.serverId,
                             directory = token.key.normalizedDirectory,
@@ -985,6 +1002,7 @@ class OpenCodeEventClient internal constructor(
                         replayEventsLocked(token.key, calibration.events, actions)
                     } else {
                         guardedStore.applyProjectSnapshot(loaded.snapshot)
+                        slot.calibrationStage = ProjectCalibrationStage.Applied
                         loaded.activeSessionMessages
                             ?.takeIf { messages ->
                                 guardedStore.currentProject(
@@ -1010,6 +1028,7 @@ class OpenCodeEventClient internal constructor(
                 }
 
                 is ProjectSnapshotOutcome.Failure -> {
+                    slot.calibrationStage = ProjectCalibrationStage.Failed
                     guardedStore.setProjectLoading(
                         serverId = token.key.serverId,
                         directory = token.key.normalizedDirectory,
@@ -1251,6 +1270,17 @@ internal data class ConnectionLifecycleState(
     val transportIdentity: ServerTransportIdentity?,
 )
 
+internal enum class ProjectCalibrationStage {
+    None,
+    Requested,
+    Loading,
+    Applied,
+    Failed,
+    TransportChanged,
+    IdentityMismatch,
+    Stale,
+}
+
 private class ProjectSlot(val key: ProjectKey) {
     val owners = mutableSetOf<Long>()
     var desiredOpen = false
@@ -1263,6 +1293,7 @@ private class ProjectSlot(val key: ProjectKey) {
     var openJob: Job? = null
     var retryJob: Job? = null
     var calibration: ProjectCalibrationState? = null
+    var calibrationStage: ProjectCalibrationStage = ProjectCalibrationStage.None
     var transportIdentity: ServerTransportIdentity? = null
     var status: SseConnectionStatus = SseConnectionStatus.Closed
     val handoffEvents = ArrayDeque<HandoffEvent>()

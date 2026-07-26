@@ -229,7 +229,7 @@ androidComponents {
     pureKotlinBuildTypes.forEach { buildType ->
         beforeVariants(selector().withBuildType(buildType)) { variantBuilder ->
             variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
-            if (buildType == "kotlinRelease") {
+            if (buildType == "canary" || buildType == "kotlinRelease") {
                 variantBuilder.deviceTests.getValue(DeviceTestBuilder.ANDROID_TEST_TYPE).enable = true
             }
         }

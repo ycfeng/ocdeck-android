@@ -8,6 +8,8 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.AclEntryType
+import java.nio.file.attribute.AclFileAttributeView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -69,6 +71,15 @@ class InteropProcessSupportTest {
             assertEquals(
                 setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
                 Files.getPosixFilePermissions(privateFile, LinkOption.NOFOLLOW_LINKS),
+            )
+        } else {
+            val view = Files.getFileAttributeView(privateFile, AclFileAttributeView::class.java)
+                ?: throw AssertionError("ACL view was unavailable")
+            val expectedOwner = currentProcessUserPrincipal(privateFile.fileSystem)
+            assertEquals(expectedOwner, view.owner)
+            assertTrue(
+                view.acl.filter { it.type() == AclEntryType.ALLOW }
+                    .all { it.principal() == expectedOwner },
             )
         }
         deleteTreeChecked(root)

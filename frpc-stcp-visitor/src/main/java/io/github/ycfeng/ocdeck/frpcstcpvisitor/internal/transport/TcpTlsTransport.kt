@@ -7,7 +7,9 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.security.MessageDigest
 import java.security.SecureRandom
+import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
@@ -34,7 +36,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 internal class TcpTlsTransportDialer(
     private val config: TcpTlsTransportConfig,
     private val socketFactory: TcpSocketFactory = TcpSocketFactory(::Socket),
-    private val tlsSocketFactory: TlsClientSocketFactory = InsecureTlsClientSocketFactory,
+    private val routeProvider: TcpDialRouteProvider? = null,
+    private val tlsSocketFactory: TlsClientSocketFactory = tlsClientSocketFactory(config),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val beforeResultHandoff: suspend () -> Unit = {},
 ) : AutoCloseable {
@@ -51,28 +54,19 @@ internal class TcpTlsTransportDialer(
         }
 
         return try {
-            val socket = createSocket()
-            configureSocket(socket)
-            connectSocket(socket)
-
-            val input: InputStream
-            val output: OutputStream
-            if (config.tlsEnabled) {
-                val tlsSocket = createTlsSocket(socket)
-                handshake(tlsSocket)
-                input = tlsSocket.getInputStreamSafely()
-                output = tlsSocket.getOutputStreamSafely()
-            } else {
-                input = socket.getInputStreamSafely()
-                output = socket.getOutputStreamSafely()
+            val established = withTransportBudgetTimeout(
+                timeoutMillis = totalEstablishmentTimeoutMillis(),
+                timeoutFailure = FrpTransportFailure.CONNECT_TIMEOUT,
+            ) {
+                connectFirstAvailable(prepareDialPlan())
             }
 
             if (closeController.isClosed) {
                 throw FrpTransportException(FrpTransportFailure.CLOSED)
             }
             val transport = TcpTlsYamuxTransport(
-                input = input,
-                output = output,
+                input = established.input,
+                output = established.output,
                 closeController = closeController,
                 dispatcher = dispatcher,
             )
@@ -103,9 +97,86 @@ internal class TcpTlsTransportDialer(
             "activeOperations=${diagnostics.activeOperations})"
     }
 
-    private suspend fun createSocket(): Socket = try {
+    private suspend fun prepareDialPlan(): PreparedTcpDialPlan {
+        val provider = routeProvider ?: return PreparedTcpDialPlan(
+            route = null,
+            addresses = listOf(InetSocketAddress.createUnresolved(config.endpoint.host, config.endpoint.port)),
+        )
+        return try {
+            runBlockingOperation {
+                val route = provider.current()
+                val resolved = route.resolve(config.endpoint.host)
+                if (resolved.isEmpty() || resolved.size > MAXIMUM_DIAL_ADDRESSES) {
+                    throw FrpTransportException(FrpTransportFailure.CONNECT_FAILED)
+                }
+                PreparedTcpDialPlan(
+                    route = route,
+                    addresses = resolved.map { address -> InetSocketAddress(address, config.endpoint.port) },
+                )
+            }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Error) {
+            throw failure
+        } catch (failure: FrpTransportException) {
+            throw failure
+        } catch (_: Exception) {
+            throw FrpTransportException(FrpTransportFailure.CONNECT_FAILED)
+        }
+    }
+
+    private suspend fun connectFirstAvailable(plan: PreparedTcpDialPlan): EstablishedTcpDial {
+        var lastFailure: FrpTransportException? = null
+        val attemptTimeoutMillis = (config.connectTimeoutMillis / plan.addresses.size).coerceAtLeast(1L)
+        for (address in plan.addresses) {
+            currentCoroutineContext().ensureActive()
+            val socket = createSocket(plan.route)
+            var tlsSocket: TlsClientSocket? = null
+            try {
+                configureSocket(socket)
+                connectSocket(socket, address, attemptTimeoutMillis)
+                if (config.tlsEnabled) {
+                    tlsSocket = createTlsSocket(socket)
+                    handshake(socket, tlsSocket)
+                    return EstablishedTcpDial(
+                        input = tlsSocket.getInputStreamSafely(),
+                        output = tlsSocket.getOutputStreamSafely(),
+                    )
+                }
+                return EstablishedTcpDial(
+                    input = socket.getInputStreamSafely(),
+                    output = socket.getOutputStreamSafely(),
+                )
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Error) {
+                throw failure
+            } catch (failure: FrpTransportException) {
+                closeController.releaseCandidate(socket, tlsSocket)
+                if (failure.failure == FrpTransportFailure.CLOSED) {
+                    throw FrpTransportException(FrpTransportFailure.CLOSED)
+                }
+                if (closeController.isClosed) throw failure
+                lastFailure = failure
+            }
+        }
+        throw lastFailure ?: FrpTransportException(FrpTransportFailure.CONNECT_FAILED)
+    }
+
+    private fun totalEstablishmentTimeoutMillis(): Long =
+        if (config.tlsEnabled) {
+            if (config.tlsHandshakeTimeoutMillis > Long.MAX_VALUE - config.connectTimeoutMillis) {
+                Long.MAX_VALUE
+            } else {
+                config.connectTimeoutMillis + config.tlsHandshakeTimeoutMillis
+            }
+        } else {
+            config.connectTimeoutMillis
+        }
+
+    private suspend fun createSocket(route: TcpDialRoute?): Socket = try {
         runBlockingOperation {
-            socketFactory.create().also(closeController::attachSocket)
+            (route?.createSocket() ?: socketFactory.create()).also(closeController::attachSocket)
         }
     } catch (failure: CancellationException) {
         throw failure
@@ -130,17 +201,21 @@ internal class TcpTlsTransportDialer(
         }
     }
 
-    private suspend fun connectSocket(socket: Socket) {
+    private suspend fun connectSocket(socket: Socket, address: InetSocketAddress, timeoutMillis: Long) {
         try {
             withTransportBudgetTimeout(
-                timeoutMillis = config.connectTimeoutMillis,
+                timeoutMillis = timeoutMillis,
                 timeoutFailure = FrpTransportFailure.CONNECT_TIMEOUT,
             ) {
-                runBlockingOperation {
-                    socket.connect(
-                        InetSocketAddress(config.endpoint.host, config.endpoint.port),
-                        config.connectTimeoutMillis.toInt(),
-                    )
+                runBlockingOperation(
+                    budgetTimeoutCleanup = { closeController.releaseCandidate(socket, null) },
+                ) {
+                    val connectAddress = if (address.isUnresolved) {
+                        InetSocketAddress(address.hostString, address.port)
+                    } else {
+                        address
+                    }
+                    socket.connect(connectAddress, timeoutMillis.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
                 }
             }
         } catch (failure: CancellationException) {
@@ -173,13 +248,16 @@ internal class TcpTlsTransportDialer(
         throw FrpTransportException(FrpTransportFailure.TLS_SETUP_FAILED)
     }
 
-    private suspend fun handshake(tlsSocket: TlsClientSocket) {
+    private suspend fun handshake(socket: Socket, tlsSocket: TlsClientSocket) {
         try {
             withTransportBudgetTimeout(
                 timeoutMillis = config.tlsHandshakeTimeoutMillis,
                 timeoutFailure = FrpTransportFailure.TLS_HANDSHAKE_TIMEOUT,
             ) {
-                runBlockingOperation(tlsSocket::startHandshake)
+                runBlockingOperation(
+                    budgetTimeoutCleanup = { closeController.releaseCandidate(socket, tlsSocket) },
+                    block = tlsSocket::startHandshake,
+                )
             }
         } catch (failure: CancellationException) {
             throw failure
@@ -195,11 +273,18 @@ internal class TcpTlsTransportDialer(
         }
     }
 
-    private suspend fun <T> runBlockingOperation(block: () -> T): T =
+    private suspend fun <T> runBlockingOperation(
+        budgetTimeoutCleanup: (() -> Unit)? = null,
+        block: () -> T,
+    ): T =
         suspendCancellableCoroutine { continuation ->
             activeOperations.incrementAndGet()
             continuation.invokeOnCancellation { cause ->
-                closeAfterCancellation(closeController, cause)
+                if (budgetTimeoutCleanup != null && cause.hasTransportBudgetCancellation()) {
+                    closeAfterBudgetTimeout(budgetTimeoutCleanup, cause)
+                } else {
+                    closeAfterCancellation(closeController, cause)
+                }
             }
             dispatchBlockingOperation(
                 dispatcher = dispatcher,
@@ -220,7 +305,21 @@ internal class TcpTlsTransportDialer(
         }
         throw selected
     }
+
+    private companion object {
+        const val MAXIMUM_DIAL_ADDRESSES = 16
+    }
 }
+
+private data class PreparedTcpDialPlan(
+    val route: TcpDialRoute?,
+    val addresses: List<InetSocketAddress>,
+)
+
+private data class EstablishedTcpDial(
+    val input: InputStream,
+    val output: OutputStream,
+)
 
 internal data class TcpTlsDialDiagnostics(
     val started: Boolean,
@@ -343,6 +442,33 @@ internal class TransportCloseController {
             closeExpected(value)
             throw FrpTransportException(FrpTransportFailure.CLOSED)
         }
+    }
+
+    fun releaseSocket(value: Socket) {
+        val released = synchronized(stateLock) {
+            if (closeState == TransportCloseState.OPEN && socket === value) {
+                socket = null
+                true
+            } else {
+                false
+            }
+        }
+        if (released) closeExpected(value)
+    }
+
+    fun releaseCandidate(socketValue: Socket, tlsSocketValue: TlsClientSocket?) {
+        val resources = synchronized(stateLock) {
+            if (closeState != TransportCloseState.OPEN || socket !== socketValue) {
+                emptyList()
+            } else if (tlsSocketValue != null && tlsSocket !== tlsSocketValue) {
+                emptyList()
+            } else {
+                socket = null
+                if (tlsSocketValue != null) tlsSocket = null
+                listOfNotNull(socketValue, tlsSocketValue)
+            }
+        }
+        resources.forEach(::closeExpected)
     }
 
     fun attachTlsSocket(value: TlsClientSocket) {
@@ -499,6 +625,10 @@ private suspend fun <T> withTransportBudgetTimeout(
 
 private class TransportBudgetCancellation : CancellationException("frp transport budget expired")
 
+private fun Throwable?.hasTransportBudgetCancellation(): Boolean =
+    generateSequence(this) { failure -> failure.cause }
+        .any { failure -> failure is TransportBudgetCancellation }
+
 @OptIn(InternalCoroutinesApi::class)
 private fun <T> dispatchBlockingOperation(
     dispatcher: CoroutineDispatcher,
@@ -553,6 +683,16 @@ private fun closeAfterCancellation(
 ) {
     try {
         closeController.close()
+    } catch (failure: CancellationException) {
+        cancellation?.let { addSuppressedFailure(it, failure) }
+    } catch (failure: Error) {
+        cancellation?.let { addSuppressedFailure(it, failure) }
+    }
+}
+
+private fun closeAfterBudgetTimeout(cleanup: () -> Unit, cancellation: Throwable?) {
+    try {
+        cleanup()
     } catch (failure: CancellationException) {
         cancellation?.let { addSuppressedFailure(it, failure) }
     } catch (failure: Error) {
@@ -640,6 +780,64 @@ private object InsecureTrustManager : X509TrustManager {
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
 
     override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+}
+
+internal fun tlsClientSocketFactory(config: TcpTlsTransportConfig): TlsClientSocketFactory =
+    config.tlsServerCertificateSha256
+        ?.let(::PinnedTlsClientSocketFactory)
+        ?: InsecureTlsClientSocketFactory
+
+internal class PinnedTlsClientSocketFactory(
+    certificateSha256: String,
+) : TlsClientSocketFactory {
+    private val trustManager = PinnedCertificateTrustManager(certificateSha256)
+    private val socketFactory by lazy {
+        val context = SSLContext.getInstance("TLS")
+        context.init(null, arrayOf(trustManager), SecureRandom())
+        context.socketFactory
+    }
+
+    override fun create(socket: Socket, endpoint: FrpTcpEndpoint): TlsClientSocket {
+        val sslSocket = socketFactory.createSocket(socket, endpoint.host, endpoint.port, true) as SSLSocket
+        sslSocket.useClientMode = true
+        return JdkTlsClientSocket(sslSocket)
+    }
+
+    override fun toString(): String = "PinnedTlsClientSocketFactory(certificateSha256=<redacted>)"
+}
+
+internal class PinnedCertificateTrustManager(
+    certificateSha256: String,
+) : X509TrustManager {
+    private val expectedSha256 = certificateSha256.decodeSha256()
+
+    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+        throw CertificateException("client certificates are unsupported")
+    }
+
+    override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
+        val leaf = chain?.firstOrNull() ?: throw CertificateException("server certificate was missing")
+        leaf.checkValidity()
+        val actualSha256 = MessageDigest.getInstance("SHA-256").digest(leaf.encoded)
+        try {
+            if (!MessageDigest.isEqual(expectedSha256, actualSha256)) {
+                throw CertificateException("server certificate pin did not match")
+            }
+        } finally {
+            actualSha256.fill(0)
+        }
+    }
+
+    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+
+    override fun toString(): String = "PinnedCertificateTrustManager(certificateSha256=<redacted>)"
+}
+
+private fun String.decodeSha256(): ByteArray {
+    if (!TcpTlsTransportConfig.TLS_SERVER_CERTIFICATE_SHA256.matches(this)) {
+        throw FrpTransportException(FrpTransportFailure.INVALID_CONFIGURATION)
+    }
+    return ByteArray(length / 2) { index -> substring(index * 2, index * 2 + 2).toInt(16).toByte() }
 }
 
 private class JdkTlsClientSocket(

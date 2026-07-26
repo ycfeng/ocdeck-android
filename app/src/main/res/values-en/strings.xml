@@ -149,6 +149,7 @@
     <string name="server_frpc_server_addr_label">frps Address</string>
     <string name="server_frpc_server_port_label">frps Port</string>
     <string name="server_frpc_auth_token_label">frps Token (Optional)%1$s</string>
+    <string name="server_frpc_tls_certificate_pin_label">TLS Leaf Certificate SHA-256 Pin (Optional)%1$s</string>
     <string name="server_frpc_user_label">frpc User (Optional)</string>
     <string name="server_frpc_server_user_label">STCP Server User (Optional)</string>
     <string name="server_frpc_server_name_label">STCP Server Name</string>
@@ -159,7 +160,7 @@
     <string name="server_frpc_wire_protocol_v1_description">Compatible with the default frp protocol.</string>
     <string name="server_frpc_wire_protocol_v2_title">v2</string>
     <string name="server_frpc_wire_protocol_v2_description">Use when the frp deployment explicitly enables the newer protocol.</string>
-    <string name="server_frpc_security_hint">STCP tokens and secret keys are saved only in Keystore. This first version supports local-port mode only.</string>
+    <string name="server_frpc_security_hint">STCP tokens, secret keys, and TLS certificate pins are saved only in Keystore. Public frps endpoints should use the 64-character lowercase SHA-256 pin of a known leaf certificate.</string>
     <string name="server_loading_config">Loading server configuration</string>
     <string name="server_save_edit">Save Server</string>
     <string name="server_save_add">Add Server</string>
@@ -468,6 +469,8 @@
     <string name="server_error_frpc_secret_key_empty">STCP secret key cannot be empty</string>
     <string name="server_error_frpc_server_port_range">frps port must be 1-65535</string>
     <string name="server_error_frpc_bind_port_range">STCP local bind port must be 1-65535</string>
+    <string name="server_error_frpc_tls_certificate_pin_invalid">The TLS leaf certificate SHA-256 pin must be 64 lowercase hexadecimal characters</string>
+    <string name="server_error_frpc_tls_certificate_pin_required_for_changed_endpoint">Enter the new TLS leaf certificate SHA-256 pin when changing the frps address or port</string>
     <string name="settings_title">Settings</string>
     <string name="settings_current_server">Current server: %1$s</string>
     <string name="settings_server_prefix">Server: %1$s</string>

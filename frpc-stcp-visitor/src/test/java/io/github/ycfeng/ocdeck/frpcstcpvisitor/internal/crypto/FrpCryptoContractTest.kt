@@ -13,6 +13,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConn
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewWorkConn
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.Ping
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.RawClientHello
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxStreamResetFailure
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -680,6 +681,12 @@ class FrpCryptoContractTest {
             assertFalse(suppressed.toString().contains("sensitive-cancellation-marker"))
             assertFalse(suppressed.toString().contains("sensitive-error-marker"))
         }
+    }
+
+    @Test
+    fun cryptoFailureMappingPreservesTypedYamuxFailure() {
+        val failure = YamuxStreamResetFailure()
+        assertSame(failure, mapCryptoStreamFailure(failure, FrpCryptoFailure.IO_FAILURE))
     }
 
     @Test

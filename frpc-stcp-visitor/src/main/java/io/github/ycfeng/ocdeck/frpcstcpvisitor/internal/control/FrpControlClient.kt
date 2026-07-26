@@ -1,6 +1,7 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control
 
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpCryptoException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpCryptoFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpTimestampAuth
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.ClientSpec
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpMessage
@@ -18,13 +19,24 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxConnecti
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxConnector
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.YamuxStreamBlockingIo
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.handoffFrpOwnedResult
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxFailure
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxProtocolFailure
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTimeoutFailure
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTimeoutKind
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTransportFailure
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTruncatedFrameFailure
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
 import java.util.LinkedHashSet
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -231,6 +243,26 @@ internal class FrpControlClient(
     private val transportSequence = AtomicLong(0L)
     private val epochSequence = AtomicLong(0L)
     private val activeSession = AtomicReference<ControlSession?>()
+    private val reconnectLoginTimedOut = AtomicBoolean(false)
+    private val reconnectEstablishmentFailure = AtomicReference<FrpControlFailure?>()
+    private val reconnectCleanupFailure = AtomicReference<FrpControlFailure?>()
+    private val reconnectEstablishAttemptCount = AtomicLong(0L)
+    private val reconnectLoginTimerScheduledCount = AtomicLong(0L)
+    private val reconnectLoginTimerFiredCount = AtomicLong(0L)
+    private val reconnectSuccessfulOpenCount = AtomicLong(0L)
+    private val reconnectCurrentAttempt = AtomicLong(0L)
+    private val reconnectLoginTimerScheduledAttempt = AtomicLong(0L)
+    private val reconnectLoginTimerFiredAttempt = AtomicLong(0L)
+    private val budgetScheduler: ScheduledExecutorService = ScheduledThreadPoolExecutor(
+        1,
+        ThreadFactory { runnable ->
+            Thread(runnable, "FrpControlBudgetTimer").apply { isDaemon = true }
+        },
+    ).apply {
+        removeOnCancelPolicy = true
+        executeExistingDelayedTasksAfterShutdownPolicy = false
+        continueExistingPeriodicTasksAfterShutdownPolicy = false
+    }
     private val runner = AtomicReference<Job?>()
     private val stateLock = Any()
     private val stopped = CompletableDeferred<Unit>()
@@ -279,6 +311,7 @@ internal class FrpControlClient(
                 transitionToClosed()
             }
             session?.close()
+            budgetScheduler.shutdownNow()
             ownerJob.complete()
             stopped.complete(Unit)
         }
@@ -302,8 +335,31 @@ internal class FrpControlClient(
         return session.openClientStream(expectedIdentity)
     }
 
+    fun invalidateTransport(): FrpControlIdentity? {
+        if (!hasActiveOwnerLease()) return null
+        val identity = (state.value as? FrpControlState.Open)?.identity ?: return null
+        val session = activeSession.get()
+        if (session?.identity == identity) session.invalidateTransport()
+        return identity
+    }
+
+    fun reconnectCleanupFailure(): FrpControlFailure? = reconnectCleanupFailure.get()
+
+    fun reconnectEstablishmentFailure(): FrpControlFailure? = reconnectEstablishmentFailure.get()
+
+    fun reconnectDiagnostics(): FrpControlReconnectDiagnostics = FrpControlReconnectDiagnostics(
+        establishAttemptCount = reconnectEstablishAttemptCount.get(),
+        loginTimerScheduledCount = reconnectLoginTimerScheduledCount.get(),
+        loginTimerFiredCount = reconnectLoginTimerFiredCount.get(),
+        successfulOpenCount = reconnectSuccessfulOpenCount.get(),
+        currentAttempt = reconnectCurrentAttempt.get(),
+        loginTimerScheduledAttempt = reconnectLoginTimerScheduledAttempt.get(),
+        loginTimerFiredAttempt = reconnectLoginTimerFiredAttempt.get(),
+    )
+
     override fun close() {
         if (!transitionToClosed()) return
+        budgetScheduler.shutdownNow()
         val session = activeSession.getAndSet(null)
         if (session == null) {
             ownerJob.cancel(ControlClientClosedCancellation())
@@ -348,8 +404,13 @@ internal class FrpControlClient(
                 if (!hasOpened) publish(FrpControlState.Connecting(generation, attempt = 1))
                 val transportIdentity = transportSequence.incrementAndGet()
                 val epoch = epochSequence.get() + 1L
+                val reconnecting = hasOpened
                 val established = try {
-                    establish(previousRunId, FrpControlIdentity(generation, epoch, transportIdentity))
+                    establish(
+                        previousRunId = previousRunId,
+                        identity = FrpControlIdentity(generation, epoch, transportIdentity),
+                        forceCleanupAfterTimeout = reconnecting,
+                    )
                 } catch (failure: CancellationException) {
                     throw failure
                 } catch (failure: Error) {
@@ -365,7 +426,9 @@ internal class FrpControlClient(
                         return
                     }
                     retryAttempt = incrementAttempt(retryAttempt)
-                    delayBeforeRetry(retryAttempt, mapped.failure)
+                    val delayMillis = reconnectDelay(retryAttempt)
+                    publish(FrpControlState.Retrying(generation, retryAttempt, delayMillis, mapped.failure))
+                    delayer.delayMillis(delayMillis)
                     continue
                 }
 
@@ -384,9 +447,11 @@ internal class FrpControlClient(
                     delayer = delayer,
                     blockingIoContext = blockingIoContext,
                     workHandlerContext = workHandlerContext,
+                    budgetScheduler = budgetScheduler,
                     blockingIoThreadGuard = blockingIoThreadGuard,
                     lifecycleHooks = lifecycleHooks,
                     isAuthoritative = ::isAuthoritative,
+                    onReconnectCleanupFailure = reconnectCleanupFailure::set,
                 )
                 if (!hasActiveOwnerLease() || !activeSession.compareAndSet(null, session)) {
                     session.close()
@@ -399,6 +464,7 @@ internal class FrpControlClient(
                 session.start()
                 lifecycleHooks.beforeOpenPublish(session.identity)
                 if (session.publishOpenIfActive { publish(FrpControlState.Open(session.identity)) }) {
+                    if (reconnecting) incrementSaturating(reconnectSuccessfulOpenCount)
                     hasOpened = true
                     retryAttempt = 0
                 }
@@ -445,7 +511,11 @@ internal class FrpControlClient(
                         publish(FrpControlState.Retrying(generation, retryAttempt, delayMillis, mapped.failure))
                     }
                 }
-                val completedFailure = shutdownSession(session, failure)
+                val completedFailure = shutdownSession(
+                    session = session,
+                    current = failure,
+                    forceMuxTerminationAfterTimeout = retryDelayMillis != null,
+                )
                 activeSession.compareAndSet(session, null)
                 when (completedFailure) {
                     is CancellationException -> throw completedFailure
@@ -491,10 +561,16 @@ internal class FrpControlClient(
         }
     }
 
-    private suspend fun shutdownSession(session: ControlSession, current: Throwable?): Throwable {
+    private suspend fun shutdownSession(
+        session: ControlSession,
+        current: Throwable?,
+        forceMuxTerminationAfterTimeout: Boolean = false,
+    ): Throwable {
         var shutdownFailure: Throwable? = null
         try {
-            withContext(NonCancellable) { session.shutdown() }
+            withContext(NonCancellable) {
+                session.shutdown(forceMuxTerminationAfterTimeout)
+            }
         } catch (failure: CancellationException) {
             shutdownFailure = preferControlFailure(shutdownFailure, failure)
         } catch (failure: Error) {
@@ -506,17 +582,70 @@ internal class FrpControlClient(
         return current?.let { failure -> preferControlFailure(failure, completedFailure) } ?: completedFailure
     }
 
-    private suspend fun establish(previousRunId: String, identity: FrpControlIdentity): EstablishedControl {
+    private suspend fun establish(
+        previousRunId: String,
+        identity: FrpControlIdentity,
+        forceCleanupAfterTimeout: Boolean,
+    ): EstablishedControl {
         var mux: FrpMuxConnection? = null
         var blockingIo: YamuxStreamBlockingIo? = null
+        val reconnectAttempt = if (forceCleanupAfterTimeout) {
+            incrementSaturating(reconnectEstablishAttemptCount).also(reconnectCurrentAttempt::set)
+        } else {
+            0L
+        }
         try {
+            if (forceCleanupAfterTimeout) {
+                reconnectEstablishmentFailure.set(FrpControlFailure.RECONNECT_CONNECTING_TRANSPORT)
+            }
             mux = connector.connect()
+            if (forceCleanupAfterTimeout) {
+                reconnectEstablishmentFailure.set(FrpControlFailure.RECONNECT_OPENING_CONTROL_STREAM)
+            }
             val controlStream = mux.openStream()
             blockingIo = YamuxStreamBlockingIo(controlStream, scope, blockingIoThreadGuard)
+            if (forceCleanupAfterTimeout) {
+                reconnectEstablishmentFailure.set(
+                    if (reconnectLoginTimedOut.get()) {
+                        FrpControlFailure.RECONNECT_WAITING_LOGIN_AFTER_TIMEOUT
+                    } else {
+                        FrpControlFailure.RECONNECT_WAITING_LOGIN
+                    },
+                )
+            }
             val login = buildLogin(previousRunId)
+            val loginTimeoutMillis = if (forceCleanupAfterTimeout) {
+                config.reconnectLoginTimeoutMillis
+            } else {
+                config.loginTimeoutMillis
+            }
             val loggedIn = withControlBudgetTimeout(
-                timeoutMillis = config.loginTimeoutMillis,
+                scheduler = budgetScheduler,
+                timeoutMillis = loginTimeoutMillis,
                 timeoutFailure = FrpControlFailure.LOGIN_TIMEOUT,
+                onTimerScheduled = if (forceCleanupAfterTimeout) {
+                    {
+                        reconnectLoginTimerScheduledAttempt.set(reconnectAttempt)
+                        incrementSaturating(reconnectLoginTimerScheduledCount)
+                    }
+                } else {
+                    null
+                },
+                onTimerFired = if (forceCleanupAfterTimeout) {
+                    {
+                        reconnectLoginTimerFiredAttempt.set(reconnectAttempt)
+                        incrementSaturating(reconnectLoginTimerFiredCount)
+                    }
+                } else {
+                    null
+                },
+                onTimeout = {
+                    if (forceCleanupAfterTimeout) {
+                        reconnectLoginTimedOut.set(true)
+                        reconnectEstablishmentFailure.set(FrpControlFailure.RECONNECT_ABORTING_LOGIN_TIMEOUT)
+                    }
+                    blockingIo.close()
+                },
             ) {
                 runControlCodec {
                     FrpControlBootstrap(config, secureRandom).exchange(
@@ -527,11 +656,13 @@ internal class FrpControlClient(
                     )
                 }
             }
+            reconnectLoginTimedOut.set(false)
+            reconnectEstablishmentFailure.set(null)
             return EstablishedControl(identity, mux, loggedIn.runId, loggedIn.channel)
         } catch (failure: CancellationException) {
-            closeEstablishedResources(blockingIo, mux, failure)
+            closeEstablishedResources(blockingIo, mux, failure, forceCleanupAfterTimeout)
         } catch (failure: Error) {
-            closeEstablishedResources(blockingIo, mux, failure)
+            closeEstablishedResources(blockingIo, mux, failure, forceCleanupAfterTimeout)
         } catch (failure: Exception) {
             val selected = try {
                 currentCoroutineContext().ensureActive()
@@ -543,6 +674,7 @@ internal class FrpControlClient(
                 blockingIo,
                 mux,
                 selected,
+                forceCleanupAfterTimeout,
             )
         }
     }
@@ -554,6 +686,7 @@ internal class FrpControlClient(
         blockingIo: YamuxStreamBlockingIo?,
         mux: FrpMuxConnection?,
         failure: Throwable,
+        forceCleanupAfterTimeout: Boolean,
     ): Nothing {
         var selected = failure
         fun selectFatal(candidate: Throwable) {
@@ -581,29 +714,61 @@ internal class FrpControlClient(
                 // The safe establishment failure remains authoritative.
             }
         }
-        withContext(NonCancellable) {
-            if (blockingIo != null) {
+        if (forceCleanupAfterTimeout) {
+            reconnectCleanupFailure.set(FrpControlFailure.RECONNECT_CLOSING_FAILED_ESTABLISHMENT)
+        }
+        val watchdogFailure = AtomicReference<Throwable?>()
+        val cleanupMux = mux
+        val cleanupWatchdogOwner = if (forceCleanupAfterTimeout && cleanupMux != null) SupervisorJob() else null
+        val cleanupWatchdog = cleanupWatchdogOwner?.let { owner ->
+            CoroutineScope(
+                Dispatchers.Default + owner + CoroutineName("FrpControlFailedEstablishmentCleanupWatchdog"),
+            ).launch {
+                delay(config.reconnectCleanupTimeoutMillis)
                 try {
-                    blockingIo.awaitReset()
+                    cleanupMux?.forceTerminationAfterClose()
                 } catch (closeFailure: CancellationException) {
-                    selectFatal(closeFailure)
+                    watchdogFailure.set(closeFailure)
                 } catch (closeFailure: Error) {
-                    selectFatal(closeFailure)
+                    watchdogFailure.set(closeFailure)
                 } catch (_: Exception) {
                     // The safe establishment failure remains authoritative.
                 }
             }
-            if (mux != null) {
-                try {
-                    mux.awaitTermination()
-                } catch (closeFailure: CancellationException) {
-                    selectFatal(closeFailure)
-                } catch (closeFailure: Error) {
-                    selectFatal(closeFailure)
-                } catch (_: Exception) {
-                    // The safe establishment failure remains authoritative.
+        }
+        try {
+            withContext(NonCancellable) {
+                if (blockingIo != null) {
+                    try {
+                        blockingIo.awaitReset()
+                    } catch (closeFailure: CancellationException) {
+                        selectFatal(closeFailure)
+                    } catch (closeFailure: Error) {
+                        selectFatal(closeFailure)
+                    } catch (_: Exception) {
+                        // The safe establishment failure remains authoritative.
+                    }
+                }
+                if (mux != null) {
+                    try {
+                        mux.awaitTermination()
+                    } catch (closeFailure: CancellationException) {
+                        selectFatal(closeFailure)
+                    } catch (closeFailure: Error) {
+                        selectFatal(closeFailure)
+                    } catch (_: Exception) {
+                        // The safe establishment failure remains authoritative.
+                    }
                 }
             }
+        } finally {
+            withContext(NonCancellable) {
+                cleanupWatchdogOwner?.cancel()
+                cleanupWatchdog?.join()
+            }
+            watchdogFailure.get()?.let(::selectFatal)
+            if (forceCleanupAfterTimeout) reconnectCleanupFailure.set(null)
+            if (forceCleanupAfterTimeout) reconnectEstablishmentFailure.set(null)
         }
         throw selected
     }
@@ -700,9 +865,11 @@ private class ControlSession(
     private val delayer: FrpControlDelayer,
     private val blockingIoContext: CoroutineContext,
     private val workHandlerContext: CoroutineContext,
+    private val budgetScheduler: ScheduledExecutorService,
     private val blockingIoThreadGuard: BlockingIoThreadGuard,
     private val lifecycleHooks: FrpControlLifecycleHooks,
     private val isAuthoritative: (FrpControlIdentity) -> Boolean,
+    private val onReconnectCleanupFailure: (FrpControlFailure?) -> Unit,
 ) : AutoCloseable {
     private val started = AtomicBoolean(false)
     private val closing = AtomicBoolean(false)
@@ -853,8 +1020,14 @@ private class ControlSession(
         recordFailure(FrpControlException(FrpControlFailure.CLOSED))
     }
 
-    suspend fun shutdown() {
+    fun invalidateTransport(): Boolean =
+        recordFailure(FrpControlException(FrpControlFailure.TRANSPORT_FAILED))
+
+    suspend fun shutdown(forceMuxTerminationAfterTimeout: Boolean = false) {
         var shutdownFailure: Throwable? = null
+        if (forceMuxTerminationAfterTimeout) {
+            onReconnectCleanupFailure(FrpControlFailure.RECONNECT_CLOSING_TRANSPORT)
+        }
         try {
             closePhysicalTransportAndAwait()
         } catch (failure: CancellationException) {
@@ -864,40 +1037,77 @@ private class ControlSession(
             shutdownFailure = preferControlFailure(shutdownFailure, failure)
             recordFailure(failure)
         }
-        val activeHandlers = synchronized(lifecycleLock) { handlerJobs.toList() }
-        sessionJob.cancel(ControlSessionClosedCancellation())
-        val childJobs = synchronized(jobsLock) { jobs.toList() }
-        (childJobs + activeHandlers).distinct().joinAll()
-        closeActiveWorkConnections()
-        awaitWorkCleanup()?.let { failure ->
-            shutdownFailure = preferControlFailure(shutdownFailure, failure)
-            recordFailure(failure)
-        }
-        workCleanupJob.cancel()
-        awaitClientOpenCalls()
-        awaitClientStreamShutdown()
-        clientStreamCleanupJob.cancel()
-        try {
-            mux.awaitTermination()
-        } catch (failure: CancellationException) {
-            shutdownFailure = preferControlFailure(shutdownFailure, failure)
-            recordFailure(failure)
-        } catch (failure: Error) {
-            shutdownFailure = preferControlFailure(shutdownFailure, failure)
-            recordFailure(failure)
-        } catch (_: Exception) {
-            // The selected control failure remains authoritative for ordinary mux close I/O.
+        val cleanupWatchdogOwner = if (forceMuxTerminationAfterTimeout) SupervisorJob() else null
+        val cleanupWatchdog = cleanupWatchdogOwner?.let { owner ->
+            CoroutineScope(
+                Dispatchers.Default +
+                    owner +
+                    CoroutineName("FrpControlReconnectCleanupWatchdog"),
+            ).launch {
+                delay(config.reconnectCleanupTimeoutMillis)
+                try {
+                    mux.forceTerminationAfterClose()
+                } catch (failure: CancellationException) {
+                    recordFailure(failure)
+                } catch (failure: Error) {
+                    recordFailure(failure)
+                } catch (failure: Exception) {
+                    recordFailure(mapControlFailure(failure, FrpControlFailure.TRANSPORT_FAILED))
+                }
+            }
         }
         try {
-            runControlCodec { channel.close() }
-        } catch (failure: CancellationException) {
-            shutdownFailure = preferControlFailure(shutdownFailure, failure)
-            recordFailure(failure)
-        } catch (failure: Error) {
-            shutdownFailure = preferControlFailure(shutdownFailure, failure)
-            recordFailure(failure)
-        } catch (_: Exception) {
-            // The selected control failure remains authoritative.
+            if (forceMuxTerminationAfterTimeout) {
+                onReconnectCleanupFailure(FrpControlFailure.RECONNECT_JOINING_JOBS)
+            }
+            val activeHandlers = synchronized(lifecycleLock) { handlerJobs.toList() }
+            sessionJob.cancel(ControlSessionClosedCancellation())
+            val childJobs = synchronized(jobsLock) { jobs.toList() }
+            (childJobs + activeHandlers).distinct().joinAll()
+            if (forceMuxTerminationAfterTimeout) {
+                onReconnectCleanupFailure(FrpControlFailure.RECONNECT_CLOSING_WORK)
+            }
+            closeActiveWorkConnections()
+            awaitWorkCleanup()?.let { failure ->
+                shutdownFailure = preferControlFailure(shutdownFailure, failure)
+                recordFailure(failure)
+            }
+            workCleanupJob.cancel()
+            if (forceMuxTerminationAfterTimeout) {
+                onReconnectCleanupFailure(FrpControlFailure.RECONNECT_CLOSING_CLIENT_STREAMS)
+            }
+            awaitClientOpenCalls()
+            awaitClientStreamShutdown()
+            clientStreamCleanupJob.cancel()
+            if (forceMuxTerminationAfterTimeout) {
+                onReconnectCleanupFailure(FrpControlFailure.RECONNECT_CLOSING_YAMUX)
+            }
+            try {
+                mux.awaitTermination()
+            } catch (failure: CancellationException) {
+                shutdownFailure = preferControlFailure(shutdownFailure, failure)
+                recordFailure(failure)
+            } catch (failure: Error) {
+                shutdownFailure = preferControlFailure(shutdownFailure, failure)
+                recordFailure(failure)
+            } catch (_: Exception) {
+                // The selected control failure remains authoritative for ordinary mux close I/O.
+            }
+            try {
+                runControlCodec { channel.close() }
+            } catch (failure: CancellationException) {
+                shutdownFailure = preferControlFailure(shutdownFailure, failure)
+                recordFailure(failure)
+            } catch (failure: Error) {
+                shutdownFailure = preferControlFailure(shutdownFailure, failure)
+                recordFailure(failure)
+            } catch (_: Exception) {
+                // The selected control failure remains authoritative.
+            }
+        } finally {
+            cleanupWatchdogOwner?.cancel()
+            cleanupWatchdog?.join()
+            if (forceMuxTerminationAfterTimeout) onReconnectCleanupFailure(null)
         }
         val completedFailure = preferControlFailure(shutdownFailure, finalFailure())
         if (completedFailure is CancellationException || completedFailure is Error) throw completedFailure
@@ -1062,6 +1272,7 @@ private class ControlSession(
             val workIo = YamuxStreamBlockingIo(stream, scope, blockingIoThreadGuard)
             blockingIo = workIo
             val startMessage = withControlBudgetTimeout(
+                scheduler = budgetScheduler,
                 timeoutMillis = config.workHandshakeTimeoutMillis,
                 timeoutFailure = FrpControlFailure.WORK_FAILED,
             ) {
@@ -1290,7 +1501,7 @@ private class ControlSession(
         output.flush()
     }
 
-    private fun recordFailure(failure: Throwable) {
+    private fun recordFailure(failure: Throwable): Boolean {
         val firstTermination = synchronized(lifecycleLock) {
             selectedFailure = preferControlFailure(selectedFailure, failure)
             if (lifecycle == SessionLifecycle.TERMINATED) {
@@ -1303,6 +1514,7 @@ private class ControlSession(
             }
         }
         if (firstTermination) lifecycleHooks.afterTerminationRecorded(identity)
+        return firstTermination
     }
 
     private suspend fun closePhysicalTransportAndAwait() {
@@ -1477,37 +1689,67 @@ internal fun StartWorkConn.withFrpUserPrefixRemoved(user: String): StartWorkConn
 }
 
 private suspend fun <T> withControlBudgetTimeout(
+    scheduler: ScheduledExecutorService,
     timeoutMillis: Long,
     timeoutFailure: FrpControlFailure,
+    onTimerScheduled: (() -> Unit)? = null,
+    onTimerFired: (() -> Unit)? = null,
+    onTimeout: (() -> Unit)? = null,
     block: suspend () -> T,
 ): T {
     val callerContext = currentCoroutineContext()
     val budgetCancellation = AtomicReference<ControlBudgetCancellation?>()
+    val timeoutCleanupFailure = AtomicReference<Throwable?>()
     return try {
         coroutineScope {
             val budgetOwner = checkNotNull(currentCoroutineContext()[Job])
-            val timer = launch {
-                delay(timeoutMillis)
+            val timer = scheduler.schedule({
                 val cancellation = ControlBudgetCancellation()
                 budgetCancellation.compareAndSet(null, cancellation)
+                try {
+                    onTimerFired?.invoke()
+                    onTimeout?.invoke()
+                } catch (failure: CancellationException) {
+                    timeoutCleanupFailure.compareAndSet(null, failure)
+                } catch (failure: Error) {
+                    timeoutCleanupFailure.compareAndSet(null, failure)
+                } catch (_: Exception) {
+                    // The timeout remains authoritative when best-effort stream invalidation fails.
+                }
                 budgetOwner.cancel(cancellation)
-            }
+            }, timeoutMillis, TimeUnit.MILLISECONDS)
             try {
+                onTimerScheduled?.invoke()
                 block()
             } finally {
-                timer.cancel()
+                timer.cancel(false)
             }
         }
     } catch (failure: CancellationException) {
         if (!callerContext.isActive) callerContext.ensureActive()
-        if (budgetCancellation.get() != null) throw FrpControlException(timeoutFailure)
+        if (budgetCancellation.get() != null) {
+            timeoutCleanupFailure.get()?.let { throw it }
+            throw FrpControlException(timeoutFailure)
+        }
         throw failure
     } catch (failure: Error) {
         throw failure
     } catch (failure: Exception) {
         if (!callerContext.isActive) callerContext.ensureActive()
-        if (budgetCancellation.get() != null) throw FrpControlException(timeoutFailure)
+        if (budgetCancellation.get() != null) {
+            timeoutCleanupFailure.get()?.let { throw it }
+            throw FrpControlException(timeoutFailure)
+        }
         throw failure
+    }
+}
+
+private fun incrementSaturating(counter: AtomicLong): Long {
+    while (true) {
+        val current = counter.get()
+        if (current == Long.MAX_VALUE) return current
+        val next = current + 1L
+        if (counter.compareAndSet(current, next)) return next
     }
 }
 
@@ -1519,11 +1761,49 @@ private fun mapControlFailure(
     is Error -> failure
     is CancellationException -> failure
     is FrpControlException -> failure
-    is FrpTransportException -> FrpControlException(FrpControlFailure.TRANSPORT_FAILED)
+    is FrpTransportException -> FrpControlException(
+        when (failure.failure) {
+            FrpTransportFailure.CONNECT_FAILED -> FrpControlFailure.TRANSPORT_CONNECT_FAILED
+            FrpTransportFailure.CONNECT_TIMEOUT -> FrpControlFailure.TRANSPORT_CONNECT_TIMEOUT
+            FrpTransportFailure.TLS_SETUP_FAILED -> FrpControlFailure.TRANSPORT_TLS_SETUP_FAILED
+            FrpTransportFailure.TLS_HANDSHAKE_FAILED -> FrpControlFailure.TRANSPORT_TLS_HANDSHAKE_FAILED
+            FrpTransportFailure.TLS_HANDSHAKE_TIMEOUT -> FrpControlFailure.TRANSPORT_TLS_HANDSHAKE_TIMEOUT
+            FrpTransportFailure.READ_FAILED -> FrpControlFailure.TRANSPORT_READ_FAILED
+            FrpTransportFailure.WRITE_FAILED -> FrpControlFailure.TRANSPORT_WRITE_FAILED
+            FrpTransportFailure.CLOSED -> FrpControlFailure.TRANSPORT_CLOSED
+            FrpTransportFailure.INVALID_CONFIGURATION -> FrpControlFailure.TRANSPORT_INVALID_CONFIGURATION
+        },
+    )
+    is YamuxProtocolFailure, is YamuxTruncatedFrameFailure ->
+        FrpControlException(FrpControlFailure.YAMUX_PROTOCOL_FAILED)
+    is YamuxTransportFailure -> FrpControlException(FrpControlFailure.YAMUX_TRANSPORT_FAILED)
+    is YamuxTimeoutFailure -> FrpControlException(
+        if (failure.kind == YamuxTimeoutKind.STREAM_OPEN) {
+            FrpControlFailure.YAMUX_STREAM_OPEN_TIMEOUT
+        } else {
+            FrpControlFailure.YAMUX_TIMEOUT
+        },
+    )
+    is YamuxFailure -> FrpControlException(FrpControlFailure.YAMUX_FAILED)
     is FrpProtocolException -> FrpControlException(
         if (login) FrpControlFailure.LOGIN_PROTOCOL_FAILED else FrpControlFailure.PROTOCOL_FAILED,
     )
-    is FrpCryptoException -> FrpControlException(FrpControlFailure.CRYPTO_FAILED)
+    is FrpCryptoException -> FrpControlException(
+        when (failure.failure) {
+            FrpCryptoFailure.INVALID_KEY -> FrpControlFailure.CRYPTO_INVALID_KEY
+            FrpCryptoFailure.INVALID_NONCE -> FrpControlFailure.CRYPTO_INVALID_NONCE
+            FrpCryptoFailure.TRUNCATED_NONCE -> FrpControlFailure.CRYPTO_TRUNCATED_NONCE
+            FrpCryptoFailure.TRUNCATED_HEADER -> FrpControlFailure.CRYPTO_TRUNCATED_HEADER
+            FrpCryptoFailure.TRUNCATED_RECORD -> FrpControlFailure.CRYPTO_TRUNCATED_RECORD
+            FrpCryptoFailure.INVALID_LENGTH -> FrpControlFailure.CRYPTO_INVALID_LENGTH
+            FrpCryptoFailure.INTEGRITY_FAILURE -> FrpControlFailure.CRYPTO_INTEGRITY_FAILED
+            FrpCryptoFailure.NONCE_EXHAUSTED -> FrpControlFailure.CRYPTO_NONCE_EXHAUSTED
+            FrpCryptoFailure.RECORD_LIMIT -> FrpControlFailure.CRYPTO_RECORD_LIMIT
+            FrpCryptoFailure.UNSUPPORTED_ALGORITHM -> FrpControlFailure.CRYPTO_UNSUPPORTED_ALGORITHM
+            FrpCryptoFailure.IO_FAILURE -> FrpControlFailure.CRYPTO_IO_FAILED
+            FrpCryptoFailure.WRITE_FAILED -> FrpControlFailure.CRYPTO_WRITE_FAILED
+        },
+    )
     else -> FrpControlException(fallback)
 }
 

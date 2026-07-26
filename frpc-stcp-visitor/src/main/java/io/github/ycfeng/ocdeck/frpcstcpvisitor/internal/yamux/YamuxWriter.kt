@@ -214,6 +214,14 @@ internal class YamuxFrameWriter(
         writerJob.join()
     }
 
+    suspend fun joinOrAbort(abort: Deferred<Unit>): Boolean {
+        check(currentCoroutineContext()[Job] !== writerJob)
+        return select {
+            writerJob.onJoin { true }
+            abort.onAwait { false }
+        }
+    }
+
     suspend fun shutdownAndJoin(failure: Throwable): Throwable? {
         val selected = shutdown(failure)
         join()

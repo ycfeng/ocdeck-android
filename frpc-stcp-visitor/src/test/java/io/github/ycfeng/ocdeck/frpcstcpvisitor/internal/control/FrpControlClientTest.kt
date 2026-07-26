@@ -1,6 +1,8 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control
 
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.FrpContractFixtures
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpCryptoException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpCryptoFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpTimestampAuth
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.crypto.FrpV1Cfb
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpMessage
@@ -18,6 +20,8 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxConnecto
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportFailure
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTimeoutFailure
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTimeoutKind
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.security.SecureRandom
@@ -121,6 +125,54 @@ class FrpControlClientTest {
     }
 
     @Test
+    fun connectorTlsFailurePublishesSpecificTypedState() = runBlocking {
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig(),
+            connector = FrpMuxConnector {
+                throw FrpTransportException(FrpTransportFailure.TLS_HANDSHAKE_FAILED)
+            },
+            parentScope = parentScope,
+            generation = 13L,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Failed }
+            val state = client.state.value as FrpControlState.Failed
+            assertEquals(FrpControlFailure.TRANSPORT_TLS_HANDSHAKE_FAILED, state.failure)
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun connectorCryptoFailurePublishesSpecificTypedState() = runBlocking {
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig(),
+            connector = FrpMuxConnector {
+                throw FrpCryptoException(FrpCryptoFailure.TRUNCATED_NONCE)
+            },
+            parentScope = parentScope,
+            generation = 14L,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Failed }
+            val state = client.state.value as FrpControlState.Failed
+            assertEquals(FrpControlFailure.CRYPTO_TRUNCATED_NONCE, state.failure)
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun reconnectCarriesPriorRunIdAndAdvancesAuthoritativeIdentity() = runBlocking {
         val fixture = v1Fixture()
         val firstControl = stableV1ControlStream()
@@ -153,7 +205,7 @@ class FrpControlClientTest {
             val retrying = client.state.value as FrpControlState.Retrying
             assertEquals(1, retrying.attempt)
             assertEquals(100L, retrying.delayMillis)
-            assertEquals(FrpControlFailure.TRANSPORT_FAILED, retrying.failure)
+            assertEquals(FrpControlFailure.TRANSPORT_READ_FAILED, retrying.failure)
             delayer.takeCall(100L).release.complete(Unit)
 
             waitUntil {
@@ -174,6 +226,424 @@ class FrpControlClientTest {
             )
             assertEquals(2, connector.connectCount.get())
         } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun reconnectLoginUsesItsLongerBudgetWhileKeepingThePriorRunId() = runBlocking {
+        val fixture = v1Fixture()
+        val firstControl = stableV1ControlStream()
+        val secondControl = ScriptedMuxStream()
+        val firstMux = FakeMuxConnection(listOf(firstControl))
+        val secondMux = FakeMuxConnection(listOf(secondControl))
+        val connector = RecordingConnector { index -> if (index == 0) firstMux else secondMux }
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                loginTimeoutMillis = 500L,
+                reconnectLoginTimeoutMillis = 2_000L,
+                reconnectInitialDelayMillis = 100L,
+                reconnectMaximumDelayMillis = 20_000L,
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 211L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+
+            firstMux.fail(FrpTransportException(FrpTransportFailure.READ_FAILED))
+            waitUntil { client.state.value is FrpControlState.Retrying }
+            delayer.takeCall(100L).release.complete(Unit)
+            withTimeout(5_000L) { secondControl.readStarted.await() }
+
+            delay(750L)
+            assertEquals(
+                FrpControlFailure.RECONNECT_WAITING_LOGIN,
+                client.reconnectEstablishmentFailure(),
+            )
+            assertEquals(2, connector.connectCount.get())
+            secondControl.appendInput(stableV1ControlInput())
+
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            val secondOpen = client.state.value as FrpControlState.Open
+            assertEquals(FrpControlIdentity(211L, 2L, 2L), secondOpen.identity)
+            val secondLogin = FrpWireV1.readMessage(
+                ByteArrayInputStream(secondControl.writtenBytes()),
+            ) as Login
+            assertEquals("run_fixture_001", secondLogin.runId)
+            assertEquals(2, connector.connectCount.get())
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun reconnectLoginTimeoutIsVisibleDuringTheNextAttempt() = runBlocking {
+        val fixture = v1Fixture()
+        val firstControl = stableV1ControlStream()
+        val timedOutControl = ResetOnlyBlockingMuxStream()
+        val nextControl = ScriptedMuxStream()
+        val firstMux = FakeMuxConnection(listOf(firstControl))
+        val timedOutMux = FakeMuxConnection(listOf(timedOutControl))
+        val nextMux = FakeMuxConnection(listOf(nextControl))
+        val connector = RecordingConnector { index ->
+            when (index) {
+                0 -> firstMux
+                1 -> timedOutMux
+                else -> nextMux
+            }
+        }
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                loginTimeoutMillis = 500L,
+                reconnectLoginTimeoutMillis = 500L,
+                reconnectInitialDelayMillis = 100L,
+                reconnectMaximumDelayMillis = 20_000L,
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 212L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+
+            firstMux.fail(FrpTransportException(FrpTransportFailure.READ_FAILED))
+            waitUntil { client.state.value is FrpControlState.Retrying }
+            delayer.takeCall(100L).release.complete(Unit)
+            withTimeout(5_000L) { timedOutControl.readStarted.await() }
+            assertEquals(
+                FrpControlReconnectDiagnostics(
+                    establishAttemptCount = 1L,
+                    loginTimerScheduledCount = 1L,
+                    currentAttempt = 1L,
+                    loginTimerScheduledAttempt = 1L,
+                ),
+                client.reconnectDiagnostics(),
+            )
+            waitUntil { timedOutControl.resetCount.get() == 1 }
+            assertEquals(1L, client.reconnectDiagnostics().loginTimerFiredCount)
+            assertEquals(1L, client.reconnectDiagnostics().loginTimerFiredAttempt)
+
+            val nextDelay = delayer.takeCall(200L)
+            val timedOutState = client.state.value as FrpControlState.Retrying
+            assertEquals(FrpControlFailure.LOGIN_TIMEOUT, timedOutState.failure)
+            nextDelay.release.complete(Unit)
+            withTimeout(5_000L) { nextControl.readStarted.await() }
+            assertEquals(2L, client.reconnectDiagnostics().establishAttemptCount)
+            assertEquals(2L, client.reconnectDiagnostics().loginTimerScheduledCount)
+            assertEquals(2L, client.reconnectDiagnostics().currentAttempt)
+            assertEquals(2L, client.reconnectDiagnostics().loginTimerScheduledAttempt)
+            assertEquals(
+                FrpControlFailure.RECONNECT_WAITING_LOGIN_AFTER_TIMEOUT,
+                client.reconnectEstablishmentFailure(),
+            )
+
+            nextControl.appendInput(stableV1ControlInput())
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            assertEquals(3, connector.connectCount.get())
+            assertEquals(null, client.reconnectEstablishmentFailure())
+            assertEquals(1L, client.reconnectDiagnostics().successfulOpenCount)
+        } finally {
+            timedOutControl.release()
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun explicitTransportInvalidationReconnectsWithinTheSameGeneration() = runBlocking {
+        val fixture = v1Fixture()
+        val firstControl = stableV1ControlStream()
+        val secondControl = stableV1ControlStream()
+        val firstMux = FakeMuxConnection(listOf(firstControl))
+        val secondMux = FakeMuxConnection(listOf(secondControl))
+        val connector = RecordingConnector { index -> if (index == 0) firstMux else secondMux }
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                reconnectInitialDelayMillis = 100L,
+                reconnectMaximumDelayMillis = 20_000L,
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 22L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val firstIdentity = (client.state.value as FrpControlState.Open).identity
+
+            assertEquals(firstIdentity, client.invalidateTransport())
+            waitUntil { client.state.value is FrpControlState.Retrying }
+            val retrying = client.state.value as FrpControlState.Retrying
+            assertEquals(22L, retrying.generation)
+            assertEquals(FrpControlFailure.TRANSPORT_FAILED, retrying.failure)
+            delayer.takeCall(100L).release.complete(Unit)
+
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            val secondIdentity = (client.state.value as FrpControlState.Open).identity
+            assertEquals(22L, secondIdentity.generation)
+            assertEquals(2L, secondIdentity.controlEpoch)
+            waitUntil { secondControl.writtenBytes().size >= FrpContractFixtures.bytes("wire-v1-login-token").size }
+            val secondLogin = FrpWireV1.readMessage(
+                ByteArrayInputStream(secondControl.writtenBytes()),
+            ) as Login
+            assertEquals("run_fixture_001", secondLogin.runId)
+            assertEquals(2, connector.connectCount.get())
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun failedReconnectAttemptPublishesItsSpecificFailure() = runBlocking {
+        val fixture = v1Fixture()
+        val firstMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val secondMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val connector = RecordingConnector { index ->
+            when (index) {
+                0 -> firstMux
+                1 -> throw YamuxTimeoutFailure(YamuxTimeoutKind.STREAM_OPEN)
+                else -> secondMux
+            }
+        }
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                reconnectInitialDelayMillis = 100L,
+                reconnectMaximumDelayMillis = 20_000L,
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 23L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+
+            client.invalidateTransport()
+            waitUntil { client.state.value is FrpControlState.Retrying }
+            delayer.takeCall(100L).release.complete(Unit)
+
+            waitUntil {
+                (client.state.value as? FrpControlState.Retrying)?.failure ==
+                    FrpControlFailure.YAMUX_STREAM_OPEN_TIMEOUT
+            }
+            val retrying = client.state.value as FrpControlState.Retrying
+            assertEquals(2, retrying.attempt)
+            assertEquals(200L, retrying.delayMillis)
+            delayer.takeCall(200L).release.complete(Unit)
+
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            assertEquals(3, connector.connectCount.get())
+        } finally {
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun reconnectForcesClosedMuxTerminationAfterCleanupTimeout() = runBlocking {
+        val fixture = v1Fixture()
+        val muxTerminationGate = CompletableDeferred<Unit>()
+        val firstMux = FakeMuxConnection(
+            streams = listOf(stableV1ControlStream()),
+            beforeAwaitTerminationResult = { muxTerminationGate.await() },
+            onForceTerminationAfterClose = { muxTerminationGate.complete(Unit) },
+        )
+        val secondMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val connector = RecordingConnector { index -> if (index == 0) firstMux else secondMux }
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                reconnectInitialDelayMillis = 100L,
+                reconnectCleanupTimeoutMillis = 50L,
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 25L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+
+            client.invalidateTransport()
+            waitUntil { firstMux.forceTerminationCount.get() == 1 }
+            assertEquals(1, connector.connectCount.get())
+
+            delayer.takeCall(100L).release.complete(Unit)
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            assertEquals(25L, (client.state.value as FrpControlState.Open).identity.generation)
+            assertEquals(2, connector.connectCount.get())
+        } finally {
+            muxTerminationGate.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun reconnectWatchdogCoversClientStreamCleanupBeforeMuxTermination() = runBlocking {
+        val fixture = v1Fixture()
+        val releaseReset = CompletableDeferred<Unit>()
+        val clientStream = ScriptedMuxStream(resetRelease = releaseReset)
+        val firstMux = FakeMuxConnection(
+            streams = listOf(stableV1ControlStream(), clientStream),
+            onForceTerminationAfterClose = { releaseReset.complete(Unit) },
+        )
+        val secondMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val connector = RecordingConnector { index -> if (index == 0) firstMux else secondMux }
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                reconnectInitialDelayMillis = 100L,
+                reconnectCleanupTimeoutMillis = 50L,
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 26L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+            val identity = (client.state.value as FrpControlState.Open).identity
+            val lease = client.openClientStream(identity)
+
+            client.invalidateTransport()
+            waitUntil { clientStream.resetCount.get() == 1 }
+            waitUntil {
+                client.reconnectCleanupFailure() == FrpControlFailure.RECONNECT_CLOSING_CLIENT_STREAMS
+            }
+            waitUntil { firstMux.forceTerminationCount.get() == 1 }
+            assertTrue(lease.isClosed)
+            assertEquals(1, connector.connectCount.get())
+
+            delayer.takeCall(100L).release.complete(Unit)
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            assertEquals(26L, (client.state.value as FrpControlState.Open).identity.generation)
+            assertEquals(2, connector.connectCount.get())
+        } finally {
+            releaseReset.complete(Unit)
+            client.close()
+            withTimeout(5_000L) { client.awaitStopped() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun reconnectWatchdogCoversFailedEstablishmentCleanup() = runBlocking {
+        val fixture = v1Fixture()
+        val failedCleanupGate = CompletableDeferred<Unit>()
+        val firstMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val failedMux = FakeMuxConnection(
+            streams = emptyList(),
+            beforeAwaitTerminationResult = { failedCleanupGate.await() },
+            onForceTerminationAfterClose = { failedCleanupGate.complete(Unit) },
+        )
+        failedMux.close()
+        val recoveredMux = FakeMuxConnection(listOf(stableV1ControlStream()))
+        val connector = RecordingConnector { index ->
+            when (index) {
+                0 -> firstMux
+                1 -> failedMux
+                else -> recoveredMux
+            }
+        }
+        val delayer = ManualDelayer()
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = fixture.config.copy(
+                reconnectInitialDelayMillis = 100L,
+                reconnectCleanupTimeoutMillis = 50L,
+            ),
+            connector = connector,
+            parentScope = parentScope,
+            generation = 27L,
+            unixTimeSource = FrpUnixTimeSource { fixture.login.timestamp },
+            delayer = delayer,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            waitUntil { client.state.value is FrpControlState.Open }
+
+            client.invalidateTransport()
+            delayer.takeCall(100L).release.complete(Unit)
+            waitUntil {
+                client.reconnectCleanupFailure() ==
+                    FrpControlFailure.RECONNECT_CLOSING_FAILED_ESTABLISHMENT
+            }
+            waitUntil { failedMux.forceTerminationCount.get() == 1 }
+            waitUntil {
+                (client.state.value as? FrpControlState.Retrying)?.failure ==
+                    FrpControlFailure.TRANSPORT_CLOSED
+            }
+
+            delayer.takeCall(200L).release.complete(Unit)
+            waitUntil {
+                val state = client.state.value
+                state is FrpControlState.Open && state.identity.controlEpoch == 2L
+            }
+            assertEquals(27L, (client.state.value as FrpControlState.Open).identity.generation)
+            assertEquals(3, connector.connectCount.get())
+        } finally {
+            failedCleanupGate.complete(Unit)
             client.close()
             withTimeout(5_000L) { client.awaitStopped() }
             parentScope.cancel()
@@ -936,6 +1406,35 @@ class FrpControlClientTest {
     }
 
     @Test
+    fun loginBudgetTimeoutResetsAControlReadThatIgnoresInterruption() = runBlocking {
+        val controlStream = ResetOnlyBlockingMuxStream()
+        val mux = FakeMuxConnection(listOf(controlStream))
+        val parentScope = newParentScope()
+        val client = newClient(
+            config = basicConfig().copy(loginTimeoutMillis = 50L),
+            connector = RecordingConnector { _ -> mux },
+            parentScope = parentScope,
+            generation = 614L,
+            secureRandom = RepeatingSecureRandom(0x80),
+        )
+        try {
+            client.start()
+            withTimeout(5_000L) { controlStream.readStarted.await() }
+            waitUntil { client.state.value is FrpControlState.Failed }
+            withTimeout(5_000L) { client.awaitStopped() }
+
+            val state = client.state.value as FrpControlState.Failed
+            assertEquals(FrpControlFailure.LOGIN_TIMEOUT, state.failure)
+            assertEquals(1, controlStream.resetCount.get())
+            assertEquals(1, mux.closeCount.get())
+        } finally {
+            controlStream.release()
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun loginTimeoutWaitsForMuxCleanupJvmErrorBeforeStopping() = runBlocking {
         val error = AssertionError("login cleanup error marker")
         val cleanupReached = CompletableDeferred<Unit>()
@@ -1387,7 +1886,7 @@ class FrpControlClientTest {
             val observedStates = synchronized(states) { states.toList() }
 
             val failed = client.state.value as FrpControlState.Failed
-            assertEquals(FrpControlFailure.TRANSPORT_FAILED, failed.failure)
+            assertEquals(FrpControlFailure.TRANSPORT_READ_FAILED, failed.failure)
             assertTrue(observedStates.none { it is FrpControlState.Open })
             assertEquals(1, connector.connectCount.get())
         } finally {
@@ -1922,7 +2421,7 @@ class FrpControlClientTest {
             assertTrue(withContext(Dispatchers.IO) { closeStarted.await(5, TimeUnit.SECONDS) })
 
             val retrying = client.state.value as FrpControlState.Retrying
-            assertEquals(FrpControlFailure.TRANSPORT_FAILED, retrying.failure)
+            assertEquals(FrpControlFailure.TRANSPORT_READ_FAILED, retrying.failure)
             val stale = try {
                 client.openClientStream(identity)
                 throw AssertionError("terminated identity unexpectedly opened a stream")
@@ -2342,15 +2841,15 @@ class FrpControlClientTest {
         )
     }
 
-    private fun stableV1ControlStream(): ScriptedMuxStream {
+    private fun stableV1ControlStream(): ScriptedMuxStream = ScriptedMuxStream(stableV1ControlInput())
+
+    private fun stableV1ControlInput(): ByteArray {
         val firstServerMessage = FrpWireV1.readMessage(
             ByteArrayInputStream(FrpContractFixtures.bytes("control-v1-server-plain")),
         ) ?: throw AssertionError("Fixture server message is missing")
         val encrypted = FrpContractFixtures.bytes("control-v1-server-cfb")
         val firstCipherLength = 16 + FrpWireV1.encodeMessage(firstServerMessage).size
-        return ScriptedMuxStream(
-            FrpContractFixtures.bytes("wire-v1-login-response") + encrypted.copyOf(firstCipherLength),
-        )
+        return FrpContractFixtures.bytes("wire-v1-login-response") + encrypted.copyOf(firstCipherLength)
     }
 
     private fun encryptV1ServerMessages(messages: List<FrpMessage>): ByteArray {
@@ -2445,11 +2944,13 @@ class FrpControlClientTest {
         private val beforeClose: () -> Unit = {},
         private val awaitTerminationFailure: Throwable? = null,
         private val beforeAwaitTerminationResult: suspend () -> Unit = {},
+        private val onForceTerminationAfterClose: () -> Unit = {},
     ) : FrpMuxConnection {
         private val streamQueue = Channel<FrpMuxStream>(Channel.UNLIMITED)
         private val termination = CompletableDeferred<Unit>()
         private val closed = AtomicBoolean(false)
         val closeCount = AtomicInteger(0)
+        val forceTerminationCount = AtomicInteger(0)
         val openCount = AtomicInteger(0)
 
         init {
@@ -2469,6 +2970,11 @@ class FrpControlClientTest {
 
         fun fail(failure: Throwable) {
             termination.completeExceptionally(failure)
+        }
+
+        override fun forceTerminationAfterClose() {
+            forceTerminationCount.incrementAndGet()
+            onForceTerminationAfterClose()
         }
 
         override fun close() {
@@ -2541,6 +3047,41 @@ class FrpControlClientTest {
 
         override fun toString(): String =
             "ScriptedMuxStream(reset=${reset.get()}, totalRead=${totalRead.get()})"
+    }
+
+    private class ResetOnlyBlockingMuxStream : FrpMuxStream {
+        private val released = CountDownLatch(1)
+        private val reset = AtomicBoolean(false)
+        val readStarted = CompletableDeferred<Unit>()
+        val resetCount = AtomicInteger(0)
+
+        override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
+            readStarted.complete(Unit)
+            while (true) {
+                try {
+                    released.await()
+                    return -1
+                } catch (_: InterruptedException) {
+                    if (reset.get()) return -1
+                }
+            }
+        }
+
+        override suspend fun write(source: ByteArray, offset: Int, length: Int) = Unit
+
+        override suspend fun closeWrite() = Unit
+
+        override suspend fun reset() {
+            if (!reset.compareAndSet(false, true)) return
+            resetCount.incrementAndGet()
+            released.countDown()
+        }
+
+        fun release() {
+            released.countDown()
+        }
+
+        override fun toString(): String = "ResetOnlyBlockingMuxStream(reset=${reset.get()})"
     }
 
     private class ManualDelayer : FrpControlDelayer {

@@ -43,6 +43,7 @@ class DefaultOpenCodeHealthProbeFactory(
 
 data class FrpcStcpReadinessPolicy(
     val nativeReadyTimeoutMillis: Long = 10_000,
+    val epochRefreshNativeReadyTimeoutMillis: Long = 90_000,
     val totalTimeoutMillis: Long = 15_000,
     val attemptTimeoutMillis: Long = 2_500,
     val initialRetryDelayMillis: Long = 100,
@@ -51,6 +52,7 @@ data class FrpcStcpReadinessPolicy(
 ) {
     init {
         require(nativeReadyTimeoutMillis > 0)
+        require(epochRefreshNativeReadyTimeoutMillis > 0)
         require(totalTimeoutMillis > 0)
         require(attemptTimeoutMillis > 0)
         require(initialRetryDelayMillis > 0)

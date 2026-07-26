@@ -19,7 +19,10 @@ import org.bouncycastle.asn1.DERNull
 import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.AlgorithmIdentifier
+import org.bouncycastle.asn1.x509.BasicConstraints
 import org.bouncycastle.asn1.x509.Certificate as BouncyCastleCertificate
+import org.bouncycastle.asn1.x509.Extension
+import org.bouncycastle.asn1.x509.ExtensionsGenerator
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.asn1.x509.Time
 import org.bouncycastle.asn1.x509.V3TBSCertificateGenerator
@@ -32,7 +35,11 @@ internal data class InteropTlsMaterial(
         "InteropTlsMaterial(certificatePresent=true, privateKey=<redacted>)"
 
     companion object {
-        fun create(directory: Path, secureRandom: SecureRandom): InteropTlsMaterial {
+        fun create(
+            directory: Path,
+            secureRandom: SecureRandom,
+            certificateAuthority: Boolean = false,
+        ): InteropTlsMaterial {
             val certificatePath = directory.resolve(CERTIFICATE_FILE_NAME)
             val privateKeyPath = directory.resolve(PRIVATE_KEY_FILE_NAME)
             var certificateDer = ByteArray(0)
@@ -57,6 +64,13 @@ internal data class InteropTlsMaterial(
                     setEndDate(Time(Date.from(now.plusSeconds(CERTIFICATE_LIFETIME_SECONDS))))
                     setSubject(X500Name(CERTIFICATE_DISTINGUISHED_NAME))
                     setSubjectPublicKeyInfo(SubjectPublicKeyInfo.getInstance(keyPair.public.encoded))
+                    if (certificateAuthority) {
+                        setExtensions(
+                            ExtensionsGenerator().apply {
+                                addExtension(Extension.basicConstraints, true, BasicConstraints(true))
+                            }.generate(),
+                        )
+                    }
                 }
                 val tbsCertificate = certificateGenerator.generateTBSCertificate()
                 signatureBytes = Signature.getInstance(SIGNATURE_ALGORITHM).run {

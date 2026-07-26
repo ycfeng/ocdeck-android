@@ -68,6 +68,7 @@ class ServerConfigSerializationTest {
                 serverAddr = "frps.example.com",
                 serverPort = 7000,
                 authTokenKey = "server-remote-frpc-stcp-auth-token",
+                tlsServerCertificateSha256Key = "server-remote-frpc-stcp-tls-certificate-pin",
                 user = "mobile",
                 serverUser = "opencode",
                 serverName = "opencode_stcp",
@@ -81,6 +82,7 @@ class ServerConfigSerializationTest {
 
         assert(encoded.contains("frps.example.com"))
         assert(encoded.contains("server-remote-frpc-stcp-auth-token"))
+        assert(encoded.contains("server-remote-frpc-stcp-tls-certificate-pin"))
         assert(encoded.contains("server-remote-frpc-stcp-secret-key"))
         assertFalse(encoded.contains("real-frps-token"))
         assertFalse(encoded.contains("real-stcp-secret"))
@@ -106,6 +108,7 @@ class ServerConfigSerializationTest {
         )
 
         assertNull(server.frpcStcpVisitor?.authTokenKey)
+        assertNull(server.frpcStcpVisitor?.tlsServerCertificateSha256Key)
         assertEquals("server-remote-frpc-stcp-secret-key", server.frpcStcpVisitor?.secretKeyKey)
     }
 }

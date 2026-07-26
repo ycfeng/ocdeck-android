@@ -5,14 +5,23 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxPhysicalTransport
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTermination
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.createYamuxClientSession
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.InteropTlsMaterial
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketAddress
 import java.net.SocketException
+import java.nio.file.Files
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.security.cert.CertificateException
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
@@ -24,6 +33,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
@@ -66,6 +76,45 @@ class FrpTransportTest {
         assertTrue(yamux.keepAliveEnabled)
         assertEquals(30_000L, yamux.keepAliveIntervalMillis)
         assertFalse(config.toString().contains("fixture.invalid"))
+    }
+
+    @Test
+    fun pinnedTrustManagerAcceptsOnlyTheConfiguredLeafCertificate() {
+        val directory = Files.createTempDirectory("frp-pinned-tls-test-")
+        try {
+            val material = InteropTlsMaterial.create(directory, SecureRandom())
+            val certificate = Files.newInputStream(material.certificatePath).use { input ->
+                CertificateFactory.getInstance("X.509").generateCertificate(input) as X509Certificate
+            }
+            val pin = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+            PinnedCertificateTrustManager(pin).checkServerTrusted(arrayOf(certificate), "RSA")
+            assertThrows(CertificateException::class.java) {
+                PinnedCertificateTrustManager("0".repeat(64))
+                    .checkServerTrusted(arrayOf(certificate), "RSA")
+            }
+            assertTrue(
+                tlsClientSocketFactory(
+                    TcpTlsTransportConfig(
+                        endpoint = FrpTcpEndpoint("fixture.invalid", 7_000),
+                        tlsServerCertificateSha256 = pin,
+                    ),
+                ) is PinnedTlsClientSocketFactory,
+            )
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun transportConfigRejectsInvalidTlsCertificatePins() {
+        assertThrows(FrpTransportException::class.java) {
+            TcpTlsTransportConfig(
+                endpoint = FrpTcpEndpoint("fixture.invalid", 7_000),
+                tlsServerCertificateSha256 = "A".repeat(64),
+            )
+        }
     }
 
     @Test
@@ -130,6 +179,232 @@ class FrpTransportTest {
         transport.close()
         assertEquals(1, tls.closeCount.get())
         assertEquals(1, socket.closeCount.get())
+    }
+
+    @Test
+    fun routedDialUsesResolvedAddressWhileTlsKeepsConfiguredEndpoint() = runBlocking {
+        val socket = TestSocket()
+        val tls = TestTlsSocket()
+        val configuredEndpoint = FrpTcpEndpoint("fixture.invalid", 7_000)
+        val resolvedAddress = InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4))
+        var resolvedHost: String? = null
+        var tlsEndpoint: FrpTcpEndpoint? = null
+        val dialer = TcpTlsTransportDialer(
+            config = TcpTlsTransportConfig(configuredEndpoint),
+            routeProvider = TcpDialRouteProvider {
+                object : TcpDialRoute {
+                    override fun resolve(host: String): List<InetAddress> {
+                        resolvedHost = host
+                        return listOf(resolvedAddress)
+                    }
+
+                    override fun createSocket(): Socket = socket
+                }
+            },
+            tlsSocketFactory = TlsClientSocketFactory { actual, endpoint ->
+                assertSame(socket, actual)
+                tlsEndpoint = endpoint
+                tls
+            },
+            dispatcher = Dispatchers.IO,
+        )
+
+        val transport = dialer.connect()
+
+        assertEquals(configuredEndpoint.host, resolvedHost)
+        assertEquals(InetSocketAddress(resolvedAddress, configuredEndpoint.port), socket.connectedEndpoint)
+        assertEquals(configuredEndpoint, tlsEndpoint)
+        transport.close()
+    }
+
+    @Test
+    fun routedDialFallsBackToTheNextResolvedAddress() = runBlocking {
+        val firstSocket = TestSocket(connectFailure = IOException("synthetic first route failure"))
+        val secondSocket = TestSocket()
+        val sockets = ArrayDeque(listOf(firstSocket, secondSocket))
+        val tls = TestTlsSocket()
+        val configuredEndpoint = FrpTcpEndpoint("fixture.invalid", 7_000)
+        val firstAddress = InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4))
+        val secondAddress = InetAddress.getByAddress(byteArrayOf(5, 6, 7, 8))
+        var tlsEndpoint: FrpTcpEndpoint? = null
+        val dialer = TcpTlsTransportDialer(
+            config = TcpTlsTransportConfig(configuredEndpoint),
+            routeProvider = TcpDialRouteProvider {
+                object : TcpDialRoute {
+                    override fun resolve(host: String): List<InetAddress> = listOf(firstAddress, secondAddress)
+
+                    override fun createSocket(): Socket = sockets.removeFirst()
+                }
+            },
+            tlsSocketFactory = TlsClientSocketFactory { actual, endpoint ->
+                assertSame(secondSocket, actual)
+                tlsEndpoint = endpoint
+                tls
+            },
+            dispatcher = Dispatchers.IO,
+        )
+
+        val transport = dialer.connect()
+
+        assertEquals(InetSocketAddress(firstAddress, configuredEndpoint.port), firstSocket.connectedEndpoint)
+        assertEquals(1, firstSocket.closeCount.get())
+        assertEquals(InetSocketAddress(secondAddress, configuredEndpoint.port), secondSocket.connectedEndpoint)
+        assertEquals(configuredEndpoint, tlsEndpoint)
+        transport.close()
+        assertEquals(1, secondSocket.closeCount.get())
+    }
+
+    @Test
+    fun routedDialFallsBackWhenTheFirstTlsHandshakeFails() = runBlocking {
+        val firstSocket = TestSocket()
+        val secondSocket = TestSocket()
+        val sockets = ArrayDeque(listOf(firstSocket, secondSocket))
+        val firstTls = TestTlsSocket(handshakeFailure = IOException("synthetic first tls route failure"))
+        val secondTls = TestTlsSocket()
+        val configuredEndpoint = FrpTcpEndpoint("fixture.invalid", 7_000)
+        val firstAddress = InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4))
+        val secondAddress = InetAddress.getByAddress(byteArrayOf(5, 6, 7, 8))
+        val tlsEndpoints = mutableListOf<FrpTcpEndpoint>()
+        val dialer = TcpTlsTransportDialer(
+            config = TcpTlsTransportConfig(configuredEndpoint),
+            routeProvider = TcpDialRouteProvider {
+                object : TcpDialRoute {
+                    override fun resolve(host: String): List<InetAddress> = listOf(firstAddress, secondAddress)
+
+                    override fun createSocket(): Socket = sockets.removeFirst()
+                }
+            },
+            tlsSocketFactory = TlsClientSocketFactory { actual, endpoint ->
+                tlsEndpoints += endpoint
+                when (actual) {
+                    firstSocket -> firstTls
+                    secondSocket -> secondTls
+                    else -> error("unexpected socket")
+                }
+            },
+            dispatcher = Dispatchers.IO,
+        )
+
+        val transport = dialer.connect()
+
+        assertEquals(InetSocketAddress(firstAddress, configuredEndpoint.port), firstSocket.connectedEndpoint)
+        assertEquals(1, firstTls.closeCount.get())
+        assertEquals(1, firstSocket.closeCount.get())
+        assertEquals(InetSocketAddress(secondAddress, configuredEndpoint.port), secondSocket.connectedEndpoint)
+        assertEquals(listOf(configuredEndpoint, configuredEndpoint), tlsEndpoints)
+        transport.close()
+        assertEquals(1, secondTls.closeCount.get())
+        assertEquals(1, secondSocket.closeCount.get())
+    }
+
+    @Test
+    fun routedDialReturnsTheLastTlsFailureAfterAllCandidatesFail() = runBlocking {
+        val firstSocket = TestSocket()
+        val secondSocket = TestSocket()
+        val sockets = ArrayDeque(listOf(firstSocket, secondSocket))
+        val firstTls = TestTlsSocket(handshakeFailure = IOException("synthetic first tls failure"))
+        val secondTls = TestTlsSocket(handshakeFailure = IOException("synthetic second tls failure"))
+        val tlsSockets = ArrayDeque(listOf(firstTls, secondTls))
+        val configuredEndpoint = FrpTcpEndpoint("fixture.invalid", 7_000)
+        val dialer = TcpTlsTransportDialer(
+            config = TcpTlsTransportConfig(configuredEndpoint),
+            routeProvider = TcpDialRouteProvider {
+                object : TcpDialRoute {
+                    override fun resolve(host: String): List<InetAddress> = listOf(
+                        InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4)),
+                        InetAddress.getByAddress(byteArrayOf(5, 6, 7, 8)),
+                    )
+
+                    override fun createSocket(): Socket = sockets.removeFirst()
+                }
+            },
+            tlsSocketFactory = TlsClientSocketFactory { _, endpoint ->
+                assertEquals(configuredEndpoint, endpoint)
+                tlsSockets.removeFirst()
+            },
+            dispatcher = Dispatchers.IO,
+        )
+
+        val failure = suspendFailureOf { dialer.connect() }
+
+        assertTrue(failure is FrpTransportException)
+        assertEquals(FrpTransportFailure.TLS_HANDSHAKE_FAILED, (failure as FrpTransportException).failure)
+        assertEquals(1, firstTls.closeCount.get())
+        assertEquals(1, secondTls.closeCount.get())
+        assertEquals(1, firstSocket.closeCount.get())
+        assertEquals(1, secondSocket.closeCount.get())
+    }
+
+    @Test
+    fun routedDialFallsBackAfterACandidateTlsHandshakeTimeout() = runBlocking {
+        val firstSocket = TestSocket()
+        val secondSocket = TestSocket()
+        val sockets = ArrayDeque(listOf(firstSocket, secondSocket))
+        val firstTls = TestTlsSocket(blockHandshakeUntilClose = true)
+        val secondTls = TestTlsSocket()
+        val tlsSockets = ArrayDeque(listOf(firstTls, secondTls))
+        val configuredEndpoint = FrpTcpEndpoint("fixture.invalid", 7_000)
+        val dialer = TcpTlsTransportDialer(
+            config = TcpTlsTransportConfig(
+                endpoint = configuredEndpoint,
+                tlsHandshakeTimeoutMillis = 25L,
+            ),
+            routeProvider = TcpDialRouteProvider {
+                object : TcpDialRoute {
+                    override fun resolve(host: String): List<InetAddress> = listOf(
+                        InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4)),
+                        InetAddress.getByAddress(byteArrayOf(5, 6, 7, 8)),
+                    )
+
+                    override fun createSocket(): Socket = sockets.removeFirst()
+                }
+            },
+            tlsSocketFactory = TlsClientSocketFactory { _, endpoint ->
+                assertEquals(configuredEndpoint, endpoint)
+                tlsSockets.removeFirst()
+            },
+            dispatcher = Dispatchers.IO,
+        )
+
+        val transport = dialer.connect()
+
+        assertEquals(1, firstTls.closeCount.get())
+        assertEquals(1, firstSocket.closeCount.get())
+        transport.close()
+        assertEquals(1, secondTls.closeCount.get())
+        assertEquals(1, secondSocket.closeCount.get())
+    }
+
+    @Test
+    fun routedDialFallsBackAfterACandidateTcpConnectTimeout() = runBlocking {
+        val firstSocket = TestSocket(blockConnectUntilClose = true)
+        val secondSocket = TestSocket()
+        val sockets = ArrayDeque(listOf(firstSocket, secondSocket))
+        val configuredEndpoint = FrpTcpEndpoint("fixture.invalid", 7_000)
+        val dialer = TcpTlsTransportDialer(
+            config = TcpTlsTransportConfig(
+                endpoint = configuredEndpoint,
+                tlsEnabled = false,
+                connectTimeoutMillis = 100L,
+            ),
+            routeProvider = TcpDialRouteProvider {
+                object : TcpDialRoute {
+                    override fun resolve(host: String): List<InetAddress> = listOf(
+                        InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4)),
+                        InetAddress.getByAddress(byteArrayOf(5, 6, 7, 8)),
+                    )
+
+                    override fun createSocket(): Socket = sockets.removeFirst()
+                }
+            },
+            dispatcher = Dispatchers.IO,
+        )
+
+        val transport = dialer.connect()
+
+        assertEquals(1, firstSocket.closeCount.get())
+        transport.close()
+        assertEquals(1, secondSocket.closeCount.get())
     }
 
     @Test
@@ -665,6 +940,58 @@ class FrpTransportTest {
     }
 
     @Test
+    fun muxForceTerminationAfterPhysicalCloseUnblocksQueuedLogicalCleanup() = runTest {
+        val queuedDispatcher = StandardTestDispatcher(testScheduler)
+        val parentScope = CoroutineScope(SupervisorJob() + queuedDispatcher)
+        val transport = BarrierClosingPhysicalTransport()
+        val sharedTransport = SharedCloseYamuxPhysicalTransport(transport)
+        val session = createYamuxClientSession(
+            transport = sharedTransport,
+            parentScope = parentScope,
+            config = YamuxConfig(keepAliveEnabled = false),
+        )
+        val mux = YamuxMuxConnection(session, sharedTransport, parentScope)
+        val closeFailure = AtomicReference<Throwable?>()
+        val closeReturned = CountDownLatch(1)
+        val closeThread = Thread(
+            {
+                closeFailure.set(runCatching { mux.close() }.exceptionOrNull())
+                closeReturned.countDown()
+            },
+            "frp-mux-force-close-fixture",
+        )
+        try {
+            closeThread.start()
+            assertTrue(transport.closeStarted.await(5, TimeUnit.SECONDS))
+            transport.releaseClose.countDown()
+            assertTrue(closeReturned.await(5, TimeUnit.SECONDS))
+            closeThread.join(5_000L)
+            assertEquals(null, closeFailure.get())
+
+            val sessionTermination = async(start = CoroutineStart.UNDISPATCHED) {
+                session.awaitTermination()
+            }
+            val muxTermination = async(start = CoroutineStart.UNDISPATCHED) {
+                mux.awaitTermination()
+            }
+            mux.forceTerminationAfterClose()
+            assertFalse(sessionTermination.isCompleted)
+            assertFalse(muxTermination.isCompleted)
+            advanceUntilIdle()
+            assertEquals(YamuxTermination.Closed, sessionTermination.await())
+            muxTermination.await()
+            assertEquals(YamuxTermination.Closed, session.awaitTermination())
+            assertEquals(null, suspendFailureOf { mux.awaitTermination() })
+            assertEquals(1, transport.closeCount.get())
+        } finally {
+            transport.releaseClose.countDown()
+            mux.forceTerminationAfterClose()
+            advanceUntilIdle()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun explicitMuxClosePreservesPhysicalJvmError() = runBlocking {
         val error = SyntheticTransportError()
         val parentScope = CoroutineScope(
@@ -918,6 +1245,8 @@ class FrpTransportTest {
     ) : Socket() {
         val closeCount = AtomicInteger(0)
         val connectStarted = CountDownLatch(1)
+        var connectedEndpoint: SocketAddress? = null
+            private set
         private val closedSignal = CountDownLatch(1)
         private val input = object : InputStream() {
             override fun read(): Int {
@@ -933,6 +1262,7 @@ class FrpTransportTest {
 
         override fun connect(endpoint: SocketAddress?, timeout: Int) {
             connectStarted.countDown()
+            connectedEndpoint = endpoint
             connectFailure?.let { throw it }
             if (blockConnectUntilClose) {
                 closedSignal.await()

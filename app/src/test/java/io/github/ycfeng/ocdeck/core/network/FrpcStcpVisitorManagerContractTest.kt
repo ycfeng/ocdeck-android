@@ -17,8 +17,11 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -181,6 +184,97 @@ class FrpcStcpVisitorManagerContractTest {
         assertEquals(1, client.ensureCount)
         assertEquals(3, client.waitReadyCount)
         assertEquals(2, probes.probeCount)
+        assertTrue(client.stopAttempts.isEmpty())
+    }
+
+    @Test
+    fun epochRefreshUsesTheLongerNativeRecoveryBudget() = runTest {
+        val client = ContractFrpcStcpVisitorClient()
+        val probes = ContractHealthProbeFactory()
+        val manager = manager(client, probes)
+        val server = contractServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+        client.onGetState = { sessionId, _ ->
+            client.runtimeState(
+                sessionId = sessionId,
+                sessionPhase = "connecting",
+                visitorPhase = "starting",
+                listenerBound = false,
+                reportedBoundControlEpoch = 0,
+            )
+        }
+        var observedTimeoutMillis = 0L
+        client.onWaitVisitorReady = { _, visitorName, desiredRevision, timeoutMillis, call ->
+            if (call == 2) {
+                observedTimeoutMillis = timeoutMillis
+                delay(2_000)
+            }
+            readyResult(visitorName, desiredRevision, controlEpoch = 2)
+        }
+
+        val recovered = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+
+        assertEquals(3_000L, observedTimeoutMillis)
+        assertEquals(initial.generation, recovered.generation)
+        assertEquals(2L, recovered.tunnel.controlEpoch)
+        assertEquals(1, client.startCount)
+        assertEquals(1, client.ensureCount)
+        assertEquals(2, client.waitReadyCount)
+        assertEquals(2, probes.probeCount)
+        assertTrue(client.stopAttempts.isEmpty())
+    }
+
+    @Test
+    fun applicationRecoveryTimeoutKeepsGenerationForLaterEpochRefresh() = runTest {
+        var blockRecovery = true
+        val client = ContractFrpcStcpVisitorClient()
+        val probes = ContractHealthProbeFactory { attempt ->
+            if (blockRecovery && attempt >= 2) throw java.net.ConnectException("synthetic recovery failure")
+            ServerHealthDto(healthy = true, version = "contract-health-$attempt")
+        }
+        val manager = manager(client, probes)
+        val server = contractServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+        client.readyControlEpoch = 2
+        client.onGetState = { sessionId, _ ->
+            client.runtimeState(
+                sessionId = sessionId,
+                controlEpoch = 2,
+                reportedBoundControlEpoch = 2,
+            )
+        }
+
+        val timedRecovery = async {
+            runCatching {
+                manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+            }
+        }
+        runCurrent()
+        advanceTimeBy(10_001)
+        runCurrent()
+        assertTrue("manager recovery timeout did not complete", timedRecovery.isCompleted)
+        val timeout = timedRecovery.await().exceptionOrNull() ?: throw AssertionError("Expected recovery to fail")
+
+        assertTrue(
+            "unexpected recovery timeout type: ${timeout.javaClass.name}",
+            timeout is FrpcStcpReadinessTimeoutException,
+        )
+        assertEquals("timeout must retain the established session", 1, client.startCount)
+        assertEquals("timeout must not reconfigure the visitor", 1, client.ensureCount)
+        assertTrue("timeout must not clean the recoverable session", client.stopAttempts.isEmpty())
+
+        blockRecovery = false
+        val recovered = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
+
+        assertEquals(initial.generation, recovered.generation)
+        assertEquals(initial.tunnel.sessionId, recovered.tunnel.sessionId)
+        assertEquals(2L, recovered.tunnel.controlEpoch)
+        assertEquals(1, client.startCount)
+        assertEquals(1, client.ensureCount)
+        assertEquals(3, client.waitReadyCount)
+        assertTrue(probes.probeCount > 2)
         assertTrue(client.stopAttempts.isEmpty())
     }
 
@@ -545,6 +639,7 @@ class FrpcStcpVisitorManagerContractTest {
         healthProbeFactory = probes,
         readinessPolicy = FrpcStcpReadinessPolicy(
             nativeReadyTimeoutMillis = 1_000,
+            epochRefreshNativeReadyTimeoutMillis = 3_000,
             totalTimeoutMillis = 10_000,
             attemptTimeoutMillis = 1_000,
             initialRetryDelayMillis = 10,
@@ -688,7 +783,11 @@ private class ContractVisitorRuntime(
         "ContractVisitorRuntime(desiredRevision=$desiredRevision, controlEpoch=$controlEpoch)"
 }
 
-private class ContractHealthProbeFactory : OpenCodeHealthProbeFactory {
+private class ContractHealthProbeFactory(
+    private val onProbe: suspend (attempt: Int) -> ServerHealthDto = { attempt ->
+        ServerHealthDto(healthy = true, version = "contract-health-$attempt")
+    },
+) : OpenCodeHealthProbeFactory {
     var createCount = 0
         private set
     var probeCount = 0
@@ -704,7 +803,7 @@ private class ContractHealthProbeFactory : OpenCodeHealthProbeFactory {
         effectiveBaseUrls += effectiveBaseUrl
         return OpenCodeHealthProbe {
             probeCount += 1
-            ServerHealthDto(healthy = true, version = "contract-health-$probeCount")
+            onProbe(probeCount)
         }
     }
 

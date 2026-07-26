@@ -92,6 +92,7 @@ internal class YamuxClientSession(
     private val newStreamsClosedSignal = CompletableDeferred<Unit>()
     private val operationStopSignal = CompletableDeferred<Unit>()
     private val terminationDoneSignal = CompletableDeferred<Unit>()
+    private val forcedTerminationSignal = CompletableDeferred<Unit>()
     private val operationFailureRef = AtomicReference<Throwable?>()
     private val finalFailureRef = AtomicReference<Throwable?>()
     private val terminationRef = AtomicReference<YamuxTermination?>()
@@ -459,6 +460,14 @@ internal class YamuxClientSession(
         terminationDoneSignal.await()
         finalFailureRef.get()?.let { throw it }
         return terminationRef.get() ?: YamuxTermination.Closed
+    }
+
+    internal fun forceTerminationAfterPhysicalClose() {
+        if (!ending) {
+            val failure = YamuxSessionClosedFailure()
+            beginEnding(failure, finalFailure = null, termination = YamuxTermination.Closed)
+        }
+        forcedTerminationSignal.complete(Unit)
     }
 
     fun diagnostics(): YamuxDiagnostics {
@@ -1241,23 +1250,86 @@ internal class YamuxClientSession(
         normalGoAwayCommitted: Boolean,
         pendingNormalGoAway: NormalGoAwayAttempt?,
     ) {
-        withContext(NonCancellable) {
-            val operationFailure = operationFailureRef.get() ?: YamuxSessionClosedFailure()
-            val activeStreams = synchronized(stateLock) {
-                val snapshot = streams.values.toList()
-                streams.clear()
-                pendingOpenAcknowledgements.clear()
-                acceptBacklog.clear()
-                acceptWaiters.clear()
-                receiveUpdateQueue.clear()
-                tombstones.clear()
-                pendingPing = null
-                snapshot
-            }
-            activeStreams.forEach { stream ->
+        try {
+            withContext(NonCancellable) {
+                val operationFailure = operationFailureRef.get() ?: YamuxSessionClosedFailure()
+                val activeStreams = synchronized(stateLock) {
+                    val snapshot = streams.values.toList()
+                    streams.clear()
+                    pendingOpenAcknowledgements.clear()
+                    acceptBacklog.clear()
+                    acceptWaiters.clear()
+                    receiveUpdateQueue.clear()
+                    tombstones.clear()
+                    pendingPing = null
+                    snapshot
+                }
+                activeStreams.forEach { stream ->
+                    try {
+                        stream.failFromSession(operationFailure)
+                        if (stream.releasePermitOnce()) releaseActivePermitToken()
+                    } catch (failure: CancellationException) {
+                        recordSecondaryFailure(originalCancellation(failure))
+                    } catch (failure: Error) {
+                        recordSecondaryFailure(failure)
+                    } catch (failure: Exception) {
+                        recordSecondaryFailure(failure, includeOrdinary = true)
+                    }
+                }
+
+                writer.beginTermination(operationFailure)?.let(::recordSecondaryFailure)
+
+                if (goAwayCode != null) {
+                    try {
+                        withTimeoutOrNull(config.writeTimeoutMillis) {
+                            val shouldSend = if (goAwayCode != YamuxGoAwayCode.NORMAL) {
+                                true
+                            } else {
+                                val alreadyOwned = normalGoAwayCommitted ||
+                                    pendingNormalGoAway?.ownership?.await() == true
+                                if (alreadyOwned) pendingNormalGoAway?.physicalWriteDone?.await()
+                                !alreadyOwned
+                            }
+                            if (shouldSend) {
+                                writer.writeTerminalBestEffort(
+                                    header = YamuxFrameHeader(
+                                        type = YamuxFrameType.GOAWAY,
+                                        flags = 0,
+                                        streamId = 0L,
+                                        length = goAwayCode.wireValue,
+                                    ),
+                                    timeoutMillis = config.writeTimeoutMillis,
+                                )
+                            }
+                        }
+                    } catch (failure: CancellationException) {
+                        recordSecondaryFailure(originalCancellation(failure))
+                    } catch (failure: Error) {
+                        recordSecondaryFailure(failure)
+                    } catch (_: Exception) {
+                        // The selected termination remains authoritative for ordinary close I/O.
+                    }
+                }
+
+                writer.shutdown(operationFailure)?.let(::recordSecondaryFailure)
+
                 try {
-                    stream.failFromSession(operationFailure)
-                    if (stream.releasePermitOnce()) releaseActivePermitToken()
+                    transport.close()
+                } catch (failure: CancellationException) {
+                    recordSecondaryFailure(originalCancellation(failure))
+                } catch (failure: Error) {
+                    recordSecondaryFailure(failure)
+                } catch (_: Exception) {
+                    // Expected close I/O errors are secondary to the selected termination.
+                }
+
+                writer.joinOrAbort(forcedTerminationSignal)
+
+                val completionHandle = synchronized(endingLock) {
+                    parentCompletionHandle.also { parentCompletionHandle = null }
+                }
+                try {
+                    completionHandle?.dispose()
                 } catch (failure: CancellationException) {
                     recordSecondaryFailure(originalCancellation(failure))
                 } catch (failure: Error) {
@@ -1265,75 +1337,24 @@ internal class YamuxClientSession(
                 } catch (failure: Exception) {
                     recordSecondaryFailure(failure, includeOrdinary = true)
                 }
-            }
 
-            writer.beginTermination(operationFailure)?.let(::recordSecondaryFailure)
-
-            if (goAwayCode != null) {
-                try {
-                    withTimeoutOrNull(config.writeTimeoutMillis) {
-                        val shouldSend = if (goAwayCode != YamuxGoAwayCode.NORMAL) {
-                            true
-                        } else {
-                            val alreadyOwned = normalGoAwayCommitted ||
-                                pendingNormalGoAway?.ownership?.await() == true
-                            if (alreadyOwned) pendingNormalGoAway?.physicalWriteDone?.await()
-                            !alreadyOwned
-                        }
-                        if (shouldSend) {
-                            writer.writeTerminalBestEffort(
-                                header = YamuxFrameHeader(
-                                    type = YamuxFrameType.GOAWAY,
-                                    flags = 0,
-                                    streamId = 0L,
-                                    length = goAwayCode.wireValue,
-                                ),
-                                timeoutMillis = config.writeTimeoutMillis,
-                            )
-                        }
-                    }
-                } catch (failure: CancellationException) {
-                    recordSecondaryFailure(originalCancellation(failure))
-                } catch (failure: Error) {
-                    recordSecondaryFailure(failure)
-                } catch (_: Exception) {
-                    // The selected termination remains authoritative for ordinary close I/O.
+                sessionJob.cancel()
+                select {
+                    sessionJob.onJoin { }
+                    forcedTerminationSignal.onAwait { }
                 }
+                readerJob = null
+                keepAliveJob = null
+                receiveUpdateJob = null
+                resetDispatcherJob = null
             }
-
-            writer.shutdown(operationFailure)?.let(::recordSecondaryFailure)
-
-            try {
-                transport.close()
-            } catch (failure: CancellationException) {
-                recordSecondaryFailure(originalCancellation(failure))
-            } catch (failure: Error) {
-                recordSecondaryFailure(failure)
-            } catch (_: Exception) {
-                // Expected close I/O errors are secondary to the selected termination.
-            }
-
-            writer.join()
-
-            val completionHandle = synchronized(endingLock) {
-                parentCompletionHandle.also { parentCompletionHandle = null }
-            }
-            try {
-                completionHandle?.dispose()
-            } catch (failure: CancellationException) {
-                recordSecondaryFailure(originalCancellation(failure))
-            } catch (failure: Error) {
-                recordSecondaryFailure(failure)
-            } catch (failure: Exception) {
-                recordSecondaryFailure(failure, includeOrdinary = true)
-            }
-
-            sessionJob.cancel()
-            sessionJob.join()
-            readerJob = null
-            keepAliveJob = null
-            receiveUpdateJob = null
-            resetDispatcherJob = null
+        } catch (failure: CancellationException) {
+            recordSecondaryFailure(originalCancellation(failure))
+        } catch (failure: Error) {
+            recordSecondaryFailure(failure)
+        } catch (failure: Exception) {
+            recordSecondaryFailure(failure, includeOrdinary = true)
+        } finally {
             terminationDoneSignal.complete(Unit)
         }
     }

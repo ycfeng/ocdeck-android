@@ -39,6 +39,10 @@ class OpenCodeFailureTest {
             OpenCodeFailureClassifier.classify(SshHostKeyMismatchException()),
         )
         assertEquals(
+            OpenCodeFailure.OperationRejected(),
+            OpenCodeFailureClassifier.classify(FrpcTlsServerCertificatePinUnavailableException()),
+        )
+        assertEquals(
             OpenCodeFailure.OperationRejected(OpenCodeOperationRejectionReason.StcpComponentUnavailable),
             OpenCodeFailureClassifier.classify(
                 IllegalStateException("wrapper", GoMobileBridgeUnavailableException()),

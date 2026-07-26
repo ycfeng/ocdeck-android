@@ -7,6 +7,7 @@ import io.github.ycfeng.ocdeck.core.network.OpenCodeFailureClassifier
 import io.github.ycfeng.ocdeck.core.network.OpenCodeRequestException
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpConfigLease
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpConfigLeaseExpiredException
+import io.github.ycfeng.ocdeck.core.network.FrpcTlsServerCertificatePinUnavailableException
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorCredentials
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorGeneration
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorManager
@@ -73,6 +74,8 @@ interface OpenCodeServerRepository {
     suspend fun setModelHidden(serverId: String, providerId: String, modelId: String, hidden: Boolean)
 }
 
+private const val MAXIMUM_CONNECTION_PREPARATION_ATTEMPTS = 3
+
 class ServerRepository(
     private val preferencesStore: ServerConfigStore,
     private val credentialStore: CredentialStore,
@@ -125,7 +128,8 @@ class ServerRepository(
         ?: throw OpenCodeRequestException(OpenCodeFailure.OperationRejected())
 
     override suspend fun getConnection(serverId: String): ServerConnection {
-        while (true) {
+        repeat(MAXIMUM_CONNECTION_PREPARATION_ATTEMPTS) attempt@{
+            currentCoroutineContext().ensureActive()
             val snapshot = connectionConfigLock(serverId).withLock {
                 val persistedServer = getServer(serverId)
                 val server = persistedServer.copy(baseUrl = normalizeServerBaseUrl(persistedServer.baseUrl))
@@ -144,7 +148,7 @@ class ServerRepository(
             }
 
             try {
-                if (prepareSshHostKey(snapshot)) continue
+                if (prepareSshHostKey(snapshot)) return@attempt
                 val prepared = prepareConnection(snapshot)
                 val stcpTransportCurrent = snapshot.stcpConfigLease?.let {
                     val generation = prepared.stcpGeneration
@@ -186,6 +190,7 @@ class ServerRepository(
                 // The SSH config epoch changed while this snapshot was opening. Retry with the latest config.
             }
         }
+        throw ServerTransportUnstableException()
     }
 
     override suspend fun getSseConnection(serverId: String): SseConnection = getConnection(serverId).let { connection ->
@@ -522,6 +527,9 @@ class ServerRepository(
 
     private suspend fun ServerFrpcStcpVisitorConfig.toCredentials(): FrpcStcpVisitorCredentials = FrpcStcpVisitorCredentials(
         authToken = authTokenKey?.let { credentialStore.getSecret(it) },
+        tlsServerCertificateSha256 = tlsServerCertificateSha256Key?.let { key ->
+            credentialStore.getSecret(key) ?: throw FrpcTlsServerCertificatePinUnavailableException()
+        },
         secretKey = credentialStore.getSecret(secretKeyKey),
     )
 
@@ -611,17 +619,26 @@ class ServerRepository(
         require(serverPort in 1..65_535) { "frps server port is invalid" }
         require(serverName.isNotBlank()) { "STCP server name is required" }
         require(bindPort in 1..65_535) { "STCP local bind port is invalid" }
+        val normalizedServerAddr = serverAddr.trim()
+        val sameEndpoint = current != null && current.serverPort == serverPort &&
+            current.serverAddr.trim().equals(normalizedServerAddr, ignoreCase = true)
         val authTokenKey = authToken.takeIf { it.isNotBlank() }
             ?.let { candidates.write(CredentialPurpose.FrpcAuthToken, it) }
             ?: current?.authTokenKey
+        val tlsServerCertificateSha256Key = tlsServerCertificateSha256
+            ?.takeIf { it.isNotBlank() }
+            ?.also { require(TLS_SERVER_CERTIFICATE_SHA256.matches(it)) { "frps TLS certificate pin is invalid" } }
+            ?.let { candidates.write(CredentialPurpose.FrpcTlsServerCertificateSha256, it) }
+            ?: current?.tlsServerCertificateSha256Key?.takeIf { sameEndpoint }
         val secretKeyKey = secretKey.takeIf { it.isNotBlank() }
             ?.let { candidates.write(CredentialPurpose.FrpcSecretKey, it) }
             ?: current?.secretKeyKey
             ?: throw IllegalArgumentException("STCP secret key is required")
         return ServerFrpcStcpVisitorConfig(
-            serverAddr = serverAddr.trim(),
+            serverAddr = normalizedServerAddr,
             serverPort = serverPort,
             authTokenKey = authTokenKey,
+            tlsServerCertificateSha256Key = tlsServerCertificateSha256Key,
             user = user?.takeIf { it.isNotBlank() }?.trim(),
             serverUser = serverUser?.takeIf { it.isNotBlank() }?.trim(),
             serverName = serverName.trim(),
@@ -639,6 +656,7 @@ class ServerRepository(
         sshTunnel?.passphraseKey,
         sshTunnel?.hostFingerprintKey,
         frpcStcpVisitor?.authTokenKey,
+        frpcStcpVisitor?.tlsServerCertificateSha256Key,
         frpcStcpVisitor?.secretKeyKey,
     )
 
@@ -821,6 +839,7 @@ class ServerRepository(
         SshPassphrase("ssh-passphrase"),
         SshHostFingerprint("ssh-host-fingerprint"),
         FrpcAuthToken("frpc-auth-token"),
+        FrpcTlsServerCertificateSha256("frpc-tls-server-certificate-sha256"),
         FrpcSecretKey("frpc-secret-key"),
     }
 
@@ -897,7 +916,10 @@ class NewServerFrpcStcpVisitor(
     val bindPort: Int,
     val transportProtocol: FrpcTransportProtocol,
     val wireProtocol: FrpcWireProtocol,
+    val tlsServerCertificateSha256: String? = null,
 )
+
+private val TLS_SERVER_CERTIFICATE_SHA256 = Regex("[0-9a-f]{64}")
 
 data class ServerConnection(
     val server: ServerConfig,

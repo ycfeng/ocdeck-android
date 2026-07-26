@@ -146,6 +146,31 @@ class ServerRepositoryConnectionCacheTest {
         assertEquals(2, probes.probeCount)
     }
 
+    @Test
+    fun stcpControlEpochChurnFailsAfterABoundedNumberOfPreparationAttempts() = runTest {
+        val server = stcpServer()
+        val store = ConnectionCacheServerConfigStore(listOf(server))
+        val credentials = ConnectionCacheCredentialStore(
+            mapOf(STCP_SECRET_ALIAS to "stcp-secret"),
+        )
+        val frpcClient = ConnectionCacheFrpcClient(localPort = 5096).apply {
+            advanceControlEpochAfterReady = true
+        }
+        val probes = ConnectionCacheHealthProbeFactory()
+        val manager = FrpcStcpVisitorManager(
+            client = frpcClient,
+            healthProbeFactory = probes,
+            scope = backgroundScope,
+        )
+        val repository = repository(store, credentials, manager)
+
+        val failure = runCatching { repository.getConnection(server.id) }.exceptionOrNull()
+
+        assertTrue(failure is ServerTransportUnstableException)
+        assertEquals(3, frpcClient.waitVisitorReadyCalls)
+        assertEquals(3, probes.probeCount)
+    }
+
     private fun repository(
         store: ServerConfigStore,
         credentials: CredentialStore = ConnectionCacheCredentialStore(),
@@ -274,6 +299,9 @@ private class ConnectionCacheFrpcClient(
     private val localPort: Int,
 ) : FrpcStcpVisitorClient {
     var currentControlEpoch = 1L
+    var advanceControlEpochAfterReady = false
+    var waitVisitorReadyCalls = 0
+        private set
     private var desiredRevision = 0L
     private var visitorName: String? = null
 
@@ -293,13 +321,18 @@ private class ConnectionCacheFrpcClient(
         visitorName: String,
         desiredRevision: Long,
         timeoutMillis: Long,
-    ): FrpcVisitorReadyResult = FrpcVisitorReadyResult(
-        name = visitorName,
-        desiredRevision = desiredRevision,
-        phase = "ready",
-        listenerBound = true,
-        boundControlEpoch = currentControlEpoch,
-    )
+    ): FrpcVisitorReadyResult {
+        waitVisitorReadyCalls += 1
+        val readyControlEpoch = currentControlEpoch
+        if (advanceControlEpochAfterReady) currentControlEpoch += 1
+        return FrpcVisitorReadyResult(
+            name = visitorName,
+            desiredRevision = desiredRevision,
+            phase = "ready",
+            listenerBound = true,
+            boundControlEpoch = readyControlEpoch,
+        )
+    }
 
     override suspend fun stopVisitor(sessionId: String, visitorName: String) = Unit
 

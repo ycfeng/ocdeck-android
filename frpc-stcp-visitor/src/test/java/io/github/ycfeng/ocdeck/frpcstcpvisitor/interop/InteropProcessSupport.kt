@@ -1,17 +1,26 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.interop
 
+import com.sun.security.auth.module.NTSystem
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 import java.nio.file.DirectoryStream
+import java.nio.file.FileSystem
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.AclEntry
+import java.nio.file.attribute.AclEntryPermission
+import java.nio.file.attribute.AclEntryType
+import java.nio.file.attribute.AclFileAttributeView
+import java.nio.file.attribute.GroupPrincipal
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.attribute.UserPrincipal
 import java.util.ArrayDeque
+import java.util.EnumSet
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -396,6 +405,8 @@ internal fun createPrivateDirectory(path: Path) {
             PosixFilePermission.OWNER_EXECUTE,
         ),
     )
+    restrictPrivateAclIfRequired(path)
+    verifyPrivatePathPermissions(path, directory = true)
 }
 
 internal fun writePrivateFile(path: Path, value: String) {
@@ -425,7 +436,8 @@ internal fun writePrivateFile(path: Path, value: ByteArray) {
         path,
         setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
     )
-    verifyPrivateFilePermissionsIfSupported(path)
+    restrictPrivateAclIfRequired(path)
+    verifyPrivatePathPermissions(path, directory = false)
 }
 
 internal fun deleteTreeBestEffort(root: Path?) {
@@ -465,18 +477,87 @@ private fun setPosixPermissionsIfSupported(path: Path, permissions: Set<PosixFil
     }
 }
 
-private fun verifyPrivateFilePermissionsIfSupported(path: Path) {
+private fun restrictPrivateAclIfRequired(path: Path) {
+    if (Files.getFileStore(path).supportsFileAttributeView("posix")) return
+    val view = Files.getFileAttributeView(path, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
+        ?: throw InteropFailure("temporary file permissions could not be restricted")
+    val owner = currentProcessUserPrincipal(path.fileSystem)
     try {
-        val permissions = Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS)
-        val expected = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
-        if (permissions != expected) throw InteropFailure("temporary file permissions were not private")
+        view.owner = owner
+        view.acl = listOf(
+            AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(owner)
+                .setPermissions(EnumSet.allOf(AclEntryPermission::class.java))
+                .build(),
+        )
+    } catch (_: Exception) {
+        throw InteropFailure("temporary file permissions could not be restricted")
+    }
+}
+
+private fun verifyPrivatePathPermissions(path: Path, directory: Boolean) {
+    try {
+        if (Files.getFileStore(path).supportsFileAttributeView("posix")) {
+            val permissions = Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS)
+            val expected = if (directory) {
+                setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE,
+                )
+            } else {
+                setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+            }
+            if (permissions != expected) throw InteropFailure("temporary file permissions were not private")
+            return
+        }
+        val view = Files.getFileAttributeView(path, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
+            ?: throw InteropFailure("temporary file permissions could not be verified")
+        val owner = currentProcessUserPrincipal(path.fileSystem)
+        if (view.owner != owner || owner is GroupPrincipal) {
+            throw InteropFailure("temporary file permissions were not private")
+        }
+        val ownerAllow = view.acl.filter { entry ->
+            entry.type() == AclEntryType.ALLOW && entry.principal() == owner
+        }
+        val required = if (directory) {
+            setOf(AclEntryPermission.READ_DATA, AclEntryPermission.WRITE_DATA, AclEntryPermission.EXECUTE)
+        } else {
+            setOf(AclEntryPermission.READ_DATA, AclEntryPermission.WRITE_DATA)
+        }
+        if (ownerAllow.none { it.permissions().containsAll(required) } || view.acl.any { entry ->
+                entry.type() == AclEntryType.ALLOW && entry.principal() != owner
+            }
+        ) {
+            throw InteropFailure("temporary file permissions were not private")
+        }
     } catch (failure: InteropFailure) {
         throw failure
-    } catch (_: UnsupportedOperationException) {
-        // Windows files inherit the restricted ACL of the private temporary directory.
     } catch (_: Exception) {
         throw InteropFailure("temporary file permissions could not be verified")
     }
+}
+
+internal fun currentProcessUserPrincipal(fileSystem: FileSystem): UserPrincipal {
+    val accountName = if (System.getProperty("os.name").orEmpty().lowercase(Locale.ROOT).contains("win")) {
+        val identity = NTSystem()
+        val user = identity.name?.takeIf(String::isNotBlank)
+            ?: throw InteropFailure("current process identity was unavailable")
+        identity.domain?.takeIf(String::isNotBlank)?.let { domain -> "$domain\\$user" } ?: user
+    } else {
+        System.getProperty("user.name")?.takeIf(String::isNotBlank)
+            ?: throw InteropFailure("current process identity was unavailable")
+    }
+    val principal = try {
+        fileSystem.userPrincipalLookupService.lookupPrincipalByName(accountName)
+    } catch (_: Exception) {
+        throw InteropFailure("current process identity was unavailable")
+    }
+    if (principal is GroupPrincipal) {
+        throw InteropFailure("current process identity was invalid")
+    }
+    return principal
 }
 
 internal fun sleepBounded(millis: Long) {

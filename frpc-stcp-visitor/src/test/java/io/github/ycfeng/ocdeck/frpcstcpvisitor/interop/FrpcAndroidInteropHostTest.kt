@@ -114,6 +114,19 @@ class FrpcAndroidInteropHostTest {
     }
 
     @Test
+    fun appE2eTlsCertificatePinIsRequiredOnlyForNetworkSuite() {
+        val pin = "0".repeat(64)
+
+        assertTrue(isValidAppE2eTlsCertificatePin("network", pin))
+        assertFalse(isValidAppE2eTlsCertificatePin("network", null))
+        assertFalse(isValidAppE2eTlsCertificatePin("network", "A".repeat(64)))
+        listOf("core", "lifecycle", "process").forEach { suite ->
+            assertTrue(isValidAppE2eTlsCertificatePin(suite, null))
+            assertFalse(isValidAppE2eTlsCertificatePin(suite, pin))
+        }
+    }
+
+    @Test
     fun profilesExposeTheExactScenarioChecks() {
         val expected = mapOf(
             "success" to listOf(
