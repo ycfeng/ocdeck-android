@@ -188,6 +188,8 @@ OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE="${TMPDIR:-/tmp}/opencode/<private-confi
 
 该任务目前是独立的手动/设备门禁，不属于普通 push 或 Pull Request CI。Clean exact 候选 `4b0df8af207b28846423902a61bf261501692101` 已在官方 Android 16KB x86_64 测试镜像和物理 `arm64-v8a` 设备上分别通过 `core`、`lifecycle` 与 `process`。另有一份已配置的 working-tree Canary 构建在显式 USB 物理 ARM 上、无 `adb reverse` 地通过全部 19 项 external `network` 检查，证明 validated Wi-Fi→蜂窝→Wi-Fi、精确断线 Store 保留、同一 visitor generation、两次严格增加的 control epoch、global/project SSE 恢复和 reconciliation。独立清理保留 target，只移除 test package 与私有进度文件，恢复两个网络开关，并确认无 reverse mapping。该未提交结果不冒充 exact-SHA 候选。性能、资源泄漏压力、soak、exact-candidate 重复与正式稳定发布周期仍是独立门禁，任何 suite 都不授权 Kotlin 默认装配。
 
+随后，clean exact 候选 `a3b10394ad575c2895aeb9f8980b2b120dccf320`（tree `afad377b2ad910e95bbbe3e70379c8e894ab85ce`）在同一台 API 31、4 KiB page 的物理 `arm64-v8a` 设备上通过完整 Kotlin Release-Like external 契约：17 个 instrumentation checks、两个 Host 断言、validated Wi-Fi→蜂窝→Wi-Fi 切换、target/test APK 字节一致，以及清理后原子发布 summary 均通过，并保持 `authorizesKotlinDefault=false`。Windows Host 所在代理会返回保留的 `198.18.0.0/15` Fake-IP，因此本次运行使用了 owner-only 临时 JDK hosts 文件，以 HTTPS DNS-over-HTTPS 获得的公网 A 记录填充，并在运行后删除。该覆盖只影响 Host 安装前解析；Android 仍通过每个 active validated Wi-Fi/蜂窝 `Network` 独立解析配置名称，要求所有结果均为公网地址，并继续以精确 leaf pin 作为身份边界。这关闭了单设备 exact external 执行缺口，但所需设备矩阵、受保护签名 workflow 实际执行、阈值评审、更长时长 soak、稳定观察周期和 Kotlin-default 显式授权仍待完成。
+
 ### 对称资源、压力、泄漏与 Soak Harness
 
 Release-Like 资源任务会在同一个 App/instrumentation 进程中，针对任一 backend 运行共享 `core` workload。`frpcGoMobileAppResourceTest` 与 `frpcKotlinAppResourceTest` 分别运行单一 backend；`frpcAppResourceTest` 会串行运行两者。每个资源证据任务都要求显式提供非空 `ocdeck.frp.appE2e.deviceSerial`，从而把两次 backend 运行锁定到同一设备，同时不把 serial 写入证据。证据目录同样是必填项且必须已存在；聚合任务还会要求两份有界 summary 使用相同的干净候选、设备 metadata 与 workload 后才会成功：
