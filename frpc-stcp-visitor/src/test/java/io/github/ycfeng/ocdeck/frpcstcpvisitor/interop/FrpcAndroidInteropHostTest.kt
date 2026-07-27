@@ -127,6 +127,199 @@ class FrpcAndroidInteropHostTest {
     }
 
     @Test
+    fun appE2eRepositoryIdentityRequiresExactLowercaseIdsAndCleanStatus() {
+        val commit = "1".repeat(40)
+        val tree = "a".repeat(40)
+
+        assertEquals(
+            AppE2eRepositoryIdentity(commit, tree, worktreeClean = true),
+            parseAppE2eRepositoryIdentity("$commit\n", "$tree\r\n", ""),
+        )
+        listOf(
+            Triple("A".repeat(40), tree, ""),
+            Triple(commit, "b".repeat(39), ""),
+            Triple("$commit\n$commit\n", tree, ""),
+            Triple(commit, tree, " M tracked-file\n"),
+            Triple(commit, tree, "?? untracked-file\n"),
+        ).forEach { (head, treeOutput, status) ->
+            assertThrows(InteropFailure::class.java) {
+                parseAppE2eRepositoryIdentity(head, treeOutput, status)
+            }
+        }
+    }
+
+    @Test
+    fun appE2eInstalledApkIdentityParsersRejectAmbiguousOrNonCanonicalOutput() {
+        val path = "/data/app/~~token==/io.github.ycfeng.ocdeck/base.apk"
+        val digest = "c".repeat(64)
+
+        assertEquals(path, parseInstalledAppE2eApkPath("package:$path\n"))
+        assertEquals(digest, parseInstalledAppE2eSha256("$digest  $path\n"))
+        listOf(
+            "",
+            "package:$path\npackage:/data/app/other/base.apk\n",
+            "package:relative/base.apk\n",
+            "package:/data/app/base.zip\n",
+        ).forEach { output ->
+            assertThrows(InteropFailure::class.java) { parseInstalledAppE2eApkPath(output) }
+        }
+        listOf(
+            "",
+            "${digest.uppercase()}  $path\n",
+            "$digest\n",
+            "$digest  $path\n$digest  $path\n",
+        ).forEach { output ->
+            assertThrows(InteropFailure::class.java) { parseInstalledAppE2eSha256(output) }
+        }
+    }
+
+    @Test
+    fun appE2eArtifactIdentityRequiresMatchingLowercaseSha256Values() {
+        val digest = "d".repeat(64)
+
+        assertEquals(
+            AppE2eArtifactIdentity(digest, digest, byteIdentical = true),
+            buildAppE2eArtifactIdentity(digest, digest),
+        )
+        listOf(
+            digest to "e".repeat(64),
+            digest.uppercase() to digest,
+            digest to "invalid",
+        ).forEach { (local, installed) ->
+            assertThrows(InteropFailure::class.java) {
+                buildAppE2eArtifactIdentity(local, installed)
+            }
+        }
+    }
+
+    @Test
+    fun appE2eArtifactHasherStreamsARegularFileAndRejectsEmptyInput() {
+        val directory = Files.createTempDirectory("frpc-app-e2e-evidence-test-")
+        try {
+            val artifact = directory.resolve("app.apk")
+            Files.write(artifact, "bounded artifact".toByteArray(StandardCharsets.UTF_8))
+
+            assertEquals(
+                "f1b8a495c25bdc02a88c4daf15376b362a09b4db6525d41a255541f9e4013f9f",
+                sha256AppE2eArtifact(artifact),
+            )
+            val empty = directory.resolve("empty.apk")
+            Files.createFile(empty)
+            assertThrows(InteropFailure::class.java) { sha256AppE2eArtifact(empty) }
+        } finally {
+            deleteTreeBestEffort(directory)
+        }
+    }
+
+    @Test
+    fun appE2eWorkloadParserUsesBoundedProfileDefaultsAndRejectsInvalidOverrides() {
+        assertEquals(
+            AppE2eWorkload("baseline", 5, 1, 0L, 0, 1),
+            parseAppE2eWorkload("core", "baseline", null, null, null, null, null),
+        )
+        assertEquals(
+            AppE2eWorkload("stress", 20, 4, 0L, 5, 2),
+            parseAppE2eWorkload("core", "stress", "20", "4", "0", "5", "2"),
+        )
+        listOf(
+            arrayOf("core", "stress", "not-a-number", null, null, null, null),
+            arrayOf("core", "stress", "10", "33", null, null, null),
+            arrayOf("network", "baseline", null, null, null, null, null),
+            arrayOf("core", "leak", "10", "1", "0", "0", "1"),
+            arrayOf("core", "soak", "100", "1", "59999", "10", "1"),
+        ).forEach { values ->
+            assertThrows(InteropFailure::class.java) {
+                parseAppE2eWorkload(
+                    values[0]!!,
+                    values[1],
+                    values[2],
+                    values[3],
+                    values[4],
+                    values[5],
+                    values[6],
+                )
+            }
+        }
+    }
+
+    @Test
+    fun appE2eResourceEvidenceRequiresBoundedMonotonicSamples() {
+        val start = resourceSnapshot(elapsed = 100, cpu = 20)
+        val sample = resourceSnapshot(elapsed = 150, cpu = 30)
+        val end = resourceSnapshot(elapsed = 200, cpu = 40)
+        val evidence = AppE2eResourceEvidence(start, end, 100, 20, listOf(sample), 0)
+        val workload = AppE2eWorkload("baseline", 1, 1, 0, 0, 1)
+        val workloadResult = AppE2eWorkloadResult("baseline", 1, 0)
+
+        assertTrue(isValidAppE2eResourceEvidence(evidence, workload, workloadResult))
+        assertFalse(isValidAppE2eResourceEvidence(evidence.copy(wallDurationMillis = 99), workload, workloadResult))
+        assertFalse(isValidAppE2eResourceEvidence(evidence.copy(samples = emptyList()), workload, workloadResult))
+        assertFalse(isValidAppE2eResourceEvidence(evidence.copy(droppedSampleCount = 1), workload, workloadResult))
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                evidence.copy(samples = listOf(sample, resourceSnapshot(elapsed = 140, cpu = 31))),
+                workload,
+                workloadResult,
+            ),
+        )
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                evidence.copy(samples = List(MAXIMUM_APP_E2E_RESOURCE_SAMPLES + 1) { sample }),
+                workload,
+                workloadResult,
+            ),
+        )
+
+        val overflowWorkload = AppE2eWorkload("stress", 1_000, 1, 0, 0, 2)
+        val overflowResult = AppE2eWorkloadResult("stress", 1_000, 0)
+        val overflowEvidence = evidence.copy(
+            samples = List(MAXIMUM_APP_E2E_RESOURCE_SAMPLES) { sample },
+            droppedSampleCount = 246,
+        )
+        assertTrue(isValidAppE2eResourceEvidence(overflowEvidence, overflowWorkload, overflowResult))
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                overflowEvidence.copy(droppedSampleCount = 245),
+                overflowWorkload,
+                overflowResult,
+            ),
+        )
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                evidence.copy(samples = emptyList()),
+                AppE2eWorkload("soak", 100, 1, 60_000, 0, 25),
+                AppE2eWorkloadResult("soak", 10, 0),
+            ),
+        )
+
+        val functionalWorkload = AppE2eWorkload("functional", 0, 1, 0, 0, 1)
+        assertTrue(
+            isValidAppE2eResourceEvidence(
+                evidence.copy(samples = emptyList()),
+                functionalWorkload,
+                null,
+            ),
+        )
+        assertFalse(isValidAppE2eResourceEvidence(evidence, functionalWorkload, null))
+    }
+
+    @Test
+    fun appE2eInstrumentationTimeoutCoversWorkloadAndRemainsBounded() {
+        assertEquals(
+            810_000L,
+            appE2eInstrumentationTimeoutMillis(AppE2eWorkload("baseline", 5, 1, 0L, 0, 1)),
+        )
+        assertEquals(
+            22_260_000L,
+            appE2eInstrumentationTimeoutMillis(AppE2eWorkload("soak", 100_000, 4, 21_600_000L, 25, 25)),
+        )
+        assertEquals(
+            87_060_000L,
+            appE2eInstrumentationTimeoutMillis(AppE2eWorkload("stress", 100_000, 1, 0L, 0, 1)),
+        )
+    }
+
+    @Test
     fun profilesExposeTheExactScenarioChecks() {
         val expected = mapOf(
             "success" to listOf(
@@ -413,6 +606,61 @@ class FrpcAndroidInteropHostTest {
         }
     }
 
+    @Test
+    fun maximumResourceResultFitsTheHostBound() {
+        val snapshot = AppE2eResourceSnapshot(
+            elapsedRealtimeMillis = Long.MAX_VALUE,
+            processCpuMillis = Long.MAX_VALUE,
+            pssKiB = Long.MAX_VALUE,
+            javaHeapBytes = Long.MAX_VALUE,
+            nativeHeapBytes = Long.MAX_VALUE,
+            openFdCount = 16_384,
+            threadCount = 16_384,
+        )
+        val result = AppE2eResult(
+            schemaVersion = 7,
+            runId = RUN_ID,
+            status = "passed",
+            checks = List(19) { "bounded_check_$it" },
+            backend = "kotlin",
+            initialGeneration = Long.MAX_VALUE,
+            initialControlEpoch = Long.MAX_VALUE,
+            recoveredGeneration = Long.MAX_VALUE,
+            recoveredControlEpoch = Long.MAX_VALUE,
+            suite = "core",
+            topology = "adb_reverse",
+            networkSwitchProven = false,
+            phase = "single",
+            resources = AppE2eResourceEvidence(
+                start = snapshot,
+                end = snapshot,
+                wallDurationMillis = 0,
+                cpuDurationMillis = 0,
+                samples = List(254) { snapshot },
+                droppedSampleCount = Int.MAX_VALUE,
+            ),
+            workload = AppE2eWorkloadResult(
+                profile = "soak",
+                completedIterations = 100_000,
+                reconnectCount = 100_000,
+            ),
+        )
+
+        val byteCount = Json.encodeToString(result).toByteArray(StandardCharsets.UTF_8).size
+
+        assertTrue("maximum App E2E result was $byteCount bytes", byteCount <= 64 * 1024)
+    }
+
+    @Test
+    fun recoveryIdentityKeepsKotlinGenerationAndAllowsGoMobileReplacement() {
+        assertTrue(isValidAppE2eRecoveryIdentity("kotlin", 2, 3, 2, 4))
+        assertFalse(isValidAppE2eRecoveryIdentity("kotlin", 2, 3, 3, 1))
+        assertTrue(isValidAppE2eRecoveryIdentity("gomobile", 2, 3, 2, 4))
+        assertTrue(isValidAppE2eRecoveryIdentity("gomobile", 2, 3, 3, 1))
+        assertFalse(isValidAppE2eRecoveryIdentity("gomobile", 2, 3, 2, 3))
+        assertFalse(isValidAppE2eRecoveryIdentity("unknown", 2, 3, 3, 1))
+    }
+
     private fun passedResult(
         profile: AndroidInteropProfile,
         backend: String,
@@ -437,6 +685,16 @@ class FrpcAndroidInteropHostTest {
         caseId = "restart-v2-11",
         backend = "gomobile",
         step = "device_ready",
+    )
+
+    private fun resourceSnapshot(elapsed: Long, cpu: Long): AppE2eResourceSnapshot = AppE2eResourceSnapshot(
+        elapsedRealtimeMillis = elapsed,
+        processCpuMillis = cpu,
+        pssKiB = 1,
+        javaHeapBytes = 1,
+        nativeHeapBytes = 1,
+        openFdCount = 1,
+        threadCount = 1,
     )
 
     private companion object {

@@ -32,11 +32,13 @@
 - [ ] 精确候选版本的 `:frpc-stcp-visitor:frpcInteropTest` 已使用固定官方 frp asset 通过，包括 wire v1/v2、四种 payload 模式、并发双向超窗口流、长期 global/project SSE、负例和重启/control epoch 恢复。
 - [ ] Bridge 可复现门禁已在同一主机平台构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，并隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 逐字节一致。
 - [ ] AAR checksum、精确 Java API、bridge/frp provenance、四 ABI BuildInfo module identity/version/sum、无本地路径与跨 ABI graph digest 证明、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
-- [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleKotlinRelease`、`:app:verifyPureKotlinPackaging` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/GoMobile、Canary/Kotlin 与 Kotlin Release-Like/Kotlin 选择，打包门禁确认两个 Kotlin runtime classpath 和全部 ABI APK 都排除 GoMobile bridge 与 `libgojni.so`。
+- [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest`、`:app:verifyPureKotlinPackaging` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/GoMobile、Canary/Kotlin、GoMobile Release-Like/GoMobile 与 Kotlin Release-Like/Kotlin 选择，两个共享 Release-Like AndroidTest APK 均已编译，打包门禁确认两个 Kotlin runtime classpath 和全部 ABI APK 都排除 GoMobile bridge 与 `libgojni.so`。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已对其精确完整 commit SHA 运行 `K6V Android STCP Interop`：可直接手动触发，首次引入时也可通过人工显式启用的 CI reusable bootstrap。API 26 x86_64 `compat` lane 精确通过 `success-v1-00`；API 36 x86_64 `full` lane 通过全部八个 wire/加密/压缩成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。Renderer preflight tests 已通过，fail-closed 双语报告与规范化 evidence 完整校验 suite/profile identity、参数、`gomobile,kotlin` 顺序、精确 checks、等价性和 `authorizesKotlinDefault=false`，而不是依赖 Gradle task success。否则本项明确记录为不适用。
 - [ ] 已审查 K6V 报告限制：模拟器证据不能替代分离的目标 ABI 真机与 16KB runtime lane、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。两个设备 lane 可以使用不同设备；无法获得物理 ARM 16KB 硬件记录为残余风险，而不是 K7 开发阻塞项。
-- [ ] Canary 与 Kotlin Release-Like APK 仅作为无 bridge 的验证输出。Kotlin Release-Like 使用标准 Android Debug 测试证书进行 Release-mode 设备验证；Release 签名与发布暂存只使用 GoMobile 默认的 `assembleRelease` 输出。
-- [ ] 签名 Release APK 的 metadata、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、native 字节绑定、法律资产、文件名和 `SHA256SUMS` 校验已通过。
+- [ ] Canary 与 Kotlin Release-Like APK 只作为无 bridge 验证输出，GoMobile Release-Like 只作为带 suffix、使用 Debug 证书的对比输出；三者均未暂存或发布。
+- [ ] 如果该候选用于评估 K7/Kotlin 默认装配，exact-candidate App E2E artifact 已绑定干净的小写 commit/tree、本地与已安装 target/test APK SHA-256 身份、清理成功和 `authorizesKotlinDefault=false`。External 证据精确包含 17 个有序 instrumentation checks，以及 Host 断言 `configured_pinned_public_server` 与 `network_restored`。否则本项明确记录为不适用。
+- [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已在批准的设备矩阵上运行对称 GoMobile/Kotlin `baseline`、重连/并发 `stress`、`leak` 与长期 `soak` profile，并使用经评审阈值和有界证据。否则本项明确记录为不适用。
+- [ ] 所选 allowlist profile 的签名制品校验已通过。公共检查覆盖 output metadata 与实际 APK manifest 的 application ID/版本、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、全部 native library、法律资产、文件名和 `SHA256SUMS`；GoMobile 还要求 bridge class 与 sidecar 绑定的 `libgojni.so`，Kotlin-default 则拒绝二者。
 
 ## 设备与连接门禁
 
@@ -66,8 +68,10 @@
 
 ## Dry Run
 
-- [ ] 需要签名 dry-run 时，从 `main` 运行 `workflow_dispatch`。
-- [ ] Dry-run 已上传签名发布制品和最终可审阅 `release-notes.md` artifact。
+- [ ] 需要签名 dry-run 时，从 `main` 运行 `workflow_dispatch`，并显式审查 `run_kotlin_default_release_dry_run` 的取值。
+- [ ] 普通 GoMobile dry run 使用 `false`；K7 打包评估使用 `true` 时只生成不可发布的 Kotlin-default artifact profile。
+- [ ] Dry-run 已上传所选签名制品和最终可审阅 `release-notes.md` artifact，并只保留三天。
+- [ ] 选择 Kotlin-default dry run 时，制品使用正式 application ID/版本/证书，通过 `verifyKotlinDefaultReleaseDryRunPackaging`，保持 `authorizesKotlinDefault=false`，且未被视为稳定周期或 backend 切换授权。
 - [ ] Dry-run 说明明确写明 GitHub 自动变更列表只在真实 tag 发布时追加。
 - [ ] 维护者已审查精确 APK 文件名、checksum、策划说明、兼容性声明、已知问题和法律/安全链接。
 - [ ] Dry-run 没有创建 GitHub Release。

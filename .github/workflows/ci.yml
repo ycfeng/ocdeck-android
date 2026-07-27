@@ -148,11 +148,15 @@ jobs:
           :frpc-stcp-visitor:checkGoMobileBridgeAar
           :app:testDebugUnitTest
           :app:testCanaryUnitTest
+          :app:testGoMobileReleaseUnitTest
           :app:testKotlinReleaseUnitTest
           :frpc-stcp-visitor:testDebugUnitTest
           :app:assembleDebug
           :app:assembleCanary
+          :app:assembleGoMobileRelease
+          :app:assembleGoMobileReleaseAndroidTest
           :app:assembleKotlinRelease
+          :app:assembleKotlinReleaseAndroidTest
           :app:verifyPureKotlinPackaging
           -PrequireGoMobileBridge=true
 

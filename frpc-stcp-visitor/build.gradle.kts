@@ -5,6 +5,7 @@ import java.util.Properties
 import java.util.zip.ZipFile
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.testing.Test
+import org.gradle.api.file.Directory
 
 plugins {
     alias(libs.plugins.android.library)
@@ -82,6 +83,9 @@ android {
         create("kotlinRelease") {
             initWith(getByName("release"))
         }
+        create("kotlinDefaultReleaseDryRun") {
+            initWith(getByName("release"))
+        }
     }
 }
 
@@ -130,6 +134,9 @@ val androidInteropApkDirectory = layout.buildDirectory.dir("outputs/apk/androidT
 val appKotlinReleaseApkDirectory = rootProject.layout.projectDirectory.dir("app/build/outputs/apk/kotlinRelease")
 val appKotlinReleaseTestApkDirectory =
     rootProject.layout.projectDirectory.dir("app/build/outputs/apk/androidTest/kotlinRelease")
+val appGoMobileReleaseApkDirectory = rootProject.layout.projectDirectory.dir("app/build/outputs/apk/goMobileRelease")
+val appGoMobileReleaseTestApkDirectory =
+    rootProject.layout.projectDirectory.dir("app/build/outputs/apk/androidTest/goMobileRelease")
 
 tasks.register<JavaExec>("frpcAndroidInteropTest") {
     group = "verification"
@@ -168,13 +175,24 @@ tasks.register<JavaExec>("frpcAndroidInteropTest") {
     }
 }
 
-tasks.register<JavaExec>("frpcAppE2eTest") {
+fun registerAppE2eTask(
+    name: String,
+    backend: String,
+    variantName: String,
+    appApkDirectory: Directory,
+    testApkDirectory: Directory,
+    resourceMode: Boolean,
+) = tasks.register<JavaExec>(name) {
     group = "verification"
-    description = "Runs the Kotlin Release-Like App Store/SSE/snapshot STCP end-to-end gate."
+    description = if (resourceMode) {
+        "Runs the $backend Release-Like App core workload with bounded process resource evidence."
+    } else {
+        "Runs the $backend Release-Like App Store/SSE/snapshot STCP end-to-end gate."
+    }
     dependsOn(
         "checkGoMobileBridgeAar",
-        ":app:assembleKotlinRelease",
-        ":app:assembleKotlinReleaseAndroidTest",
+        ":app:assemble$variantName",
+        ":app:assemble${variantName}AndroidTest",
         "compileDebugUnitTestKotlin",
         "compileDebugUnitTestJavaWithJavac",
         "processDebugUnitTestJavaRes",
@@ -192,23 +210,144 @@ tasks.register<JavaExec>("frpcAppE2eTest") {
         systemProperty("ocdeck.frp.appE2e.adb", adbExecutable.get().asFile.absolutePath)
         systemProperty(
             "ocdeck.frp.appE2e.appApkDirectory",
-            appKotlinReleaseApkDirectory.asFile.absolutePath,
+            appApkDirectory.asFile.absolutePath,
         )
         systemProperty(
             "ocdeck.frp.appE2e.testApkDirectory",
-            appKotlinReleaseTestApkDirectory.asFile.absolutePath,
+            testApkDirectory.asFile.absolutePath,
         )
-        providers.gradleProperty("ocdeck.frp.appE2e.deviceSerial").orNull?.let { serial ->
+        systemProperty("ocdeck.frp.appE2e.backend", backend)
+        val configuredDeviceSerial = providers.gradleProperty("ocdeck.frp.appE2e.deviceSerial").orNull
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        if (resourceMode && configuredDeviceSerial == null) {
+            throw GradleException(
+                "ocdeck.frp.appE2e.deviceSerial is required for resource evidence tasks.",
+            )
+        }
+        configuredDeviceSerial?.let { serial ->
             systemProperty("ocdeck.frp.appE2e.deviceSerial", serial)
         }
-        providers.gradleProperty("ocdeck.frp.appE2e.suite").orNull?.let { suite ->
-            systemProperty("ocdeck.frp.appE2e.suite", suite)
+        if (resourceMode) {
+            systemProperty("ocdeck.frp.appE2e.suite", "core")
+            systemProperty(
+                "ocdeck.frp.appE2e.profile",
+                providers.gradleProperty("ocdeck.frp.appResource.profile").orNull ?: "baseline",
+            )
+            listOf(
+                "iterations",
+                "concurrency",
+                "durationMillis",
+                "reconnectEveryIterations",
+                "sampleEveryIterations",
+            ).forEach { propertyName ->
+                providers.gradleProperty("ocdeck.frp.appResource.$propertyName").orNull?.let { value ->
+                    systemProperty("ocdeck.frp.appE2e.$propertyName", value)
+                }
+            }
+            val evidenceDirectory = providers.gradleProperty("ocdeck.frp.appResource.evidenceDirectory").orNull
+                ?: throw GradleException(
+                    "ocdeck.frp.appResource.evidenceDirectory is required for resource evidence tasks.",
+                )
+            val evidenceParent = rootProject.file(evidenceDirectory)
+            check(evidenceParent.isDirectory) {
+                "App resource evidence directory must already exist."
+            }
+            val evidenceFile = evidenceParent.resolve("$backend-app-resource.json")
+            systemProperty("ocdeck.frp.appE2e.summaryFile", evidenceFile.absolutePath)
+        } else {
+            providers.gradleProperty("ocdeck.frp.appE2e.suite").orNull?.let { suite ->
+                systemProperty("ocdeck.frp.appE2e.suite", suite)
+            }
+            providers.gradleProperty("ocdeck.frp.appE2e.outageMillis").orNull?.let { outageMillis ->
+                systemProperty("ocdeck.frp.appE2e.outageMillis", outageMillis)
+            }
+            providers.gradleProperty("ocdeck.frp.appE2e.summaryFile").orNull?.let { summaryFile ->
+                systemProperty("ocdeck.frp.appE2e.summaryFile", summaryFile)
+            }
         }
-        providers.gradleProperty("ocdeck.frp.appE2e.outageMillis").orNull?.let { outageMillis ->
-            systemProperty("ocdeck.frp.appE2e.outageMillis", outageMillis)
+    }
+}
+
+registerAppE2eTask(
+    name = "frpcAppE2eTest",
+    backend = "kotlin",
+    variantName = "KotlinRelease",
+    appApkDirectory = appKotlinReleaseApkDirectory,
+    testApkDirectory = appKotlinReleaseTestApkDirectory,
+    resourceMode = false,
+)
+registerAppE2eTask(
+    name = "frpcGoMobileAppE2eTest",
+    backend = "gomobile",
+    variantName = "GoMobileRelease",
+    appApkDirectory = appGoMobileReleaseApkDirectory,
+    testApkDirectory = appGoMobileReleaseTestApkDirectory,
+    resourceMode = false,
+)
+val frpcGoMobileAppResourceTest = registerAppE2eTask(
+    name = "frpcGoMobileAppResourceTest",
+    backend = "gomobile",
+    variantName = "GoMobileRelease",
+    appApkDirectory = appGoMobileReleaseApkDirectory,
+    testApkDirectory = appGoMobileReleaseTestApkDirectory,
+    resourceMode = true,
+)
+val frpcKotlinAppResourceTest = registerAppE2eTask(
+    name = "frpcKotlinAppResourceTest",
+    backend = "kotlin",
+    variantName = "KotlinRelease",
+    appApkDirectory = appKotlinReleaseApkDirectory,
+    testApkDirectory = appKotlinReleaseTestApkDirectory,
+    resourceMode = true,
+)
+frpcKotlinAppResourceTest.configure { mustRunAfter(frpcGoMobileAppResourceTest) }
+tasks.register("frpcAppResourceTest") {
+    group = "verification"
+    description = "Runs symmetric GoMobile and Kotlin Release-Like App resource evidence gates."
+    dependsOn(frpcGoMobileAppResourceTest, frpcKotlinAppResourceTest)
+    doLast {
+        val configuredDirectory = providers.gradleProperty("ocdeck.frp.appResource.evidenceDirectory").orNull
+            ?: throw GradleException(
+                "ocdeck.frp.appResource.evidenceDirectory is required for symmetric resource evidence.",
+            )
+        val evidenceDirectory = rootProject.file(configuredDirectory)
+        fun readSummary(backend: String): Map<*, *> {
+            val evidenceFile = evidenceDirectory.resolve("$backend-app-resource.json")
+            check(evidenceFile.isFile && evidenceFile.length() in 1..(64 * 1024)) {
+                "App resource evidence output was missing or exceeded its bounded size."
+            }
+            return evidenceFile.inputStream().buffered().use { input ->
+                JsonSlurper().parse(input) as? Map<*, *>
+                    ?: throw GradleException("App resource evidence did not contain a JSON object.")
+            }
         }
-        providers.gradleProperty("ocdeck.frp.appE2e.summaryFile").orNull?.let { summaryFile ->
-            systemProperty("ocdeck.frp.appE2e.summaryFile", summaryFile)
+        fun requireValidSummary(summary: Map<*, *>, backend: String) {
+            val targetApk = summary["targetApk"] as? Map<*, *>
+            val testApk = summary["testApk"] as? Map<*, *>
+            val workload = summary["workload"] as? Map<*, *>
+            val workloadResults = summary["workloads"] as? List<*>
+            val resources = summary["resources"] as? List<*>
+            check(
+                summary["schemaVersion"] == 8 && summary["backend"] == backend &&
+                    summary["suite"] == "core" && summary["status"] == "passed" &&
+                    summary["cleanupVerified"] == true && summary["authorizesKotlinDefault"] == false &&
+                    targetApk?.get("byteIdentical") == true && testApk?.get("byteIdentical") == true &&
+                    workload != null && workloadResults?.size == 1 && resources?.size == 1 &&
+                    (workloadResults.single() as? Map<*, *>)?.get("profile") == workload["profile"],
+            ) {
+                "App resource evidence did not satisfy its bounded acceptance contract."
+            }
+        }
+
+        val goMobile = readSummary("gomobile")
+        val kotlin = readSummary("kotlin")
+        requireValidSummary(goMobile, "gomobile")
+        requireValidSummary(kotlin, "kotlin")
+        check(goMobile["repository"] == kotlin["repository"] && goMobile["device"] == kotlin["device"] &&
+            goMobile["workload"] == kotlin["workload"]
+        ) {
+            "GoMobile and Kotlin resource evidence did not use the same candidate, device, and workload."
         }
     }
 }

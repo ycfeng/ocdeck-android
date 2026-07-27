@@ -6,8 +6,10 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
+import android.os.Debug
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
@@ -24,10 +26,16 @@ import io.github.ycfeng.ocdeck.data.server.NewServerFrpcStcpVisitor
 import io.github.ycfeng.ocdeck.data.server.ServerConfig
 import io.github.ycfeng.ocdeck.data.server.ServerConnection
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.nio.file.Files
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -48,7 +56,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 @LargeTest
-class KotlinReleaseStcpAppE2eTest {
+class ReleaseLikeStcpAppE2eTest {
     @Test
     fun runConfiguredAppFlow() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -59,14 +67,16 @@ class KotlinReleaseStcpAppE2eTest {
         val configFile = requireSafeFileName(arguments.getString(ARG_CONFIG_FILE))
         var stage = STAGE_CONFIGURATION
         val checks = linkedSetOf<String>()
+        val resourceStart = captureResourceSnapshot()
+        val resourceSamples = ResourceSampleCollector()
 
-        val result = try {
+        val scenarioResult = try {
             val configured = readPrivateJson<AppE2eInvocation>(instrumentation, configFile).also {
                 validateInvocation(it, runId)
             }
             runBlocking {
-                withTimeout(SCENARIO_TIMEOUT_MILLIS) {
-                    runScenario(configured, checks) { stage = it }
+                withTimeout(scenarioTimeoutMillis(configured.workload)) {
+                    runScenario(configured, checks, resourceSamples) { stage = it }
                 }
             }
         } catch (timeout: TimeoutCancellationException) {
@@ -80,6 +90,9 @@ class KotlinReleaseStcpAppE2eTest {
         } catch (_: Exception) {
             failedResult(runId, stage, checks, FAILURE_UNEXPECTED)
         }
+        val result = scenarioResult.copy(
+            resources = buildResourceEvidence(resourceStart, captureResourceSnapshot(), resourceSamples),
+        )
 
         try {
             val encoded = JSON.encodeToString(result)
@@ -96,13 +109,13 @@ class KotlinReleaseStcpAppE2eTest {
     private suspend fun runScenario(
         invocation: AppE2eInvocation,
         checks: MutableSet<String>,
+        resourceSamples: ResourceSampleCollector,
         updateStage: (String) -> Unit,
     ): AppE2eResult {
         if (invocation.suite == SUITE_PROCESS) {
             return runProcessScenario(invocation, checks, updateStage)
         }
-        if (!BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR) throw AppE2eAssertionException()
-        checks += CHECK_KOTLIN_BACKEND
+        checks += backendCheck(invocation.backend)
 
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val application = instrumentation.targetContext.applicationContext as? OpenCodeApplication
@@ -118,6 +131,7 @@ class KotlinReleaseStcpAppE2eTest {
         var recoveredGeneration = 0L
         var recoveredControlEpoch = 0L
         var deviceIdleForced = false
+        var workloadResult: AppE2eWorkloadResult? = null
 
         try {
             if (invocation.suite == SUITE_NETWORK) {
@@ -156,6 +170,7 @@ class KotlinReleaseStcpAppE2eTest {
             val generation = connection.stcpGeneration ?: throw AppE2eAssertionException()
             initialGeneration = generation.ordinal
             initialControlEpoch = connection.stcpControlEpoch ?: throw AppE2eAssertionException()
+            var restartBaselineTransportIdentity = connection.transportIdentity
             if (connection.readinessHealth?.healthy != true || initialGeneration <= 0L || initialControlEpoch <= 0L) {
                 throw AppE2eAssertionException()
             }
@@ -194,6 +209,25 @@ class KotlinReleaseStcpAppE2eTest {
                     state.sessionTitle(SESSION_PROJECT_SSE) == "project-sse-1"
             }
             checks += CHECK_PROJECT_SSE_STORE
+
+            if (invocation.workload.profile != PROFILE_FUNCTIONAL) {
+                workloadResult = runResourceWorkload(
+                    invocation = invocation,
+                    container = container,
+                    server = server,
+                    resourceSamples = resourceSamples,
+                    updateStage = updateStage,
+                )
+                updateStage(STAGE_RESOURCE_POST_WORKLOAD_CONNECTION)
+                val workloadConnection = container.serverRepository.getConnection(server.id)
+                updateStage(STAGE_RESOURCE_POST_WORKLOAD_IDENTITY)
+                initialGeneration = workloadConnection.stcpGeneration?.ordinal ?: throw AppE2eAssertionException()
+                initialControlEpoch = workloadConnection.stcpControlEpoch ?: throw AppE2eAssertionException()
+                restartBaselineTransportIdentity = workloadConnection.transportIdentity
+                updateStage(STAGE_RESOURCE_POST_WORKLOAD_HEALTH)
+                // The already-ready epoch-refresh fast path intentionally omits a duplicate HTTP health result.
+                if (workloadConnection.readinessHealth?.healthy == false) throw AppE2eAssertionException()
+            }
 
             when (invocation.suite) {
                 SUITE_CORE -> {
@@ -377,15 +411,23 @@ class KotlinReleaseStcpAppE2eTest {
             recoveredGeneration = recoveredConnection.stcpGeneration?.ordinal ?: throw AppE2eAssertionException()
             recoveredControlEpoch = recoveredConnection.stcpControlEpoch ?: throw AppE2eAssertionException()
             updateStage(STAGE_RESTART_RECOVERY_GENERATION)
-            if (recoveredGeneration != initialGeneration) throw AppE2eAssertionException()
+            if (invocation.backend == BACKEND_KOTLIN && recoveredGeneration != initialGeneration) {
+                throw AppE2eAssertionException()
+            }
             updateStage(STAGE_RESTART_RECOVERY_EPOCH)
-            if (recoveredControlEpoch <= initialControlEpoch) throw AppE2eAssertionException()
+            if (invocation.backend == BACKEND_KOTLIN && recoveredControlEpoch <= initialControlEpoch) {
+                throw AppE2eAssertionException()
+            }
             updateStage(STAGE_RESTART_RECOVERY_TRANSPORT)
-            if (recoveredConnection.transportIdentity.isOlderThan(connection.transportIdentity)) {
+            if (recoveredConnection.transportIdentity.monotonicCompareTo(restartBaselineTransportIdentity) != 1) {
                 throw AppE2eAssertionException()
             }
             if (invocation.suite == SUITE_LIFECYCLE) checks += CHECK_LONG_OUTAGE_DATA_RETAINED
-            checks += CHECK_CONTROL_EPOCH_ADVANCED
+            checks += if (invocation.backend == BACKEND_KOTLIN) {
+                CHECK_CONTROL_EPOCH_ADVANCED
+            } else {
+                CHECK_TRANSPORT_IDENTITY_ADVANCED
+            }
             checks += CHECK_RESTART_RECONCILIATION
 
             updateStage(STAGE_POST_RESTART_FOREGROUND)
@@ -447,13 +489,14 @@ class KotlinReleaseStcpAppE2eTest {
         }
         throwSelected(primaryFailure, cleanupFailure)
 
-        val expectedChecks = expectedChecks(invocation.suite)
+        val expectedChecks = expectedChecks(invocation.suite, invocation.backend)
         if (checks != expectedChecks) throw AppE2eAssertionException()
         return AppE2eResult(
             schemaVersion = SCHEMA_VERSION,
             runId = invocation.runId,
             status = STATUS_PASSED,
             checks = checks.toList(),
+            backend = invocation.backend,
             bindPort = bindPort,
             initialGeneration = initialGeneration,
             initialControlEpoch = initialControlEpoch,
@@ -464,6 +507,7 @@ class KotlinReleaseStcpAppE2eTest {
             networkSwitchProven = invocation.suite == SUITE_NETWORK,
             phase = invocation.phase,
             processId = Process.myPid(),
+            workload = workloadResult,
         )
     }
 
@@ -475,6 +519,106 @@ class KotlinReleaseStcpAppE2eTest {
         PHASE_PROCESS_PREPARE -> runProcessPrepare(invocation, checks, updateStage)
         PHASE_PROCESS_RECOVER -> runProcessRecover(invocation, checks, updateStage)
         else -> throw AppE2eAssertionException()
+    }
+
+    private suspend fun runResourceWorkload(
+        invocation: AppE2eInvocation,
+        container: io.github.ycfeng.ocdeck.app.AppContainer,
+        server: ServerConfig,
+        resourceSamples: ResourceSampleCollector,
+        updateStage: (String) -> Unit,
+    ): AppE2eWorkloadResult {
+        val workload = invocation.workload
+        updateStage(STAGE_RESOURCE_WORKLOAD)
+        val startedAt = SystemClock.elapsedRealtime()
+        var completedIterations = 0
+        var reconnectCount = 0
+        while (completedIterations < workload.iterations &&
+            (workload.durationMillis == 0L || SystemClock.elapsedRealtime() - startedAt < workload.durationMillis)
+        ) {
+            updateStage(STAGE_RESOURCE_SNAPSHOT)
+            val connection = container.serverRepository.getConnection(server.id)
+            val snapshots = coroutineScope {
+                List(workload.concurrency) {
+                    async(Dispatchers.IO) {
+                        container.openCodeRepository.loadProjectSnapshot(
+                            serverId = server.id,
+                            directory = PROJECT_DIRECTORY,
+                            workspace = null,
+                            sessionWindow = SessionListWindowState(),
+                            activeSessionMessages = null,
+                        ).getOrThrow()
+                    }
+                }.awaitAll()
+            }
+            updateStage(STAGE_RESOURCE_SNAPSHOT_IDENTITY)
+            if (snapshots.isEmpty() || snapshots.any { it.transportIdentity != connection.transportIdentity }) {
+                throw AppE2eAssertionException()
+            }
+            container.openCodeStore.applyProjectSnapshot(snapshots.last().snapshot)
+            completedIterations += 1
+
+            if (workload.reconnectEveryIterations > 0 &&
+                completedIterations % workload.reconnectEveryIterations == 0
+            ) {
+                updateStage(STAGE_RESOURCE_DISCONNECT)
+                coroutineScope {
+                    val globalDisconnected = async(start = CoroutineStart.UNDISPATCHED) {
+                        withTimeout(RECOVERY_TIMEOUT_MILLIS) {
+                            container.openCodeStore.observeGlobalConnection(server.id)
+                                .first { it != SseConnectionStatus.Open }
+                        }
+                    }
+                    val projectDisconnected = async(start = CoroutineStart.UNDISPATCHED) {
+                        awaitProject(container.openCodeStore.observeProject(server.id, PROJECT_DIRECTORY)) {
+                            it.connectionStatus != SseConnectionStatus.Open
+                        }
+                    }
+                    container.frpcStcpVisitorManager.closeVisitor(server.id)
+                    globalDisconnected.await()
+                    projectDisconnected.await()
+                }
+                updateStage(STAGE_RESOURCE_RECONNECT)
+                val recovered = container.serverRepository.getConnection(server.id)
+                if (recovered.readinessHealth?.healthy != true ||
+                    recovered.transportIdentity.monotonicCompareTo(connection.transportIdentity) != 1
+                ) {
+                    throw AppE2eAssertionException()
+                }
+                updateStage(STAGE_RESOURCE_GLOBAL_REOPEN)
+                withTimeout(RECOVERY_TIMEOUT_MILLIS) {
+                    container.openCodeStore.observeGlobalConnection(server.id).first { it == SseConnectionStatus.Open }
+                }
+                updateStage(STAGE_RESOURCE_PROJECT_REOPEN)
+                awaitProject(container.openCodeStore.observeProject(server.id, PROJECT_DIRECTORY)) {
+                    it.connectionStatus == SseConnectionStatus.Open
+                }
+                reconnectCount += 1
+            }
+            if (completedIterations % workload.sampleEveryIterations == 0) {
+                updateStage(STAGE_RESOURCE_SAMPLE)
+                resourceSamples.add(captureResourceSnapshot(updateStage))
+            }
+            if (workload.profile == PROFILE_SOAK) {
+                val elapsedMillis = SystemClock.elapsedRealtime() - startedAt
+                val targetElapsedMillis = workload.durationMillis * completedIterations / workload.iterations
+                val pacingDelayMillis = targetElapsedMillis - elapsedMillis
+                if (pacingDelayMillis > 0L) {
+                    delay(pacingDelayMillis)
+                }
+            }
+        }
+        if (completedIterations <= 0 ||
+            (workload.profile != PROFILE_SOAK && completedIterations != workload.iterations) ||
+            (workload.profile == PROFILE_SOAK && SystemClock.elapsedRealtime() - startedAt < workload.durationMillis)
+        ) {
+            throw AppE2eAssertionException()
+        }
+        return AppE2eWorkloadResult(
+            profile = workload.profile,
+            completedIterations = completedIterations,
+            reconnectCount = reconnectCount,
+        )
     }
 
     private suspend fun runNetworkSwitchScenario(
@@ -602,8 +746,7 @@ class KotlinReleaseStcpAppE2eTest {
         checks: MutableSet<String>,
         updateStage: (String) -> Unit,
     ): AppE2eResult {
-        if (!BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR) throw AppE2eAssertionException()
-        checks += CHECK_KOTLIN_BACKEND
+        checks += backendCheck(invocation.backend)
 
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val application = instrumentation.targetContext.applicationContext as? OpenCodeApplication
@@ -726,12 +869,15 @@ class KotlinReleaseStcpAppE2eTest {
         }
         throwSelected(primaryFailure, cleanupFailure)
 
-        if (checks != PROCESS_PREPARE_EXPECTED_CHECKS) throw AppE2eAssertionException()
+        if (checks != expectedProcessChecks(PROCESS_PREPARE_EXPECTED_CHECKS, invocation.backend)) {
+            throw AppE2eAssertionException()
+        }
         return AppE2eResult(
             schemaVersion = SCHEMA_VERSION,
             runId = invocation.runId,
             status = STATUS_PASSED,
             checks = checks.toList(),
+            backend = invocation.backend,
             bindPort = bindPort,
             initialGeneration = generation,
             initialControlEpoch = controlEpoch,
@@ -748,8 +894,7 @@ class KotlinReleaseStcpAppE2eTest {
         checks: MutableSet<String>,
         updateStage: (String) -> Unit,
     ): AppE2eResult {
-        if (!BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR) throw AppE2eAssertionException()
-        checks += CHECK_KOTLIN_BACKEND
+        checks += backendCheck(invocation.backend)
 
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val application = instrumentation.targetContext.applicationContext as? OpenCodeApplication
@@ -852,12 +997,15 @@ class KotlinReleaseStcpAppE2eTest {
         }
         throwSelected(primaryFailure, cleanupFailure)
 
-        if (checks != PROCESS_RECOVER_EXPECTED_CHECKS) throw AppE2eAssertionException()
+        if (checks != expectedProcessChecks(PROCESS_RECOVER_EXPECTED_CHECKS, invocation.backend)) {
+            throw AppE2eAssertionException()
+        }
         return AppE2eResult(
             schemaVersion = SCHEMA_VERSION,
             runId = invocation.runId,
             status = STATUS_PASSED,
             checks = checks.toList(),
+            backend = invocation.backend,
             bindPort = bindPort,
             initialGeneration = generation,
             initialControlEpoch = controlEpoch,
@@ -985,7 +1133,7 @@ class KotlinReleaseStcpAppE2eTest {
 
     private fun launchMainActivity(instrumentation: Instrumentation, serverId: String) {
         val intent = Intent().apply {
-            setClassName(TARGET_PACKAGE, MAIN_ACTIVITY_CLASS)
+            setClassName(instrumentation.targetContext.packageName, MAIN_ACTIVITY_CLASS)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(OpenCodeNotificationTarget.ExtraServerId, serverId)
             putExtra(OpenCodeNotificationTarget.ExtraDirectory, PROJECT_DIRECTORY)
@@ -1021,14 +1169,18 @@ class KotlinReleaseStcpAppE2eTest {
         }
 
     private fun validateInvocation(invocation: AppE2eInvocation, runId: String) {
+        val expectedBackend = if (BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR) BACKEND_KOTLIN else BACKEND_GO_MOBILE
         if (invocation.schemaVersion != SCHEMA_VERSION || invocation.runId != runId ||
+            invocation.backend != expectedBackend ||
+            (invocation.suite == SUITE_NETWORK && invocation.backend != BACKEND_KOTLIN) ||
             invocation.suite !in setOf(SUITE_CORE, SUITE_LIFECYCLE, SUITE_PROCESS, SUITE_NETWORK) ||
             !isValidPhase(invocation.suite, invocation.phase) ||
             !isValidOutage(invocation.suite, invocation.outageMillis) ||
             invocation.frpsHost.isBlank() || invocation.frpsPort !in 1..65_535 || invocation.authToken.isBlank() ||
             !isValidTlsCertificatePin(invocation.suite, invocation.tlsServerCertificateSha256) ||
             invocation.user.isBlank() || invocation.serverUser.isBlank() ||
-            invocation.serverName.isBlank() || invocation.secretKey.isBlank()
+            invocation.serverName.isBlank() || invocation.secretKey.isBlank() ||
+            !isValidWorkload(invocation.suite, invocation.workload)
         ) {
             throw AppE2eAssertionException()
         }
@@ -1041,7 +1193,7 @@ class KotlinReleaseStcpAppE2eTest {
     private inline fun <reified T> readPrivateJson(instrumentation: Instrumentation, fileName: String): T {
         val output = readShellOutput(
             instrumentation,
-            "run-as $TEST_PACKAGE cat files/$fileName",
+            "run-as ${instrumentation.context.packageName} cat files/$fileName",
         )
         return JSON.decodeFromString(output)
     }
@@ -1054,7 +1206,7 @@ class KotlinReleaseStcpAppE2eTest {
         while (true) {
             val output = readShellOutput(
                 instrumentation,
-                "run-as $TEST_PACKAGE cat files/$fileName",
+                "run-as ${instrumentation.context.packageName} cat files/$fileName",
             )
             if (output == expected) return@withTimeout
             delay(MARKER_POLL_MILLIS)
@@ -1067,7 +1219,7 @@ class KotlinReleaseStcpAppE2eTest {
     ) {
         val output = readShellOutput(
             instrumentation,
-            "run-as $TEST_PACKAGE touch files/$fileName",
+            "run-as ${instrumentation.context.packageName} touch files/$fileName",
         )
         if (output.isNotEmpty()) throw AppE2eAssertionException()
     }
@@ -1112,6 +1264,121 @@ class KotlinReleaseStcpAppE2eTest {
         failureCode = failureCode,
     )
 
+    private fun captureResourceSnapshot(updateStage: ((String) -> Unit)? = null): AppE2eResourceSnapshot {
+        val runtime = Runtime.getRuntime()
+        val javaHeapBytes = runtime.totalMemory() - runtime.freeMemory()
+        updateStage?.invoke(STAGE_RESOURCE_SAMPLE_FD)
+        val openFdCount = countResourceEntries(File("/proc/self/fd"))
+        updateStage?.invoke(STAGE_RESOURCE_SAMPLE_THREAD)
+        val threadCount = countResourceEntries(File("/proc/self/task"))
+        updateStage?.invoke(STAGE_RESOURCE_SAMPLE_PSS)
+        val pssKiB = Debug.getPss()
+        updateStage?.invoke(STAGE_RESOURCE_SAMPLE_VALIDATE)
+        return AppE2eResourceSnapshot(
+            elapsedRealtimeMillis = SystemClock.elapsedRealtime(),
+            processCpuMillis = Process.getElapsedCpuTime(),
+            pssKiB = pssKiB,
+            javaHeapBytes = javaHeapBytes,
+            nativeHeapBytes = Debug.getNativeHeapAllocatedSize(),
+            openFdCount = openFdCount,
+            threadCount = threadCount,
+        ).also { snapshot -> validateResourceSnapshot(snapshot, updateStage) }
+    }
+
+    private fun countResourceEntries(directory: File): Int {
+        repeat(RESOURCE_COUNT_ATTEMPTS) { attempt ->
+            try {
+                var count = 0
+                Files.newDirectoryStream(directory.toPath()).use { entries ->
+                    entries.forEach { _ ->
+                        count += 1
+                        if (count > MAXIMUM_RESOURCE_COUNT) throw AppE2eAssertionException()
+                    }
+                }
+                if (count <= 0) throw AppE2eAssertionException()
+                return count
+            } catch (failure: AppE2eAssertionException) {
+                throw failure
+            } catch (_: Exception) {
+                if (attempt == RESOURCE_COUNT_ATTEMPTS - 1) throw AppE2eAssertionException()
+                Thread.yield()
+            }
+        }
+        throw AppE2eAssertionException()
+    }
+
+    private fun buildResourceEvidence(
+        start: AppE2eResourceSnapshot,
+        end: AppE2eResourceSnapshot,
+        samples: ResourceSampleCollector,
+    ): AppE2eResourceEvidence {
+        validateResourceSnapshot(start)
+        validateResourceSnapshot(end)
+        val wallDurationMillis = end.elapsedRealtimeMillis - start.elapsedRealtimeMillis
+        val cpuDurationMillis = end.processCpuMillis - start.processCpuMillis
+        if (wallDurationMillis < 0L || cpuDurationMillis < 0L || cpuDurationMillis > wallDurationMillis * 64L) {
+            throw AppE2eAssertionException()
+        }
+        return AppE2eResourceEvidence(
+            start = start,
+            end = end,
+            wallDurationMillis = wallDurationMillis,
+            cpuDurationMillis = cpuDurationMillis,
+            samples = samples.values(),
+            droppedSampleCount = samples.droppedCount,
+        )
+    }
+
+    private fun isValidWorkload(suite: String, workload: AppE2eWorkload): Boolean {
+        if (workload.profile !in setOf(PROFILE_FUNCTIONAL, PROFILE_BASELINE, PROFILE_STRESS, PROFILE_LEAK, PROFILE_SOAK) ||
+            workload.iterations !in 0..MAXIMUM_WORKLOAD_ITERATIONS ||
+            workload.concurrency !in 1..MAXIMUM_WORKLOAD_CONCURRENCY ||
+            workload.reconnectEveryIterations !in 0..maxOf(1, workload.iterations) ||
+            workload.sampleEveryIterations !in 1..maxOf(1, workload.iterations)
+        ) {
+            return false
+        }
+        if (workload.profile == PROFILE_FUNCTIONAL) {
+            return workload == AppE2eWorkload.functional()
+        }
+        if (suite != SUITE_CORE || workload.iterations <= 0) return false
+        return if (workload.profile == PROFILE_SOAK) {
+            workload.durationMillis in MINIMUM_SOAK_MILLIS..MAXIMUM_SOAK_MILLIS
+        } else {
+            workload.durationMillis == 0L &&
+                (workload.profile != PROFILE_LEAK || workload.reconnectEveryIterations > 0)
+        }
+    }
+
+    private fun scenarioTimeoutMillis(workload: AppE2eWorkload): Long {
+        val workloadBudget = if (workload.profile == PROFILE_SOAK) {
+            workload.durationMillis
+        } else {
+            workload.iterations.toLong() * ITERATION_TIMEOUT_BUDGET_MILLIS
+        }
+        return (SCENARIO_TIMEOUT_MILLIS + workloadBudget).coerceAtMost(MAXIMUM_SCENARIO_TIMEOUT_MILLIS)
+    }
+
+    private fun validateResourceSnapshot(
+        snapshot: AppE2eResourceSnapshot,
+        updateStage: ((String) -> Unit)? = null,
+    ) {
+        updateStage?.invoke(STAGE_RESOURCE_SAMPLE_TIME)
+        if (snapshot.elapsedRealtimeMillis < 0L || snapshot.processCpuMillis < 0L) {
+            throw AppE2eAssertionException()
+        }
+        updateStage?.invoke(STAGE_RESOURCE_SAMPLE_MEMORY)
+        if (snapshot.pssKiB < 0L || snapshot.javaHeapBytes < 0L || snapshot.nativeHeapBytes < 0L) {
+            throw AppE2eAssertionException()
+        }
+        updateStage?.invoke(STAGE_RESOURCE_SAMPLE_COUNT)
+        if (snapshot.openFdCount !in 1..MAXIMUM_RESOURCE_COUNT ||
+            snapshot.threadCount !in 1..MAXIMUM_RESOURCE_COUNT
+        ) {
+            throw AppE2eAssertionException()
+        }
+    }
+
     private fun throwSelected(vararg failures: Throwable?) {
         failures.firstOrNull { it is Error }?.let { throw it }
         failures.firstOrNull { it is CancellationException }?.let { throw it }
@@ -1134,6 +1401,23 @@ class KotlinReleaseStcpAppE2eTest {
             ?: failures.firstOrNull()
     }
 
+    private class ResourceSampleCollector {
+        private val samples = mutableListOf<AppE2eResourceSnapshot>()
+        var droppedCount: Int = 0
+            private set
+
+        fun add(snapshot: AppE2eResourceSnapshot) {
+            if (samples.size < MAXIMUM_RESOURCE_SAMPLES) {
+                samples += snapshot
+            } else {
+                samples[samples.lastIndex] = snapshot
+                droppedCount += 1
+            }
+        }
+
+        fun values(): List<AppE2eResourceSnapshot> = samples.toList()
+    }
+
     private class AppE2eAssertionException : Exception()
 
     private companion object {
@@ -1141,14 +1425,14 @@ class KotlinReleaseStcpAppE2eTest {
         val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val SAFE_RUN_ID = Regex("[a-z0-9][a-z0-9-]{0,63}")
         val SAFE_FILE_NAME = Regex("[a-z0-9][a-z0-9._-]{0,127}")
-        const val SCHEMA_VERSION = 5
+        const val SCHEMA_VERSION = 7
         const val ARG_ENABLED = "ocdeck.appE2e.enabled"
         const val ARG_RUN_ID = "ocdeck.appE2e.runId"
         const val ARG_CONFIG_FILE = "ocdeck.appE2e.configFile"
         const val STATUS_RESULT_KEY = "ocdeckAppE2eResult"
-        const val TEST_PACKAGE = "io.github.ycfeng.ocdeck.kotlinrelease.test"
-        const val TARGET_PACKAGE = "io.github.ycfeng.ocdeck.kotlinrelease"
         const val MAIN_ACTIVITY_CLASS = "io.github.ycfeng.ocdeck.MainActivity"
+        const val BACKEND_GO_MOBILE = "gomobile"
+        const val BACKEND_KOTLIN = "kotlin"
         const val SUITE_CORE = "core"
         const val SUITE_LIFECYCLE = "lifecycle"
         const val SUITE_PROCESS = "process"
@@ -1210,7 +1494,26 @@ class KotlinReleaseStcpAppE2eTest {
         const val STAGE_NETWORK_WIFI_WAIT = "network_wifi_wait"
         const val STAGE_NETWORK_WIFI_RETENTION = "network_wifi_retention"
         const val STAGE_NETWORK_WIFI_RECOVERY = "network_wifi_recovery"
+        const val STAGE_RESOURCE_WORKLOAD = "resource_workload"
+        const val STAGE_RESOURCE_SNAPSHOT = "resource_snapshot"
+        const val STAGE_RESOURCE_SNAPSHOT_IDENTITY = "resource_snapshot_identity"
+        const val STAGE_RESOURCE_DISCONNECT = "resource_disconnect"
+        const val STAGE_RESOURCE_RECONNECT = "resource_reconnect"
+        const val STAGE_RESOURCE_GLOBAL_REOPEN = "resource_global_reopen"
+        const val STAGE_RESOURCE_PROJECT_REOPEN = "resource_project_reopen"
+        const val STAGE_RESOURCE_SAMPLE = "resource_sample"
+        const val STAGE_RESOURCE_SAMPLE_FD = "resource_sample_fd"
+        const val STAGE_RESOURCE_SAMPLE_THREAD = "resource_sample_thread"
+        const val STAGE_RESOURCE_SAMPLE_PSS = "resource_sample_pss"
+        const val STAGE_RESOURCE_SAMPLE_VALIDATE = "resource_sample_validate"
+        const val STAGE_RESOURCE_SAMPLE_TIME = "resource_sample_time"
+        const val STAGE_RESOURCE_SAMPLE_MEMORY = "resource_sample_memory"
+        const val STAGE_RESOURCE_SAMPLE_COUNT = "resource_sample_count"
+        const val STAGE_RESOURCE_POST_WORKLOAD_CONNECTION = "resource_post_workload_connection"
+        const val STAGE_RESOURCE_POST_WORKLOAD_IDENTITY = "resource_post_workload_identity"
+        const val STAGE_RESOURCE_POST_WORKLOAD_HEALTH = "resource_post_workload_health"
         const val CHECK_KOTLIN_BACKEND = "kotlin_backend"
+        const val CHECK_GO_MOBILE_BACKEND = "gomobile_backend"
         const val CHECK_STCP_READY = "stcp_ready"
         const val CHECK_SNAPSHOT_STORE = "snapshot_store"
         const val CHECK_GLOBAL_SSE_STORE = "global_sse_store"
@@ -1225,6 +1528,7 @@ class KotlinReleaseStcpAppE2eTest {
         const val CHECK_LONG_OUTAGE_DATA_RETAINED = "long_outage_data_retained"
         const val CHECK_PROVIDER_RACE_DATA_RETAINED = "provider_race_data_retained"
         const val CHECK_CONTROL_EPOCH_ADVANCED = "control_epoch_advanced"
+        const val CHECK_TRANSPORT_IDENTITY_ADVANCED = "transport_identity_advanced"
         const val CHECK_RESTART_RECONCILIATION = "restart_reconciliation"
         const val CHECK_POST_RESTART_FOREGROUND = "post_restart_foreground"
         const val CHECK_STREAMS_CLOSED = "streams_closed"
@@ -1326,12 +1630,26 @@ class KotlinReleaseStcpAppE2eTest {
             CHECK_VISITOR_CLOSED,
             CHECK_PORT_RELEASED,
         )
-        fun expectedChecks(suite: String): Set<String> = when (suite) {
+        fun backendCheck(backend: String): String = when (backend) {
+            BACKEND_GO_MOBILE -> CHECK_GO_MOBILE_BACKEND
+            BACKEND_KOTLIN -> CHECK_KOTLIN_BACKEND
+            else -> throw AppE2eAssertionException()
+        }
+        fun expectedProcessChecks(checks: Set<String>, backend: String): Set<String> =
+            checks.mapTo(linkedSetOf()) { check ->
+                when {
+                    check == CHECK_KOTLIN_BACKEND -> backendCheck(backend)
+                    backend == BACKEND_GO_MOBILE && check == CHECK_CONTROL_EPOCH_ADVANCED ->
+                        CHECK_TRANSPORT_IDENTITY_ADVANCED
+                    else -> check
+                }
+            }
+        fun expectedChecks(suite: String, backend: String): Set<String> = expectedProcessChecks(when (suite) {
             SUITE_CORE -> CORE_EXPECTED_CHECKS
             SUITE_LIFECYCLE -> LIFECYCLE_EXPECTED_CHECKS
             SUITE_NETWORK -> NETWORK_EXPECTED_CHECKS
             else -> throw AppE2eAssertionException()
-        }
+        }, backend)
         fun isValidPhase(suite: String, phase: String): Boolean = when (suite) {
             SUITE_CORE, SUITE_LIFECYCLE, SUITE_NETWORK -> phase == PHASE_SINGLE
             SUITE_PROCESS -> phase in setOf(PHASE_PROCESS_PREPARE, PHASE_PROCESS_RECOVER)
@@ -1351,6 +1669,9 @@ class KotlinReleaseStcpAppE2eTest {
         const val MAXIMUM_JSON_BYTES = 64 * 1024
         const val JSON_BUFFER_BYTES = 8 * 1024
         const val SCENARIO_TIMEOUT_MILLIS = 600_000L
+        const val ITERATION_TIMEOUT_BUDGET_MILLIS = 30_000L
+        const val MAXIMUM_SOAK_MILLIS = 86_400_000L
+        const val MAXIMUM_SCENARIO_TIMEOUT_MILLIS = MAXIMUM_SOAK_MILLIS + SCENARIO_TIMEOUT_MILLIS
         const val STATE_TIMEOUT_MILLIS = 45_000L
         const val RECOVERY_TIMEOUT_MILLIS = 90_000L
         const val MARKER_TIMEOUT_MILLIS = 360_000L
@@ -1372,6 +1693,17 @@ class KotlinReleaseStcpAppE2eTest {
         const val MINIMUM_OUTAGE_MILLIS = 60_000L
         const val MAXIMUM_OUTAGE_MILLIS = 300_000L
         const val NETWORK_TRANSPORT_TIMEOUT_MILLIS = 90_000L
+        const val MAXIMUM_RESOURCE_COUNT = 16_384
+        const val MAXIMUM_RESOURCE_SAMPLES = 254
+        const val RESOURCE_COUNT_ATTEMPTS = 3
+        const val MAXIMUM_WORKLOAD_ITERATIONS = 100_000
+        const val MAXIMUM_WORKLOAD_CONCURRENCY = 32
+        const val MINIMUM_SOAK_MILLIS = 60_000L
+        const val PROFILE_FUNCTIONAL = "functional"
+        const val PROFILE_BASELINE = "baseline"
+        const val PROFILE_STRESS = "stress"
+        const val PROFILE_LEAK = "leak"
+        const val PROFILE_SOAK = "soak"
     }
 }
 
@@ -1379,6 +1711,7 @@ class KotlinReleaseStcpAppE2eTest {
 private data class AppE2eInvocation(
     val schemaVersion: Int,
     val runId: String,
+    val backend: String,
     val suite: String,
     val phase: String,
     val outageMillis: Long,
@@ -1391,15 +1724,44 @@ private data class AppE2eInvocation(
     val serverName: String,
     val secretKey: String,
     val restartMarkers: AppE2eRestartMarkers,
+    val workload: AppE2eWorkload,
 ) {
     override fun toString(): String =
-        "AppE2eInvocation(schemaVersion=$schemaVersion, runId=<redacted>, suite=$suite, phase=$phase, " +
+        "AppE2eInvocation(schemaVersion=$schemaVersion, runId=<redacted>, backend=$backend, suite=$suite, phase=$phase, " +
             "outageMillis=$outageMillis, frpsHost=<redacted>, frpsPort=$frpsPort, " +
             "authToken=<redacted>, tlsServerCertificateSha256=" +
             "${if (tlsServerCertificateSha256 == null) "null" else "<redacted>"}, " +
             "user=<redacted>, serverUser=<redacted>, " +
-            "serverName=<redacted>, secretKey=<redacted>)"
+            "serverName=<redacted>, secretKey=<redacted>, workload=$workload)"
 }
+
+@Serializable
+private data class AppE2eWorkload(
+    val profile: String,
+    val iterations: Int,
+    val concurrency: Int,
+    val durationMillis: Long,
+    val reconnectEveryIterations: Int,
+    val sampleEveryIterations: Int,
+) {
+    companion object {
+        fun functional(): AppE2eWorkload = AppE2eWorkload(
+            profile = "functional",
+            iterations = 0,
+            concurrency = 1,
+            durationMillis = 0L,
+            reconnectEveryIterations = 0,
+            sampleEveryIterations = 1,
+        )
+    }
+}
+
+@Serializable
+private data class AppE2eWorkloadResult(
+    val profile: String,
+    val completedIterations: Int,
+    val reconnectCount: Int,
+)
 
 @Serializable
 private data class AppE2eRestartMarkers(
@@ -1435,6 +1797,7 @@ private data class AppE2eResult(
     val runId: String,
     val status: String,
     val checks: List<String>,
+    val backend: String? = null,
     val bindPort: Int? = null,
     val initialGeneration: Long? = null,
     val initialControlEpoch: Long? = null,
@@ -1447,12 +1810,36 @@ private data class AppE2eResult(
     val processId: Int? = null,
     val failedStage: String? = null,
     val failureCode: String? = null,
+    val resources: AppE2eResourceEvidence? = null,
+    val workload: AppE2eWorkloadResult? = null,
 ) {
     override fun toString(): String =
-        "AppE2eResult(schemaVersion=$schemaVersion, runId=<redacted>, status=$status, " +
+        "AppE2eResult(schemaVersion=$schemaVersion, runId=<redacted>, status=$status, backend=$backend, " +
             "checkCount=${checks.size}, bindPort=$bindPort, initialGeneration=$initialGeneration, " +
             "initialControlEpoch=$initialControlEpoch, recoveredGeneration=$recoveredGeneration, " +
             "recoveredControlEpoch=$recoveredControlEpoch, suite=$suite, topology=$topology, " +
             "networkSwitchProven=$networkSwitchProven, phase=$phase, processPresent=${processId != null}, " +
-            "failedStage=$failedStage, failureCode=$failureCode)"
+            "failedStage=$failedStage, failureCode=$failureCode, resourcesPresent=${resources != null}, " +
+            "workloadProfile=${workload?.profile})"
 }
+
+@Serializable
+private data class AppE2eResourceSnapshot(
+    val elapsedRealtimeMillis: Long,
+    val processCpuMillis: Long,
+    val pssKiB: Long,
+    val javaHeapBytes: Long,
+    val nativeHeapBytes: Long,
+    val openFdCount: Int,
+    val threadCount: Int,
+)
+
+@Serializable
+private data class AppE2eResourceEvidence(
+    val start: AppE2eResourceSnapshot,
+    val end: AppE2eResourceSnapshot,
+    val wallDurationMillis: Long,
+    val cpuDurationMillis: Long,
+    val samples: List<AppE2eResourceSnapshot>,
+    val droppedSampleCount: Int,
+)
