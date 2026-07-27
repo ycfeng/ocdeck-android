@@ -7,10 +7,10 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
 /**
- * Thin Kotlin boundary for the future GoMobile generated frp binding.
+ * Stable Kotlin boundary for an frpc STCP visitor backend.
  *
- * Keep this API limited to simple value objects so the actual GoMobile bridge can
- * map it to JSON strings and primitive return values without exposing frp internals.
+ * Keep this API limited to simple value objects so backend implementations can
+ * map them to serialized payloads and primitive return values without exposing frp internals.
  */
 interface FrpcStcpVisitorClient {
     suspend fun startSession(config: FrpcSessionConfig): String
@@ -41,6 +41,11 @@ interface FrpcStcpVisitorClient {
     }
 }
 
+/** Optional capability for backends that can recycle an active control transport without replacing its session. */
+interface FrpcStcpVisitorNetworkChangeAware {
+    suspend fun reconnectAfterDefaultNetworkChange()
+}
+
 @Serializable
 data class FrpcSessionConfig(
     val serverAddr: String,
@@ -50,9 +55,11 @@ data class FrpcSessionConfig(
     val user: String? = null,
     val transportProtocol: String = "tcp",
     val wireProtocol: String = "v1",
+    val tlsServerCertificateSha256: String? = null,
 ) {
     override fun toString(): String =
-        "FrpcSessionConfig(serverPort=$serverPort, authToken=<redacted>, userPresent=${user != null})"
+        "FrpcSessionConfig(serverPort=$serverPort, authToken=<redacted>, userPresent=${user != null}, " +
+            "tlsServerCertificateSha256=${if (tlsServerCertificateSha256 == null) "null" else "<redacted>"})"
 }
 
 @Serializable

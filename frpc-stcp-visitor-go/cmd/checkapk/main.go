@@ -10,19 +10,30 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 )
 
-const requiredPageAlignment = 16 * 1024
+const (
+	profileGoMobileRelease            = "gomobile-release"
+	profileKotlinDefaultReleaseDryRun = "kotlin-default-release-dry-run"
+	requiredPageAlignment             = 16 * 1024
+	maxNativeLibraryBytes             = 256 * 1024 * 1024
+)
 
-var machines = map[string]elf.Machine{
-	"arm64-v8a":   elf.EM_AARCH64,
-	"armeabi-v7a": elf.EM_ARM,
-	"x86":         elf.EM_386,
-	"x86_64":      elf.EM_X86_64,
-}
+var (
+	machines = map[string]elf.Machine{
+		"arm64-v8a":   elf.EM_AARCH64,
+		"armeabi-v7a": elf.EM_ARM,
+		"x86":         elf.EM_386,
+		"x86_64":      elf.EM_X86_64,
+	}
+	nativeEntryPattern = regexp.MustCompile(`^lib/([^/]+)/([^/]+\.so)$`)
+)
 
-type report struct {
+type libraryReport struct {
+	Path             string `json:"path"`
 	ABI              string `json:"abi"`
 	Machine          string `json:"machine"`
 	MinLoadAlignment uint64 `json:"minLoadAlignment"`
@@ -30,12 +41,14 @@ type report struct {
 	SHA256           string `json:"sha256"`
 }
 
+type report struct {
+	Profile   string          `json:"profile"`
+	ABI       string          `json:"abi"`
+	Libraries []libraryReport `json:"libraries"`
+}
+
 func main() {
-	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "usage: checkapk <apk> <abi> <expected-libgojni-sha256>")
-		os.Exit(2)
-	}
-	result, err := inspectAPK(os.Args[1], os.Args[2], os.Args[3])
+	result, err := run(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -48,64 +61,123 @@ func main() {
 	}
 }
 
-func inspectAPK(path string, abi string, expectedSHA256 string) (report, error) {
+func run(args []string) (report, error) {
+	if len(args) == 0 {
+		return report{}, fmt.Errorf("usage: checkapk <%s|%s> <apk> <abi> [expected-libgojni-sha256]", profileGoMobileRelease, profileKotlinDefaultReleaseDryRun)
+	}
+	profile := args[0]
+	switch profile {
+	case profileGoMobileRelease:
+		if len(args) != 4 {
+			return report{}, fmt.Errorf("usage: checkapk %s <apk> <abi> <expected-libgojni-sha256>", profile)
+		}
+		return inspectAPK(profile, args[1], args[2], args[3])
+	case profileKotlinDefaultReleaseDryRun:
+		if len(args) != 3 {
+			return report{}, fmt.Errorf("usage: checkapk %s <apk> <abi>", profile)
+		}
+		return inspectAPK(profile, args[1], args[2], "")
+	default:
+		return report{}, fmt.Errorf("unsupported artifact profile %q", profile)
+	}
+}
+
+func inspectAPK(profile string, path string, abi string, expectedGoJNIHash string) (report, error) {
 	expectedMachine, ok := machines[abi]
 	if !ok {
 		return report{}, fmt.Errorf("unsupported ABI %q", abi)
 	}
-	if len(expectedSHA256) != sha256.Size*2 {
-		return report{}, fmt.Errorf("expected SHA-256 must contain %d hexadecimal characters", sha256.Size*2)
+	if profile == profileGoMobileRelease {
+		if !isLowercaseSHA256(expectedGoJNIHash) {
+			return report{}, fmt.Errorf("expected libgojni SHA-256 must be 64 lowercase hexadecimal characters")
+		}
+	} else if profile != profileKotlinDefaultReleaseDryRun {
+		return report{}, fmt.Errorf("unsupported artifact profile %q", profile)
+	} else if expectedGoJNIHash != "" {
+		return report{}, fmt.Errorf("Kotlin dry-run must not accept an expected libgojni SHA-256")
 	}
-	if _, err := hex.DecodeString(expectedSHA256); err != nil {
-		return report{}, fmt.Errorf("invalid expected SHA-256: %w", err)
-	}
+
 	archive, err := zip.OpenReader(path)
 	if err != nil {
 		return report{}, fmt.Errorf("open APK: %w", err)
 	}
 	defer archive.Close()
 
-	expectedPath := "lib/" + abi + "/libgojni.so"
-	var expectedEntry *zip.File
+	seen := make(map[string]struct{})
+	libraries := make([]libraryReport, 0)
+	goJNIPath := "lib/" + abi + "/libgojni.so"
+	goJNICount := 0
 	for _, entry := range archive.File {
-		if entry.Name == expectedPath {
-			if expectedEntry != nil {
-				return report{}, fmt.Errorf("APK contains duplicate entry %s", expectedPath)
-			}
-			expectedEntry = entry
+		if !strings.HasPrefix(entry.Name, "lib/") || !strings.HasSuffix(entry.Name, ".so") {
 			continue
 		}
-		if strings.HasPrefix(entry.Name, "lib/") && strings.HasSuffix(entry.Name, "/libgojni.so") {
-			return report{}, fmt.Errorf("APK contains unexpected libgojni ABI entry %s", entry.Name)
+		matches := nativeEntryPattern.FindStringSubmatch(entry.Name)
+		if matches == nil {
+			return report{}, fmt.Errorf("APK contains malformed native library entry %s", entry.Name)
+		}
+		if _, exists := seen[entry.Name]; exists {
+			return report{}, fmt.Errorf("APK contains duplicate native library entry %s", entry.Name)
+		}
+		seen[entry.Name] = struct{}{}
+		entryABI := matches[1]
+		if entryABI != abi {
+			return report{}, fmt.Errorf("APK contains unexpected native ABI entry %s", entry.Name)
+		}
+		if matches[2] == "libgojni.so" {
+			if profile == profileKotlinDefaultReleaseDryRun {
+				return report{}, fmt.Errorf("Kotlin dry-run APK contains forbidden %s", entry.Name)
+			}
+			goJNICount++
+		}
+		library, err := inspectNativeLibrary(entry, abi, expectedMachine)
+		if err != nil {
+			return report{}, fmt.Errorf("verify %s: %w", entry.Name, err)
+		}
+		libraries = append(libraries, library)
+	}
+
+	if profile == profileGoMobileRelease {
+		if goJNICount != 1 {
+			return report{}, fmt.Errorf("APK must contain exactly one %s", goJNIPath)
+		}
+		for _, library := range libraries {
+			if library.Path == goJNIPath && library.SHA256 != expectedGoJNIHash {
+				return report{}, fmt.Errorf("%s SHA-256 is %s, want %s", goJNIPath, library.SHA256, expectedGoJNIHash)
+			}
 		}
 	}
-	if expectedEntry == nil {
-		return report{}, fmt.Errorf("APK is missing %s", expectedPath)
+
+	sort.Slice(libraries, func(i, j int) bool { return libraries[i].Path < libraries[j].Path })
+	return report{Profile: profile, ABI: abi, Libraries: libraries}, nil
+}
+
+func inspectNativeLibrary(entry *zip.File, abi string, expectedMachine elf.Machine) (libraryReport, error) {
+	if entry.UncompressedSize64 == 0 || entry.UncompressedSize64 > maxNativeLibraryBytes {
+		return libraryReport{}, fmt.Errorf("uncompressed size must be between 1 and %d bytes", maxNativeLibraryBytes)
 	}
-	reader, err := expectedEntry.Open()
+	reader, err := entry.Open()
 	if err != nil {
-		return report{}, err
+		return libraryReport{}, err
 	}
-	data, readErr := io.ReadAll(reader)
+	data, readErr := io.ReadAll(io.LimitReader(reader, maxNativeLibraryBytes+1))
 	closeErr := reader.Close()
 	if readErr != nil {
-		return report{}, readErr
+		return libraryReport{}, readErr
 	}
 	if closeErr != nil {
-		return report{}, closeErr
+		return libraryReport{}, closeErr
 	}
-	actualSHA256 := fmt.Sprintf("%x", sha256.Sum256(data))
-	if actualSHA256 != strings.ToLower(expectedSHA256) {
-		return report{}, fmt.Errorf("%s SHA-256 is %s, want %s", expectedPath, actualSHA256, expectedSHA256)
+	if len(data) == 0 || len(data) > maxNativeLibraryBytes || uint64(len(data)) != entry.UncompressedSize64 {
+		return libraryReport{}, fmt.Errorf("native library size is invalid or changed while reading")
 	}
 
 	binary, err := elf.NewFile(bytes.NewReader(data))
 	if err != nil {
-		return report{}, err
+		return libraryReport{}, err
 	}
 	defer binary.Close()
 	if binary.Machine != expectedMachine {
-		return report{}, fmt.Errorf("machine is %s, want %s", binary.Machine, expectedMachine)
+		return libraryReport{}, fmt.Errorf("machine is %s, want %s", binary.Machine, expectedMachine)
 	}
 	minAlignment := ^uint64(0)
 	loadSegments := 0
@@ -115,29 +187,34 @@ func inspectAPK(path string, abi string, expectedSHA256 string) (report, error) 
 		}
 		loadSegments++
 		if program.Align < requiredPageAlignment {
-			return report{}, fmt.Errorf(
-				"PT_LOAD alignment is %#x, require at least %#x",
-				program.Align,
-				requiredPageAlignment,
-			)
+			return libraryReport{}, fmt.Errorf("PT_LOAD alignment is %#x, require at least %#x", program.Align, requiredPageAlignment)
 		}
 		if program.Align < minAlignment {
 			minAlignment = program.Align
 		}
 	}
 	if loadSegments == 0 {
-		return report{}, fmt.Errorf("ELF contains no PT_LOAD segments")
+		return libraryReport{}, fmt.Errorf("ELF contains no PT_LOAD segments")
 	}
 	for _, section := range binary.Sections {
 		if strings.HasPrefix(section.Name, ".debug_") || section.Name == ".symtab" || section.Name == ".strtab" {
-			return report{}, fmt.Errorf("ELF still contains debug/symbol section %s", section.Name)
+			return libraryReport{}, fmt.Errorf("ELF still contains debug/symbol section %s", section.Name)
 		}
 	}
-	return report{
+	return libraryReport{
+		Path:             entry.Name,
 		ABI:              abi,
 		Machine:          binary.Machine.String(),
 		MinLoadAlignment: minAlignment,
 		Stripped:         true,
-		SHA256:           actualSHA256,
+		SHA256:           fmt.Sprintf("%x", sha256.Sum256(data)),
 	}, nil
+}
+
+func isLowercaseSHA256(value string) bool {
+	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }

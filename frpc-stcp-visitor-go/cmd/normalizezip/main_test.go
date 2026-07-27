@@ -42,8 +42,8 @@ func TestNormalizeWithAdditionsReplacesEntryDeterministically(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := normalizeWithAdditions(archivePath, map[string]string{
-		"META-INF/OCDECK/NOTICE.txt": additionPath,
+	if err := normalizeWithAdditions(archivePath, map[string]addition{
+		"META-INF/OCDECK/NOTICE.txt": {sourcePath: additionPath},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +73,50 @@ func TestNormalizeWithAdditionsReplacesEntryDeterministically(t *testing.T) {
 		return
 	}
 	t.Fatal("added entry not found")
+}
+
+func TestNormalizeWithTextAdditionsUsesLFLineEndings(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "archive.zip")
+	writeTestZip(t, archivePath, []string{"classes.jar"}, time.Now())
+	additionPath := filepath.Join(t.TempDir(), "NOTICE")
+	if err := os.WriteFile(additionPath, []byte("first\r\nsecond\rthird\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := normalizeWithAdditions(archivePath, map[string]addition{
+		"META-INF/OCDECK/NOTICE.txt": {
+			sourcePath:    additionPath,
+			normalizeText: true,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	for _, entry := range reader.File {
+		if entry.Name != "META-INF/OCDECK/NOTICE.txt" {
+			continue
+		}
+		input, err := entry.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		if _, err := output.ReadFrom(input); err != nil {
+			t.Fatal(err)
+		}
+		if err := input.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := output.String(), "first\nsecond\nthird\n"; got != want {
+			t.Fatalf("content = %q, want %q", got, want)
+		}
+		return
+	}
+	t.Fatal("added text entry not found")
 }
 
 func TestParseArgumentsRejectsUnsafeArchivePath(t *testing.T) {

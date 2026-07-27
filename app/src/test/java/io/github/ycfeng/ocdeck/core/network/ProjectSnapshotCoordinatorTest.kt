@@ -62,6 +62,7 @@ class ProjectSnapshotCoordinatorTest {
 
         source.open()
         runCurrent()
+        assertEquals(ProjectCalibrationStage.Loading, environment.client.projectCalibrationStage(serverId, directory))
         source.event(sessionUpdatedEvent("event-session", "from-event"))
         assertNull(environment.store.currentProject(serverId, directory).sessions.firstOrNull())
 
@@ -72,6 +73,7 @@ class ProjectSnapshotCoordinatorTest {
         assertEquals(SseConnectionStatus.Open, state.connectionStatus)
         assertEquals("from-event", state.sessions.single().title)
         assertEquals(UiText.Resource(R.string.project_snapshot_load_failed), state.error)
+        assertEquals(ProjectCalibrationStage.Failed, environment.client.projectCalibrationStage(serverId, directory))
         assertEquals(1, loader.calls)
     }
 
@@ -86,6 +88,7 @@ class ProjectSnapshotCoordinatorTest {
         val source = factory.sources.single()
         source.open()
         runCurrent()
+        val revisionBeforeSnapshot = environment.store.currentProject(serverId, directory).projectDataRevision
 
         source.event(sessionUpdatedEvent("session", "first-event", updatedAt = 2L))
         source.event(sessionUpdatedEvent("session", "second-event", updatedAt = 3L))
@@ -101,6 +104,8 @@ class ProjectSnapshotCoordinatorTest {
         runCurrent()
 
         assertEquals("second-event", environment.store.currentProject(serverId, directory).sessions.single().title)
+        assertTrue(environment.store.currentProject(serverId, directory).projectDataRevision > revisionBeforeSnapshot)
+        assertEquals(ProjectCalibrationStage.Applied, environment.client.projectCalibrationStage(serverId, directory))
         assertEquals(2, environment.reductions.size)
         assertEquals("first-event", environment.reductions[0].after.sessions.single().title)
         assertEquals("second-event", environment.reductions[1].after.sessions.single().title)

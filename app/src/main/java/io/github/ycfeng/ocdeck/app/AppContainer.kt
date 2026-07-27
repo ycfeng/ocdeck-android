@@ -1,10 +1,13 @@
 package io.github.ycfeng.ocdeck.app
 
 import android.content.Context
+import io.github.ycfeng.ocdeck.BuildConfig
 import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityRegistry
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeNotificationChannelRegistry
 import io.github.ycfeng.ocdeck.core.notification.OpenCodeSystemNotifier
 import io.github.ycfeng.ocdeck.core.network.AppConnectionCoordinator
+import io.github.ycfeng.ocdeck.core.network.DefaultNetworkChangeHandler
+import io.github.ycfeng.ocdeck.core.network.DefaultNetworkMonitor
 import io.github.ycfeng.ocdeck.core.network.DefaultForegroundHealthChecker
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorManager
 import io.github.ycfeng.ocdeck.core.network.DefaultOpenCodeHealthProbeFactory
@@ -32,11 +35,23 @@ import io.github.ycfeng.ocdeck.data.server.ServerRepository
 import io.github.ycfeng.ocdeck.domain.prompt.OpenCodePromptSender
 import io.github.ycfeng.ocdeck.domain.prompt.PromptOperationGate
 import io.github.ycfeng.ocdeck.domain.prompt.SessionOperationCoordinator
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorClient
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.GoMobileFrpcStcpVisitorClient
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.serialization.json.Json
+
+internal fun createFrpcStcpVisitorClient(
+    json: Json,
+    useKotlinBackend: Boolean,
+    context: Context? = null,
+): FrpcStcpVisitorClient = if (useKotlinBackend) {
+    context?.let(::KotlinFrpcStcpVisitorClient) ?: KotlinFrpcStcpVisitorClient()
+} else {
+    GoMobileFrpcStcpVisitorClient(json)
+}
 
 class AppContainer(context: Context) {
     private val applicationContext = context.applicationContext
@@ -66,7 +81,11 @@ class AppContainer(context: Context) {
     val serverPreferencesStore = ServerPreferencesStore(applicationContext, json)
     val openCodeApiFactory = OpenCodeApiFactory(json, redactor)
     val frpcStcpVisitorManager = FrpcStcpVisitorManager(
-        client = GoMobileFrpcStcpVisitorClient(json),
+        client = createFrpcStcpVisitorClient(
+            json = json,
+            useKotlinBackend = BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR,
+            context = applicationContext,
+        ),
         healthProbeFactory = DefaultOpenCodeHealthProbeFactory(openCodeApiFactory),
     )
     val serverRepository = ServerRepository(
@@ -129,7 +148,14 @@ class AppContainer(context: Context) {
         controller = openCodeEventClient,
         healthChecker = DefaultForegroundHealthChecker(serverRepository),
         scope = applicationScope,
+        defaultNetworkChangeHandler = DefaultNetworkChangeHandler {
+            frpcStcpVisitorManager.reconnectAfterDefaultNetworkChange()
+        },
     )
+    val defaultNetworkMonitor = DefaultNetworkMonitor(
+        context = applicationContext,
+        onDefaultNetworkChanged = appConnectionCoordinator::onDefaultNetworkChanged,
+    ).also(DefaultNetworkMonitor::start)
     val promptOperationGate = PromptOperationGate(pathNormalizer)
     val promptSender = OpenCodePromptSender(
         gateway = openCodeRepository,

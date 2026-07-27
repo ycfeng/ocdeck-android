@@ -149,6 +149,7 @@
     <string name="server_frpc_server_addr_label">frps 地址</string>
     <string name="server_frpc_server_port_label">frps 端口</string>
     <string name="server_frpc_auth_token_label">frps token（可选）%1$s</string>
+    <string name="server_frpc_tls_certificate_pin_label">TLS leaf 证书 SHA-256 pin（可选）%1$s</string>
     <string name="server_frpc_user_label">frpc user（可选）</string>
     <string name="server_frpc_server_user_label">STCP server user（可选）</string>
     <string name="server_frpc_server_name_label">STCP server name</string>
@@ -159,7 +160,7 @@
     <string name="server_frpc_wire_protocol_v1_description">兼容 frp 默认协议。</string>
     <string name="server_frpc_wire_protocol_v2_title">v2</string>
     <string name="server_frpc_wire_protocol_v2_description">用于服务端明确启用新版协议的 frp 部署。</string>
-    <string name="server_frpc_security_hint">STCP token 和 secret key 只保存到 Keystore；当前首版只支持本地端口模式。</string>
+    <string name="server_frpc_security_hint">STCP token、secret key 和 TLS 证书 pin 只保存到 Keystore。公网 frps 应使用已知 leaf 证书的 64 位小写 SHA-256 pin。</string>
     <string name="server_loading_config">正在加载服务器配置</string>
     <string name="server_save_edit">保存服务器</string>
     <string name="server_save_add">添加服务器</string>
@@ -467,6 +468,8 @@
     <string name="server_error_frpc_secret_key_empty">STCP secret key 不能为空</string>
     <string name="server_error_frpc_server_port_range">frps 端口必须是 1-65535</string>
     <string name="server_error_frpc_bind_port_range">STCP 本地绑定端口必须是 1-65535</string>
+    <string name="server_error_frpc_tls_certificate_pin_invalid">TLS leaf 证书 SHA-256 pin 必须是 64 位小写十六进制</string>
+    <string name="server_error_frpc_tls_certificate_pin_required_for_changed_endpoint">修改 frps 地址或端口时必须输入该 endpoint 的新 TLS leaf 证书 SHA-256 pin</string>
     <string name="settings_title">设置</string>
     <string name="settings_current_server">当前服务器：%1$s</string>
     <string name="settings_server_prefix">服务器：%1$s</string>

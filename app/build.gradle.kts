@@ -1,6 +1,10 @@
 import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
+import com.android.build.api.variant.DeviceTestBuilder
+import com.android.build.api.variant.HostTestBuilder
 import java.net.URI
 import java.util.Properties
+import java.util.zip.ZipFile
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.tasks.Sync
 
 plugins {
@@ -57,6 +61,11 @@ val escapedProjectUrl = projectUrl.replace("\\", "\\\\").replace("\"", "\\\"")
 val generatedLegalTextDirectory = layout.buildDirectory.dir("generated/legalText")
 val generatedLegalAssetsDirectory = layout.buildDirectory.dir("generated/legalAssets")
 val thirdPartyLicenseDirectory = rootProject.layout.projectDirectory.dir("third_party/licenses")
+val ordinaryPureKotlinBuildTypes = listOf("canary", "kotlinRelease")
+val pureKotlinBuildTypes = ordinaryPureKotlinBuildTypes + "kotlinDefaultReleaseDryRun"
+val releaseLikeTestBuildTypes = listOf("goMobileRelease", "kotlinRelease")
+val goMobileBridgeGroup = "io.github.ycfeng.ocdeck"
+val goMobileBridgeModule = "frpc-stcp-visitor-gobridge"
 val generateThirdPartyLicenseBundle = tasks.register("generateThirdPartyLicenseBundle") {
     val outputFile = generatedLegalTextDirectory.map { it.file("THIRD_PARTY_LICENSES.txt") }
     inputs.dir(thirdPartyLicenseDirectory)
@@ -122,11 +131,18 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         buildConfigField("String", "PROJECT_URL", "\"$escapedProjectUrl\"")
+        buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "false")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     sourceSets.getByName("main").assets.directories.add(generatedLegalAssetsDirectory.get().asFile.absolutePath)
+    releaseLikeTestBuildTypes.forEach { buildType ->
+        sourceSets.maybeCreate("androidTest${buildType.replaceFirstChar(Char::uppercase)}").apply {
+            kotlin.directories.add("src/androidTestReleaseLike/java")
+            manifest.srcFile("src/androidTestReleaseLike/AndroidManifest.xml")
+        }
+    }
 
     splits {
         abi {
@@ -166,10 +182,41 @@ android {
     }
 
     buildTypes {
+        create("canary") {
+            initWith(getByName("debug"))
+            matchingFallbacks += "debug"
+            applicationIdSuffix = ".canary"
+            versionNameSuffix = "-canary"
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
+        }
         release {
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
             }
+        }
+        create("kotlinRelease") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            applicationIdSuffix = ".kotlinrelease"
+            versionNameSuffix = "-kotlin-release"
+            signingConfig = signingConfigs.getByName("debug")
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
+        }
+        create("goMobileRelease") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            applicationIdSuffix = ".gomobilerelease"
+            versionNameSuffix = "-gomobile-release"
+            signingConfig = signingConfigs.getByName("debug")
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "false")
+        }
+        create("kotlinDefaultReleaseDryRun") {
+            initWith(getByName("release"))
+            matchingFallbacks += "release"
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
         }
     }
 }
@@ -197,12 +244,30 @@ val validateReleaseSigning = tasks.register("validateReleaseSigning") {
 
 tasks.matching {
     it.name == "assembleRelease" || it.name == "bundleRelease" ||
-        it.name == "packageRelease" || it.name == "signReleaseBundle"
+        it.name == "packageRelease" || it.name == "signReleaseBundle" ||
+        it.name == "assembleKotlinDefaultReleaseDryRun" ||
+        it.name == "bundleKotlinDefaultReleaseDryRun" ||
+        it.name == "packageKotlinDefaultReleaseDryRun" ||
+        it.name == "packageKotlinDefaultReleaseDryRunBundle" ||
+        it.name == "packageKotlinDefaultReleaseDryRunUniversalApk" ||
+        it.name == "signKotlinDefaultReleaseDryRunBundle"
 }.configureEach {
     dependsOn(validateReleaseSigning)
 }
 
 androidComponents {
+    pureKotlinBuildTypes.forEach { buildType ->
+        beforeVariants(selector().withBuildType(buildType)) { variantBuilder ->
+            variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
+            if (buildType == "canary" || buildType == "kotlinRelease") {
+                variantBuilder.deviceTests.getValue(DeviceTestBuilder.ANDROID_TEST_TYPE).enable = true
+            }
+        }
+    }
+    beforeVariants(selector().withBuildType("goMobileRelease")) { variantBuilder ->
+        variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
+        variantBuilder.deviceTests.getValue(DeviceTestBuilder.ANDROID_TEST_TYPE).enable = true
+    }
     onVariants { variant ->
         variant.outputs.forEach { output ->
             val abi = output.filters.find { it.filterType == ABI }?.identifier
@@ -217,6 +282,58 @@ androidComponents {
             )
         }
     }
+}
+
+val pureKotlinPackagingTasks = pureKotlinBuildTypes.associateWith { buildType ->
+    val variantName = buildType.replaceFirstChar(Char::uppercase)
+    tasks.register("verify${variantName}Packaging") {
+        group = "verification"
+        description = "Verifies that $buildType APKs contain no GoMobile runtime artifacts."
+        dependsOn("assemble$variantName")
+
+        doLast {
+            val bridgeComponents = configurations.getByName("${buildType}RuntimeClasspath")
+                .incoming.resolutionResult.allComponents
+                .map { it.id }
+                .filterIsInstance<ModuleComponentIdentifier>()
+                .filter { it.group == goMobileBridgeGroup && it.module == goMobileBridgeModule }
+            check(bridgeComponents.isEmpty()) {
+                "$buildType runtime classpath contains the GoMobile bridge: " +
+                    bridgeComponents.joinToString { it.displayName }
+            }
+
+            val apkDirectory = layout.buildDirectory.dir("outputs/apk/$buildType").get().asFile
+            val apks = apkDirectory.listFiles { file -> file.isFile && file.extension == "apk" }
+                ?.sortedBy(File::getName)
+                .orEmpty()
+            check(apks.size == 3) {
+                "Expected three ABI-split $buildType APKs in ${apkDirectory.absolutePath}, found ${apks.size}."
+            }
+
+            val nativeEntries = buildList {
+                apks.forEach { apk ->
+                    ZipFile(apk).use { archive ->
+                        val entries = archive.entries()
+                        while (entries.hasMoreElements()) {
+                            val entry = entries.nextElement()
+                            if (entry.name.endsWith("/libgojni.so")) {
+                                add("${apk.name}!/${entry.name}")
+                            }
+                        }
+                    }
+                }
+            }
+            check(nativeEntries.isEmpty()) {
+                "$buildType APKs contain GoMobile native libraries: ${nativeEntries.joinToString()}"
+            }
+        }
+    }
+}
+
+tasks.register("verifyPureKotlinPackaging") {
+    group = "verification"
+    description = "Verifies that ordinary pure Kotlin APK variants exclude the GoMobile runtime."
+    dependsOn(ordinaryPureKotlinBuildTypes.map(pureKotlinPackagingTasks::getValue))
 }
 
 kotlin {

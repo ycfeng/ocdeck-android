@@ -10,17 +10,24 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcVisitorReadyResult
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcVisitorRuntimeState
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorFailure
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.withContext
+import java.net.BindException
 import java.net.ConnectException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -57,6 +64,22 @@ class FrpcStcpVisitorManagerTest {
         assertEquals("127.0.0.1", client.visitorConfigs.single().bindAddr)
         assertEquals(4096, client.visitorConfigs.single().bindPort)
         assertEquals("opencode-password", probes.passwords.single())
+    }
+
+    @Test
+    fun passesTlsCertificatePinToTheKotlinSession() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val manager = manager(client, ScriptedHealthProbeFactory())
+        val server = stcpServer()
+
+        manager.ensureReadyVisitor(
+            server = server,
+            credentials = credentials().copy(tlsServerCertificateSha256 = TLS_CERTIFICATE_PIN),
+            openCodePassword = null,
+            configLease = manager.captureConfigLease(server.id),
+        )
+
+        assertEquals(TLS_CERTIFICATE_PIN, client.startedConfigs.single().tlsServerCertificateSha256)
     }
 
     @Test
@@ -129,6 +152,24 @@ class FrpcStcpVisitorManagerTest {
     }
 
     @Test
+    fun nativeStateCheckPrefersNestedJvmErrorOverCancellation() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val manager = manager(client, ScriptedHealthProbeFactory())
+        val server = stcpServer()
+        val ready = manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+        val fatal = FrpcManagerTestJvmError()
+        val cancellation = FrpcManagerTestCancellationException(Unit).apply { initCause(fatal) }
+        client.onGetState = { _, _ -> throw cancellation }
+
+        try {
+            manager.isReadyTransportCurrent(ready.generation, ready.tunnel.controlEpoch)
+            throw AssertionError("Nested JVM Error was not propagated")
+        } catch (actual: FrpcManagerTestJvmError) {
+            assertSame(fatal, actual)
+        }
+    }
+
+    @Test
     fun generationWorkerCompletesWaitersAndRethrowsJvmError() = runTest {
         val fatal = FrpcManagerTestJvmError()
         val reported = CompletableDeferred<Throwable>()
@@ -188,6 +229,175 @@ class FrpcStcpVisitorManagerTest {
         assertFalse(manager.isReadyTransportCurrent(initial.generation, initial.tunnel.controlEpoch))
         assertEquals(1, client.startCount)
         assertEquals(1, client.ensureCount)
+    }
+
+    @Test
+    fun recoveryStageTracksControlVisitorAndManagerBarriers() = runTest {
+        val recoveryProbeGate = CompletableDeferred<Unit>()
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val probes = ScriptedHealthProbeFactory { attempt, _ ->
+            if (attempt == 2) recoveryProbeGate.await()
+            ServerHealthDto(healthy = true, version = "1.2.$attempt")
+        }
+        val manager = manager(client, probes)
+        val server = stcpServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, credentials(), null, lease)
+
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_OLD_OPEN,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionPhase = "reconnecting"
+        client.sessionLastError = "transport failed"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_TRANSPORT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "login timed out"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_LOGIN_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "transport tls handshake failed"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_TLS_HANDSHAKE,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "transport closed"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_TRANSPORT_CLOSED,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "yamux stream open timed out"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_YAMUX_STREAM_OPEN_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect waiting login"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_WAITING_LOGIN,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect waiting login after timeout"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_WAITING_LOGIN_AFTER_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect login timer scheduled"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_LOGIN_TIMER_SCHEDULED,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect login timer fired"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_LOGIN_TIMER_FIRED,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect waiting login"
+        client.currentControlEpoch = initial.tunnel.controlEpoch + 1L
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_WAITING_LOGIN_AFTER_NEW_EPOCH,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+        client.currentControlEpoch = initial.tunnel.controlEpoch
+
+        client.sessionLastError = "control crypto truncated nonce"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_CRYPTO_TRUNCATED_NONCE,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect closing client streams"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_CLOSING_CLIENT_STREAMS,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionLastError = "control reconnect closing failed establishment"
+        assertEquals(
+            FrpcStcpRecoveryStage.CONTROL_RETRYING_CLOSING_FAILED_ESTABLISHMENT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.sessionPhase = "open"
+        client.sessionLastError = null
+        client.currentControlEpoch = 2
+        client.visitorPhase = "starting"
+        assertEquals(
+            FrpcStcpRecoveryStage.VISITOR_NOT_READY,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.visitorPhase = "ready"
+        val recovery = async { manager.ensureReadyVisitor(server, credentials(), null, lease) }
+        runCurrent()
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_HEALTH_PROBING,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        recoveryProbeGate.complete(Unit)
+        val recovered = recovery.await()
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_READY,
+            manager.captureRecoveryStage(recovered.generation, initial.tunnel.controlEpoch),
+        )
+    }
+
+    @Test
+    fun recoveryDiagnosticsLatchNativeTimeoutAndLatestHealthFailure() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val probes = ScriptedHealthProbeFactory { attempt, _ ->
+            if (attempt == 2) throw ConnectException("refused")
+            ServerHealthDto(healthy = true, version = "1.2.$attempt")
+        }
+        val manager = manager(client, probes)
+        val server = stcpServer()
+        val lease = manager.captureConfigLease(server.id)
+        val initial = manager.ensureReadyVisitor(server, credentials(), null, lease)
+        client.currentControlEpoch = 2L
+        client.onWaitReady = { _, _, _, _, attempt ->
+            if (attempt == 2) {
+                throw KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.WAIT_TIMEOUT)
+            }
+        }
+
+        val timeout = runCatching {
+            manager.ensureReadyVisitor(server, credentials(), null, lease)
+        }.exceptionOrNull()
+
+        assertTrue(timeout is KotlinFrpcStcpVisitorException)
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_NATIVE_TIMEOUT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        client.onWaitReady = { _, _, _, _, _ -> }
+        val recovered = async { manager.ensureReadyVisitor(server, credentials(), null, lease) }
+        runCurrent()
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_HEALTH_CONNECT,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
+
+        advanceTimeBy(10)
+        runCurrent()
+        assertEquals(2L, recovered.await().tunnel.controlEpoch)
+        assertEquals(
+            FrpcStcpRecoveryStage.MANAGER_READY,
+            manager.captureRecoveryStage(initial.generation, initial.tunnel.controlEpoch),
+        )
     }
 
     @Test
@@ -423,13 +633,176 @@ class FrpcStcpVisitorManagerTest {
     }
 
     @Test
-    fun convertsLocalBindPortConflictToTypedError() = runTest {
-        val failure = IllegalStateException("listen tcp 127.0.0.1:4096: bind: address already in use")
-        val client = ControllableFrpcStcpVisitorClient(localPort = 5096).apply {
-            onEnsure = { _, _, _ -> throw failure }
+    fun convertsBindExceptionAndTypedBindPortConflictToLocalPortError() = runTest {
+        val failures = listOf(
+            BindException("synthetic bind failure"),
+            ManagerMessageAccessFailsException(
+                KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+            ),
+        )
+
+        failures.forEachIndexed { index, failure ->
+            val client = ControllableFrpcStcpVisitorClient(localPort = 5096).apply {
+                onEnsure = { _, _, _ -> throw failure }
+            }
+            val manager = manager(client, ScriptedHealthProbeFactory())
+            val server = stcpServer(id = "bind-$index")
+
+            val throwable = runCatching {
+                manager.ensureReadyVisitor(
+                    server,
+                    credentials(),
+                    null,
+                    manager.captureConfigLease(server.id),
+                )
+            }.exceptionOrNull()
+            runCurrent()
+
+            assertTrue(throwable is LocalPortInUseException)
+            assertEquals(4096, (throwable as LocalPortInUseException).localPort)
+            assertEquals(
+                OpenCodeFailure.OperationRejected(OpenCodeOperationRejectionReason.LocalPortInUse),
+                throwable.failure,
+            )
+            assertSame(failure, throwable.cause)
+            assertEquals(1, client.ensureCount)
+            assertEquals(listOf("session-1"), client.stoppedSessions)
         }
+    }
+
+    @Test
+    fun predecessorBindRetryBudgetIncludesDelayEnsureAndWait() = runTest {
+        val retryBudgetMillis = 100L
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val readyTimeouts = mutableListOf<Long>()
+        client.onWaitReady = { _, _, _, timeoutMillis, _ -> readyTimeouts += timeoutMillis }
+        val manager = manager(
+            client,
+            ScriptedHealthProbeFactory(),
+            predecessorBindRetryTimeoutMillis = retryBudgetMillis,
+        )
+        val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+        manager.invalidateConfiguration(server.id)
+        runCurrent()
+        val firstBindFailure = ManagerMessageAccessFailsException(
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+        )
+        val latestBindFailure = ManagerMessageAccessFailsException(
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+        )
+        client.onEnsure = { _, _, call ->
+            when (call) {
+                2 -> throw firstBindFailure
+                3 -> {
+                    delay(20)
+                    throw latestBindFailure
+                }
+                4 -> delay(20)
+                else -> throw AssertionError("Bind retry continued past its total budget")
+            }
+        }
+        client.onWaitReady = { _, _, _, timeoutMillis, call ->
+            if (call != 2) throw AssertionError("Unexpected readiness call after retry timeout")
+            readyTimeouts += timeoutMillis
+            delay(1_000)
+        }
+
+        val startedAt = testScheduler.currentTime
+        val throwable = runCatching {
+            manager.ensureReadyVisitor(
+                server,
+                credentials(),
+                null,
+                manager.captureConfigLease(server.id),
+            )
+        }.exceptionOrNull()
+        val elapsedMillis = testScheduler.currentTime - startedAt
+        runCurrent()
+
+        assertTrue(throwable is LocalPortInUseException)
+        assertSame(latestBindFailure, throwable?.cause)
+        assertTrue(elapsedMillis <= retryBudgetMillis)
+        assertEquals(retryBudgetMillis, elapsedMillis)
+        val ensureCountAtTimeout = client.ensureCount
+        val readyCountAtTimeout = client.waitReadyCount
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(ensureCountAtTimeout, client.ensureCount)
+        assertEquals(readyCountAtTimeout, client.waitReadyCount)
+        assertEquals(4, ensureCountAtTimeout)
+        assertEquals(2, readyCountAtTimeout)
+        assertEquals(listOf(1_000L, 30L), readyTimeouts)
+        assertEquals(listOf("session-1", "session-2"), client.stoppedSessions)
+    }
+
+    @Test
+    fun retryEnsurePastDeadlineSkipsWaitAndFurtherAttempts() = runTest {
+        val retryBudgetMillis = 100L
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val manager = manager(
+            client,
+            ScriptedHealthProbeFactory(),
+            predecessorBindRetryTimeoutMillis = retryBudgetMillis,
+        )
+        val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+        manager.invalidateConfiguration(server.id)
+        runCurrent()
+        val bindFailure = ManagerMessageAccessFailsException(
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+        )
+        client.onEnsure = { _, _, call ->
+            when (call) {
+                2 -> throw bindFailure
+                3 -> withContext(NonCancellable) { delay(150) }
+                else -> throw AssertionError("Bind retry continued after its deadline")
+            }
+        }
+        client.onWaitReady = { _, _, _, _, _ ->
+            throw AssertionError("Readiness must not run after ensure crosses the retry deadline")
+        }
+
+        val startedAt = testScheduler.currentTime
+        val throwable = runCatching {
+            manager.ensureReadyVisitor(
+                server,
+                credentials(),
+                null,
+                manager.captureConfigLease(server.id),
+            )
+        }.exceptionOrNull()
+        val elapsedMillis = testScheduler.currentTime - startedAt
+        runCurrent()
+
+        assertTrue(throwable is LocalPortInUseException)
+        assertSame(bindFailure, throwable?.cause)
+        assertTrue(elapsedMillis > retryBudgetMillis)
+        assertEquals(3, client.ensureCount)
+        assertEquals(1, client.waitReadyCount)
+        val ensureCountAtTimeout = client.ensureCount
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(ensureCountAtTimeout, client.ensureCount)
+        assertEquals(1, client.waitReadyCount)
+    }
+
+    @Test
+    fun predecessorRetryPropagatesCancellationIdentity() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
         val manager = manager(client, ScriptedHealthProbeFactory())
         val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+        manager.invalidateConfiguration(server.id)
+        runCurrent()
+        val bindFailure = ManagerMessageAccessFailsException(
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+        )
+        val cancellation = FrpcManagerTestCancellationException(Unit)
+        client.onEnsure = { _, _, call ->
+            if (call == 2) throw bindFailure
+            throw cancellation
+        }
 
         val throwable = runCatching {
             manager.ensureReadyVisitor(
@@ -441,33 +814,226 @@ class FrpcStcpVisitorManagerTest {
         }.exceptionOrNull()
         runCurrent()
 
-        assertTrue(throwable is LocalPortInUseException)
-        assertEquals(4096, (throwable as LocalPortInUseException).localPort)
-        assertEquals(
-            OpenCodeFailure.OperationRejected(OpenCodeOperationRejectionReason.LocalPortInUse),
-            throwable.failure,
+        assertSame(cancellation, throwable)
+    }
+
+    @Test
+    fun predecessorRetryPropagatesJvmErrorIdentity() = runTest {
+        val reported = CompletableDeferred<Throwable>()
+        val workerJob = SupervisorJob()
+        val workerScope = CoroutineScope(
+            workerJob + StandardTestDispatcher(testScheduler) +
+                CoroutineExceptionHandler { _, throwable -> reported.complete(throwable) },
         )
-        assertFalse(throwable.toString().contains(failure.message.orEmpty()))
-        assertTrue(generateSequence<Throwable>(throwable) { it.cause }.any { it.message == failure.message })
-        assertEquals(listOf("session-1"), client.stoppedSessions)
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val manager = manager(client, ScriptedHealthProbeFactory(), workerScope)
+        val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+        manager.invalidateConfiguration(server.id)
+        runCurrent()
+        val bindFailure = ManagerMessageAccessFailsException(
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+        )
+        val fatal = FrpcManagerTestJvmError()
+        client.onEnsure = { _, _, call ->
+            if (call == 2) throw bindFailure
+            throw fatal
+        }
+
+        val throwable = runCatching {
+            manager.ensureReadyVisitor(
+                server,
+                credentials(),
+                null,
+                manager.captureConfigLease(server.id),
+            )
+        }.exceptionOrNull()
+        runCurrent()
+
+        assertSame(fatal, throwable)
+        assertSame(fatal, reported.await())
+        workerJob.cancel()
+    }
+
+    @Test
+    fun predecessorRetryPrefersNestedJvmErrorOverCancellation() = runTest {
+        val reported = CompletableDeferred<Throwable>()
+        val workerJob = SupervisorJob()
+        val workerScope = CoroutineScope(
+            workerJob + StandardTestDispatcher(testScheduler) +
+                CoroutineExceptionHandler { _, throwable -> reported.complete(throwable) },
+        )
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val manager = manager(client, ScriptedHealthProbeFactory(), workerScope)
+        val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+        manager.invalidateConfiguration(server.id)
+        runCurrent()
+        val bindFailure = ManagerMessageAccessFailsException(
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+        )
+        val fatal = FrpcManagerTestJvmError()
+        val cancellation = FrpcManagerTestCancellationException(Unit).apply { initCause(fatal) }
+        client.onEnsure = { _, _, call ->
+            if (call == 2) throw bindFailure
+            throw cancellation
+        }
+
+        val throwable = runCatching {
+            manager.ensureReadyVisitor(
+                server,
+                credentials(),
+                null,
+                manager.captureConfigLease(server.id),
+            )
+        }.exceptionOrNull()
+        runCurrent()
+
+        assertSame(fatal, throwable)
+        assertSame(fatal, reported.await())
+        workerJob.cancel()
+    }
+
+    @Test
+    fun cleanupPrefersNestedJvmErrorAndStillUnblocksReplacement() = runTest {
+        val reported = CompletableDeferred<Throwable>()
+        val workerJob = SupervisorJob()
+        val workerScope = CoroutineScope(
+            workerJob + StandardTestDispatcher(testScheduler) +
+                CoroutineExceptionHandler { _, throwable -> reported.complete(throwable) },
+        )
+        val fatal = FrpcManagerTestJvmError()
+        val cancellation = FrpcManagerTestCancellationException(Unit).apply { initCause(fatal) }
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096).apply {
+            onStopSession = { _, call -> if (call == 1) throw cancellation }
+        }
+        val manager = manager(client, ScriptedHealthProbeFactory(), workerScope)
+        val server = stcpServer()
+        val initial = manager.ensureReadyVisitor(
+            server,
+            credentials(),
+            null,
+            manager.captureConfigLease(server.id),
+        )
+
+        manager.invalidateConfiguration(server.id)
+        runCurrent()
+
+        assertSame(fatal, reported.await())
+        val replacement = manager.ensureReadyVisitor(
+            server,
+            credentials(),
+            null,
+            manager.captureConfigLease(server.id),
+        )
+        assertNotEquals(initial.generation, replacement.generation)
+        workerJob.cancel()
+    }
+
+    @Test
+    fun zeroPredecessorBindRetryBudgetDoesNotRetry() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+        val manager = manager(
+            client,
+            ScriptedHealthProbeFactory(),
+            predecessorBindRetryTimeoutMillis = 0,
+        )
+        val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+        manager.invalidateConfiguration(server.id)
+        runCurrent()
+        val bindFailure = ManagerMessageAccessFailsException(
+            KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.BIND_PORT_CONFLICT),
+        )
+        client.onEnsure = { _, _, _ -> throw bindFailure }
+
+        val startedAt = testScheduler.currentTime
+        val throwable = runCatching {
+            manager.ensureReadyVisitor(
+                server,
+                credentials(),
+                null,
+                manager.captureConfigLease(server.id),
+            )
+        }.exceptionOrNull()
+        val elapsedMillis = testScheduler.currentTime - startedAt
+        runCurrent()
+
+        assertTrue(throwable is LocalPortInUseException)
+        assertSame(bindFailure, throwable?.cause)
+        assertEquals(0L, elapsedMillis)
+        assertEquals(2, client.ensureCount)
+        assertEquals(1, client.waitReadyCount)
+    }
+
+    @Test
+    fun predecessorRetryIgnoresNonBindTypedMessageAndCyclicFailures() = runTest {
+        val cycleStart = IllegalStateException()
+        val cycleNext = IllegalArgumentException()
+        cycleStart.initCause(cycleNext)
+        cycleNext.initCause(cycleStart)
+        val failures = listOf(
+            ManagerMessageAccessFailsException(
+                KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.LISTENER_BIND_FAILED),
+            ),
+            ManagerMessageAccessFailsException(
+                KotlinFrpcStcpVisitorException(KotlinFrpcStcpVisitorFailure.CONTROL_FAILED),
+            ),
+            IllegalStateException("address already in use"),
+            cycleStart,
+        )
+
+        failures.forEachIndexed { index, failure ->
+            val client = ControllableFrpcStcpVisitorClient(localPort = 5096)
+            val manager = manager(client, ScriptedHealthProbeFactory())
+            val server = stcpServer(id = "non-bind-$index")
+            manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+            manager.invalidateConfiguration(server.id)
+            runCurrent()
+            client.onEnsure = { _, _, _ -> throw failure }
+
+            val startedAt = testScheduler.currentTime
+            val throwable = runCatching {
+                manager.ensureReadyVisitor(
+                    server,
+                    credentials(),
+                    null,
+                    manager.captureConfigLease(server.id),
+                )
+            }.exceptionOrNull()
+            val elapsedMillis = testScheduler.currentTime - startedAt
+            runCurrent()
+
+            assertFalse(throwable is LocalPortInUseException)
+            assertEquals(failure.javaClass, throwable?.javaClass)
+            assertEquals(0L, elapsedMillis)
+            assertEquals(2, client.startCount)
+            assertEquals(2, client.ensureCount)
+            assertEquals(1, client.waitReadyCount)
+            assertEquals(listOf("session-1", "session-2"), client.stoppedSessions)
+        }
     }
 
     private fun kotlinx.coroutines.test.TestScope.manager(
         client: ControllableFrpcStcpVisitorClient,
         probes: ScriptedHealthProbeFactory,
         scope: CoroutineScope = backgroundScope,
+        predecessorBindRetryTimeoutMillis: Long = 100,
+        monotonicTimeMillis: () -> Long = { testScheduler.currentTime },
     ): FrpcStcpVisitorManager = FrpcStcpVisitorManager(
         client = client,
         healthProbeFactory = probes,
         readinessPolicy = FrpcStcpReadinessPolicy(
             nativeReadyTimeoutMillis = 1_000,
+            epochRefreshNativeReadyTimeoutMillis = 3_000,
             totalTimeoutMillis = 10_000,
             attemptTimeoutMillis = 1_000,
             initialRetryDelayMillis = 10,
             maxRetryDelayMillis = 100,
-            predecessorBindRetryTimeoutMillis = 100,
+            predecessorBindRetryTimeoutMillis = predecessorBindRetryTimeoutMillis,
         ),
         scope = scope,
+        monotonicTimeMillis = monotonicTimeMillis,
     )
 
     private fun credentials() = FrpcStcpVisitorCredentials(
@@ -493,6 +1059,18 @@ class FrpcStcpVisitorManagerTest {
 }
 
 private class FrpcManagerTestJvmError : Error()
+
+private const val TLS_CERTIFICATE_PIN =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+private class FrpcManagerTestCancellationException(
+    @Suppress("UNUSED_PARAMETER") identity: Unit,
+) : kotlinx.coroutines.CancellationException()
+
+private class ManagerMessageAccessFailsException(cause: Throwable) : RuntimeException(null, cause) {
+    override val message: String?
+        get() = throw AssertionError("Throwable.message must not be read")
+}
 
 private class ScriptedHealthProbeFactory(
     private val onProbe: suspend (attempt: Int, server: ServerConfig) -> ServerHealthDto = { _, _ ->
@@ -534,8 +1112,10 @@ private class ControllableFrpcStcpVisitorClient(
     var onEnsure: suspend (String, FrpcStcpVisitorConfig, Int) -> Unit = { _, _, _ -> }
     var onWaitReady: suspend (String, String, Long, Long, Int) -> Unit = { _, _, _, _, _ -> }
     var onGetState: suspend (String, Int) -> Unit = { _, _ -> }
+    var onStopSession: suspend (String, Int) -> Unit = { _, _ -> }
     var currentControlEpoch = 1L
     var sessionPhase = "open"
+    var sessionLastError: String? = null
     var visitorPhase = "ready"
     var listenerBound = true
     var reportedDesiredRevision: Long? = null
@@ -586,6 +1166,7 @@ private class ControllableFrpcStcpVisitorClient(
 
     override suspend fun stopSession(sessionId: String, timeoutMillis: Long): FrpcStopSessionResult {
         stoppedSessions += sessionId
+        onStopSession(sessionId, stoppedSessions.size)
         return FrpcStopSessionResult(sessionId = sessionId, phase = "closed")
     }
 
@@ -597,6 +1178,7 @@ private class ControllableFrpcStcpVisitorClient(
             sessionId = sessionId,
             phase = sessionPhase,
             controlEpoch = currentControlEpoch,
+            lastError = sessionLastError,
             visitors = if (visitorName == null) {
                 emptyMap()
             } else {

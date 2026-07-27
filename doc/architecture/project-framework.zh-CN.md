@@ -8,7 +8,7 @@
 
 本方案基于 `doc/architecture/mobile-interaction.zh-CN.md` 的交互设计结论，为 OC Deck 规划工程框架。OC Deck 是独立社区维护的 OpenCode Server 原生 Android 客户端，不是 OpenCode 项目或 Anomaly 官方产品。目标不是机械复刻桌面 Web，而是在保留 OpenCode 信息架构和核心工作流的基础上，构建适合手机端的稳定、可迭代、可验证 Android 工程。
 
-当前工程采用“单业务模块、独立 native bridge、手动 DI、Room/Hilt 延后”的保守方案。服务器连接、项目选择、会话列表、会话详情、普通 prompt、SSE 和安全脱敏主路径已经落地；业务代码继续集中在 `:app`，仅将 frpc STCP GoMobile 集成隔离到已批准的 `:frpc-stcp-visitor` bridge 边界，并按真实需求评估数据库、Hilt 和业务多模块。
+当前工程采用“单业务模块、独立 STCP bridge library、手动 DI、Room/Hilt 延后”的保守方案。服务器连接、项目选择、会话列表、会话详情、普通 prompt、SSE 和安全脱敏主路径已经落地；业务代码继续集中在 `:app`，GoMobile 正式客户端与供 Canary、不可发布 Kotlin Release-Like 构建使用的纯 Kotlin 内部验证客户端隔离在已批准的 `:frpc-stcp-visitor` 边界内，并按真实需求评估数据库、Hilt 和业务多模块。
 
 核心原则：
 
@@ -40,7 +40,7 @@
 | SSE | OkHttp `Call` + 自定义有界 reader | 对接 `/global/event` 和 `/event?directory=...`；保留 `okhttp-sse:5.4.0` 依赖但生产路径不使用其 parser |
 | JSON | kotlinx.serialization `1.11.0` | DTO 序列化，默认忽略未知字段 |
 | 并发 | kotlinx.coroutines `1.11.0` | Repository、SSE、ViewModel 状态流 |
-| STCP 原生桥接 | Go `1.26.4` + GoMobile/x-mobile `4dd8f1dbf5d2` + NDK `27.1.12297006` + frp `v0.69.1-p1` | 版本统一由 `bridge-versions.properties` 固定；`p1` 是仓库内可审计的最小 downstream patch stack |
+| STCP 客户端 | Go `1.26.4` + GoMobile/x-mobile `4dd8f1dbf5d2` + NDK `27.1.12297006` + frp `v0.69.1-p1`，以及纯 Kotlin 客户端 | GoMobile 工具链统一由 `bridge-versions.properties` 固定；`debug`、正式 `release` 与 `goMobileRelease` 选择 GoMobile，`canary`、`kotlinRelease` 和不可发布的正式签名 `kotlinDefaultReleaseDryRun` 选择 Kotlin |
 | SSH | JSch `2.28.3` + BouncyCastle `1.84` | SSH 本地端口转发、私钥与主机密钥支持；固定 host fingerprint 必须在用户认证前校验 |
 | Markdown | Markwon `4.6.2` + Prism4j `2.0.0` | 渲染会话区域 agent/助手回复；普通 Markdown 使用 Markwon，行内代码使用透明背景高亮文字，fenced code block 使用 Compose 原生代码块、1dp 边框和 Prism4j 高亮 |
 | 本地设置 | DataStore Preferences `1.2.1` | 保存服务器列表、最近项目、偏好设置 |
@@ -126,13 +126,28 @@ VERSION_NAME=0.2.3
 
 `VERSION_NAME` 使用稳定 SemVer，正式 tag 必须精确为 `v${VERSION_NAME}`；`VERSION_CODE` 必须高于上一稳定 tag。CI 不从 tag 或 run number 动态覆盖源码版本，避免本地构建、设置页展示、APK文件名和发布记录出现漂移。
 
-自动化分为两条工作流：普通 CI 无签名 secret，执行社区/文档与第三方/法律清单审计、Go race tests、GoMobile AAR 门禁、Android 单元测试和 Debug 构建；Release workflow 使用 `preflight`、`prepare-notes`、`build-release`、`publish` 四个 job。`prepare-notes` 在不读取签名 secret 的情况下生成可审阅说明 artifact，持有 JKS 的 job 没有仓库写权限，持有 `contents: write` 的发布 job 不读取签名 secret。当前只发布 `arm64-v8a`、`armeabi-v7a`、`x86_64` 三个 ABI APK 和 `SHA256SUMS`，不构建 AAB 或 universal APK。详细操作见 `doc/release/github-actions.zh-CN.md`。
+自动化分为三条工作流：普通 CI 无 Release 签名 secret，在社区/文档与第三方/法律清单审计、Go race tests、GoMobile AAR 门禁、App 的 `debug`/`canary`/`kotlinRelease` 单元测试、bridge 单元测试及三套验证 APK 构建之外，还运行独立的固定 frp Kotlin STCP 互操作 job。其手动 dispatch 可显式调用分支内 reusable K6V workflow，以 bootstrap 该 workflow 的首次引入；push 与 Pull Request 运行绝不会启用这一路径。精确 SHA 的 K6V workflow 保持只读且位于所有 Environment 之外，在进入默认分支后也支持直接手动触发，并为两条固定 x86_64 lane 构建真实 bridge：API 26 运行只含 `success-v1-00` 的 `compat` suite，API 36 运行覆盖全部 wire/加密/压缩成功组合、三个负例与重启恢复的 12-profile `full` suite。Preflight 会测试报告 renderer；只有结构化 Host summary 证明精确 profile、参数、backend 顺序、checks 与等价性时 renderer 才通过，否则 fail closed；报告始终设置 `authorizesKotlinDefault=false`。该模拟器证据只是 K7 输入，不授权切换默认 backend，也不能替代真机、16KB、App 的真实 Store/快照/reconciliation、Doze/网络/前后台、性能、资源泄漏、soak 或正式稳定发布周期门禁。Release workflow 使用 `preflight`、`prepare-notes`、`frpc-interop`、`build-release`、`publish` 五个 job。外部进程互操作 job 保持只读且位于受保护的发布签名 Environment 之外；`build-release` 依赖它，再重复 `debug`、`canary`、`kotlinRelease` 验证，之后只对正式 GoMobile 默认的 `assembleRelease` 输出执行 Release 签名与暂存。`prepare-notes` 在不读取签名 secret 的情况下生成可审阅说明 artifact，持有 JKS 的 job 没有仓库写权限，持有 `contents: write` 的发布 job 不读取签名 secret。当前只暂存和发布正式 `arm64-v8a`、`armeabi-v7a`、`x86_64` Release APK 与 `SHA256SUMS`，不暂存或发布 Canary、Kotlin Release-Like APK、AAB 或 universal APK。详细操作见 `doc/release/github-actions.zh-CN.md`。
+
+当前普通 CI 与 `build-release` 验证矩阵已在上述历史概述基础上增加 `testGoMobileReleaseUnitTest`、`assembleGoMobileRelease`，以及 GoMobile/Kotlin 两套 Release-Like AndroidTest APK 装配。手动选择 `kotlinDefaultReleaseDryRun` 时还会独立运行其单元测试、正式签名装配和无 bridge 打包门禁，但稳定 tag 与 `publish` 仍只允许 `gomobile-release`。
+
+目标 ABI 真机证据与 16KB runtime 证据是两个独立 lane。可用 ARM 真机验证目标 ABI 安装、Release 模式 class loading，以及真实 App/STCP、生命周期和资源行为；官方 Android 16KB 测试镜像或真机验证 runtime page size、应用启动和完整互操作，并由静态 16KB 对齐与打包门禁补强。两个 lane 不要求在同一台物理设备执行。无法获得物理 ARM 16KB 硬件时，将其披露为残余组合覆盖风险和后续增强项，但不阻塞 pre-K7 收口或 K7 开发。exact-SHA、真实 App Store/快照/reconciliation、性能、资源泄漏、soak 和正式稳定发布周期门禁仍须完成，任一单独 lane 都不授权 Kotlin 默认装配。
+
+### 3.3 STCP Backend 构建类型
+
+STCP backend 仅在 App 构建时通过 `BuildConfig` 固定选择：
+
+- `debug`、`release` 与带 suffix、使用 Debug 证书的 `goMobileRelease` 对比构建设置 `USE_KOTLIN_FRPC_STCP_VISITOR=false`，实例化 `GoMobileFrpcStcpVisitorClient`。
+- `canary` 继承 `debug`，增加 application ID suffix `.canary` 与 version name suffix `-canary`，设置 `USE_KOTLIN_FRPC_STCP_VISITOR=true`，实例化 `KotlinFrpcStcpVisitorClient`。
+- `kotlinRelease` 继承正式 `release` 配置，增加 application ID suffix `.kotlinrelease` 与 version name suffix `-kotlin-release`，使用标准 Android Debug 测试证书，设置 `USE_KOTLIN_FRPC_STCP_VISITOR=true`，实例化 `KotlinFrpcStcpVisitorClient`。它仅用于 Release 模式真机验证，绝不接受 Release 签名、暂存或发布。
+- `kotlinDefaultReleaseDryRun` 继承正式身份与版本，强制使用 Release 证书，设置 `USE_KOTLIN_FRPC_STCP_VISITOR=true`，并保持为只能手动选择、不可发布的打包 dry run。
+- 这不是用户设置，不产生持久化/schema 状态，也不存在 backend 之间的运行时 fallback。
+- 两种实现都位于 `:frpc-stcp-visitor`，但 library 为 Canary、Kotlin Release-Like 与正式签名 Kotlin-default dry-run 提供不带 GoMobile runtime dependency 的精确同名 variant。其 runtime classpath 与 APK 必须排除 bridge 和 `libgojni.so`；专用打包门禁会独立于 `AppContainer` factory 选择测试强制执行这一约束。
 
 ## 4. 工程结构
 
 当前业务代码仍以 `:app` 单模块为主，不急于拆业务多模块。OpenCode API、状态和页面边界仍在持续校准，通过包结构保持职责边界并预留未来拆分路径。
 
-例外：`frpc STCP visitor` 使用独立 Android library 模块 `:frpc-stcp-visitor` 作为 GoMobile AAR bridge 边界。该模块只暴露稳定 Kotlin 接口和 value object，不承载 feature/data/domain 业务代码，不代表提前拆分业务多模块。
+例外：`frpc STCP visitor` 使用独立 Android library 模块 `:frpc-stcp-visitor` 作为稳定客户端/GoMobile AAR bridge 边界。该模块包含共享 Kotlin 接口、GoMobile adapter 和纯 Kotlin 实现，不承载 feature/data/domain 业务代码，也不代表提前拆分业务多模块。
 
 推荐目录：
 
@@ -201,15 +216,29 @@ STCP bridge 模块结构：
 frpc-stcp-visitor/src/main/java/io/github/ycfeng/ocdeck/frpcstcpvisitor/
   FrpcStcpVisitorClient.kt
   GoMobileFrpcStcpVisitorClient.kt
+  KotlinFrpcStcpVisitorClient.kt
+  KotlinFrpcStcpVisitorFailure.kt
   UnavailableFrpcStcpVisitorClient.kt
+  internal/
+    control/
+    crypto/
+    protocol/
+    runtime/
+    transport/
+    yamux/
 
 frpc-stcp-visitor-go/
   bridge-versions.properties
+  cmd/checkaar/
   cmd/preparefrp/
+  cmd/preparemoduleproxy/
   cmd/normalizezip/
+  cmd/writebridgeprovenance/
   downstream/frp-v0.69.1-p1/
   go.mod
   internal/anetcompat/
+  internal/moduleproxy/
+  internal/reprobuild/
   types.go
   visitor.go
   build-aar.ps1
@@ -218,11 +247,17 @@ frpc-stcp-visitor-go/
 
 `frpc-stcp-visitor-go/` 保存真实 frp GoMobile wrapper 源码。`bridge-versions.properties` 固定 bridge、Go、x/mobile 和 Android API 版本；禁止在构建脚本中使用 `gomobile@latest`。基础 frp 固定为 `github.com/fatedier/frp@v0.69.1`，`cmd/preparefrp` 校验上游 module sum、zip SHA 和待修改文件 SHA 后应用 `downstream/frp-v0.69.1-p1/` 中的最小补丁，不直接修改 Go module cache。补丁修复动态 visitor 配置与 Control 安装的竞态、传播真实 listener bind 状态，并暴露 config revision、control epoch 和阻塞式 `WaitVisitorReady`。
 
-`build-aar.ps1` / `build-aar.sh` 使用固定工具链生成 AAR，经过 `cmd/normalizezip` 规范化 ZIP 顺序和时间戳后，输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.10-frp0.69.1-p1` 发布到本地 Maven 仓库 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖；制品同时生成 sources、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。AAR 的 `META-INF/OCDECK/` 内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance，外部 sidecar 用于 Gradle 与发布门禁复核。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表，`cmd/checkaar` 校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。App 打包会将 `libgojni.so` 排除在 Android Gradle Plugin 后续 strip transform 之外，使 Release APK 保留这些已验证的 AAR 字节；APK 门禁仍会重新校验 hash、ELF metadata、对齐和 stripped 状态。GoMobile 的 `-javapkg` 前缀对应反射入口 `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`。`internal/anetcompat` 用标准库网络接口函数替换 `github.com/wlynxg/anet`，并在主 module 显式继承 frp 的 yamux replacement。
+`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，将内嵌文本 metadata 的换行符统一为 LF，并发布已规范化的文本 sidecar；要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.11-frp0.69.1-p1` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
 
-未生成 AAR 时 Android Debug 仍可编译，STCP 连接运行时返回明确不可用错误；Release 的 `preReleaseBuild` 必须执行 `checkGoMobileBridgeAar`，逐字节校验 AAR checksum、固定 API signature、内外 bridge/frp provenance、法律文本、许可证、native metadata 和 AAR 内各 ABI `libgojni.so` 哈希。`-PrequireGoMobileBridge=true` 可将相同门禁应用到 Debug/CI 构建。静态门禁通过后，发布前仍必须在目标 ABI 和 16KB page-size 设备上完成真实 native load 与 STCP 闭环验证，不能只以 ELF/JVM 检查代替设备测试。
+`cmd/checkaar` 会读取四个 ABI library 的 Go BuildInfo，校验固定 Go identity 以及稳定的 module identity、version 与 sum，拒绝本地 module identity 和内嵌的仓库/cache 路径，并要求各 ABI 使用同一个 canonical module graph digest。Schema 2 内嵌 bridge provenance 与外部 native sidecar 会绑定 module graph digest 和无本地路径证明。AAR 的 `META-INF/OCDECK/` 还会内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表；`cmd/checkaar` 还会校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。
 
-Kotlin bridge 使用 `GoMobileBridgeUnavailableException` 表示生成类缺失，使用 `GoMobileBridgeApiMismatchException` 表示类、方法或 payload 不兼容。Readiness 与 SSE 将这些启动失败归类为永久失败，不做无限重试。仅修改 Kotlin bridge API 或失败处理时仍需执行完整 bridge 门禁，但生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+Canonical `.github/scripts/verify-bridge-reproducibility.sh` 与 `.ps1` 门禁要求干净 checkout。它们会在同一主机平台分别构建当前 checkout 和位于不同绝对路径的 detached worktree，为两个构建隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，再逐字节比较 AAR、sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。临时 checkout 与 cache 会被删除，主构建输出会保留供 Gradle 门禁使用；CI 与 Release 使用 shell 版本。这不构成跨操作系统字节一致性声明。App 打包会将 `libgojni.so` 排除在 Android Gradle Plugin 后续 strip transform 之外，使 Release APK 保留这些已验证的 AAR 字节；APK 门禁仍会重新校验 hash、ELF metadata、对齐和 stripped 状态。GoMobile 的 `-javapkg` 前缀对应反射入口 `io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor`。`internal/anetcompat` 用标准库网络接口函数替换 `github.com/wlynxg/anet`，并在主 module 显式继承 frp 的 yamux replacement。
+
+未生成 AAR 时 Android Debug 仍可编译，但其 GoMobile STCP 路径会在运行时返回明确不可用错误。生成 bridge 只作为 library Debug 与 Release variant 的 runtime-only dependency。Canary 与 Kotlin Release-Like 会解析无 bridge 的精确同名 library variant，因此无需 AAR 即可构建，并且即使 AAR 存在也必须保持不包含 bridge 和 `libgojni.so`。正式 Release 的 `preReleaseBuild` 必须执行 `checkGoMobileBridgeAar`，逐字节校验 AAR checksum、固定 API signature、内外 bridge/frp provenance、法律文本、许可证、native metadata 和 AAR 内各 ABI `libgojni.so` 哈希。`-PrequireGoMobileBridge=true` 会把同一 AAR 完整性门禁应用到完整 Debug/Canary/KotlinRelease CI 调用，但不会把 bridge 加入任一 Kotlin variant。`verifyPureKotlinPackaging` 会独立验证两个 Kotlin runtime classpath 与每个 ABI APK。静态门禁通过后，正式发布前仍必须在可获得真机的目标 ABI 上验证 GoMobile native load，在官方 Android 16KB 测试镜像或真机上验证 16KB runtime 行为，并通过真实 STCP 闭环；这些可以是不同设备 lane。不可发布 Kotlin Release-Like APK 提供纯 Kotlin Release 模式设备验证路径，但不改变正式 backend 默认值。
+
+GoMobile Kotlin adapter 使用 `GoMobileBridgeUnavailableException` 表示生成类缺失，使用 `GoMobileBridgeApiMismatchException` 表示类、方法或 payload 不兼容。Readiness 与 SSE 将这些启动失败归类为永久失败，不做无限重试。仅修改 Kotlin bridge API 或失败处理时仍需执行完整 bridge 门禁，但生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+
+纯 Kotlin runtime 通过 `KotlinFrpcStcpVisitorException` 报告 `KotlinFrpcStcpVisitorFailure` enum；App 将这些类型值映射为 `OpenCodeFailure`。本地端口冲突与前序 generation bind 重试只根据 `BindException` 或类型化 bind failure 判断，绝不解析异常 message。`NewVisitorConn` 握手成功后，Kotlin backend 完整实现公共 `useEncryption`/`useCompression` 的四种组合：加密使用兼容 frp 的 PBKDF2-HMAC-SHA1/AES-128-CFB 流，压缩使用有界纯 Kotlin Snappy framed codec；写入线缆顺序为明文 -> Snappy -> AES-CFB，读取顺序相反。两个字段默认均为 `false`；当前 App 服务器 schema 与 UI 不持久化或暴露它们，因此产品创建的配置继续使用默认值。
 
 未来拆分多模块时，可按以下方向迁移：
 
@@ -242,10 +277,12 @@ Kotlin bridge 使用 `GoMobileBridgeUnavailableException` 表示生成类缺失�
 
 职责划分：
 
-- `AppContainer` 创建全局依赖：`Json`、`OkHttpClient`、`RetrofitFactory`、`SecureCredentialStore`、`ServerPreferencesStore`、`PathNormalizer`、`Redactor`、`InMemoryOpenCodeStore`、`ProjectSnapshotCoordinator`、`OpenCodeEventClient`、`AppConnectionCoordinator`。
+- `AppContainer` 创建全局依赖：`Json`、`OkHttpClient`、`RetrofitFactory`、`SecureCredentialStore`、`ServerPreferencesStore`、`PathNormalizer`、`Redactor`、按构建选择的 `FrpcStcpVisitorClient`、`FrpcStcpVisitorManager`、`InMemoryOpenCodeStore`、`ProjectSnapshotCoordinator`、`OpenCodeEventClient`、`AppConnectionCoordinator`。
 - `AppContainer` 按当前服务器创建 API 客户端和 Repository。
 - ViewModel 通过构造函数接收 Repository、Store、UseCase。
 - `AppViewModelProvider` 提供 ViewModel Factory，集中处理样板代码。
+
+`AppContainer` 只根据 `BuildConfig` 选择一个 STCP client：`debug`/`release`/`goMobileRelease` 选择 GoMobile，`canary`/`kotlinRelease`/`kotlinDefaultReleaseDryRun` 选择 Kotlin。它将该 client 传给应用唯一的 `FrpcStcpVisitorManager`；设置页、DataStore 字段、持久化 schema 或运行时错误路径都不能改变已选 backend，manager 也不会 fallback 到另一实现。
 
 示例依赖图：
 
@@ -259,6 +296,8 @@ OpenCodeApplication
     -> OkHttpClient
     -> RetrofitFactory
     -> OpenCodeApi
+    -> FrpcStcpVisitorClient（按 build type 选择 GoMobile 或 Kotlin）
+    -> FrpcStcpVisitorManager
     -> ProjectSnapshotCoordinator
     -> OpenCodeEventClient
     -> AppConnectionCoordinator
@@ -338,7 +377,7 @@ Hilt 引入条件：
 - `OpenCodeApi`：Retrofit interface，承载 REST 接口。
 - `RetrofitInboundResponsePolicyInterceptor`：要求每个 `OpenCodeApi` 方法显式声明响应模式，为有界请求附加 encoded-body network interceptor tag，对 decoded 成功实体施加边界，并丢弃不应进入 Retrofit converter 的 body。
 - `EncodedResponseLimitInterceptor`：network interceptor，在 OkHttp 执行 `Content-Encoding` 解码前限制 tagged response-body octets。
-- `OpenCodeApiFactory`：根据 `ServerConfig` 创建 API 实例，并为 `ServerConnection` 同时提供共享 OkHttp client 的窄 `SessionMessagesTransport`，以及单独有界为十分钟的 Provider OAuth callback client。
+- `OpenCodeApiFactory`：根据 `ServerConfig` 创建自持有的 API client bundle；每个 bundle 包含 REST/session-message 共用的 OkHttp client、单独有界为十分钟的 Provider OAuth callback client，并支持显式幂等清理。
 - `SessionMessagesTransport`：直接请求 `limit=200` 的会话消息页，传递 `before`/`X-Next-Cursor`；非 2xx 不读取 body，2xx 每页同时使用 64 MiB encoded response-body policy，并在 OkHttp callback 线程执行 64 MiB 有界 decoded 流式 JSON decode。
 - `OpenCodeEventClient`：基于 OkHttp `Call` 和自定义流式 SSE reader 管理全局和项目事件流。
 - `OpenCodeErrorParser`：统一解析 HTTP 错误、网络错误、服务端错误体。
@@ -346,7 +385,7 @@ Hilt 引入条件：
 - `RedactingInterceptor`：请求/响应日志脱敏。
 - `AuthInterceptor`：附加服务器认证信息，不向日志暴露原始凭据。
 - `SshTunnelManager`：按服务器建立 SSH 本地端口转发，将远端 OpenCode 服务地址改写为 `127.0.0.1:<localPort>`，供 REST 与 SSE 共用。
-- `FrpcStcpVisitorManager`：按服务器启动 frpc STCP visitor，将远端 OpenCode 服务地址改写为 `127.0.0.1:<bindPort>`，供 REST 与 SSE 共用；真实 frp client 由 `:frpc-stcp-visitor` 模块通过 GoMobile AAR 适配，AAR 由 `frpc-stcp-visitor-go/build-aar.ps1` 或 `build-aar.sh` 本地/CI 生成。
+- `FrpcStcpVisitorManager`：按服务器启动 frpc STCP visitor，将远端 OpenCode 服务地址改写为 `127.0.0.1:<bindPort>`，供 REST 与 SSE 共用；它依赖统一的 `FrpcStcpVisitorClient` 接口，由 `AppContainer` 为 Debug/Release 注入生成 AAR 支撑的 GoMobile adapter，或为 Canary/KotlinRelease 注入纯 Kotlin client。
 - `DirectoryQueryInterceptor` 可选：集中校验 directory 规范化。
 
 Android 端连接地址必须按运行环境配置，不把某个模拟器、真机或 `adb reverse` 端口映射当作所有设备的默认行为。连接方式分为直连、SSH 本地端口转发、frpc STCP visitor 三种互斥模式。SSH 和 STCP 都使用应用在设备侧打开的 `127.0.0.1:<localPort/bindPort>`，供 REST 与 SSE 共用。
@@ -356,11 +395,19 @@ STCP 连接使用双层就绪判据：
 1. transport readiness：`StartSession -> EnsureVisitor -> WaitVisitorReady`。只有当前 frps Control 已登录，且指定 config revision 的 visitor 在当前 control epoch 下真实持有本地 listener，才视为 transport ready。配置提交成功或临时端口可绑定都不能作为就绪信号。
 2. application readiness：通过该 listener 请求 `GET /global/health`。成功后才能证明本地 listener、STCP 转发、server name/secret、目标 OpenCode、TLS/HTTP 和认证组成的当前通路可用。
 
-`FrpcStcpVisitorManager` 按 server config epoch 和单调 tunnel generation 管理状态。首次进入同一 generation 的 REST、健康检查、全局 SSE 和项目 SSE 共享一个 single-flight；全局状态锁只保护状态转换，JNI、HTTP、重试 delay 和 stop 均在锁外。成功只按 generation 缓存，失败不缓存并精确停止该 generation 保存的 session，不能按 serverId 误关后来建立的新隧道。配置或 Keystore 中 token/secret 的值变化会使旧 lease 失效，即使 credential key 未变化也必须新建 generation。
+活动 listener 对 bind port 保持独占。旧 generation 完整停止后，Kotlin loopback listener 只启用 address reuse，不启用 `SO_REUSEPORT`，因此已完成 relay 的连接仍处于 `TIME_WAIT` 时，新 generation 也能快速重绑同一端口。执行 `stopVisitor` 时，Kotlin runtime 等待目标 visitor 的本地 listener 与 relay endpoint 失效。完整 relay pump 收尾、延迟的 best-effort Yamux reset 和 stream permit 释放继续由 session-owned watcher 收口。`stopSession` 会在进入终态前 join 该 watcher，并观察迟到的取消或 JVM `Error`。该行为不允许 backend 或 generation 重叠运行，不能把 `stopVisitor` 视为完整 wire-reset 屏障，也不是运行时 fallback 机制。
 
-已 Ready 的 generation 在后续 `getConnection()` 时读取 native runtime state。相同 control epoch 且 listener 仍 ready 时直接复用，不重复 health；frps 重连、listener 重绑或 control epoch 变化时，同一 generation 内共享一次 `WaitVisitorReady + /global/health` 恢复。返回连接前再次读取 native state，并复验精确 generation/control epoch 与 manager 当前状态；该复验只作用于 STCP，直连和 SSH 不增加专用屏障。旧 epoch 的迟到结果不能覆盖新 generation。`ServerRepository.getConnection()` 是 REST 与 SSE 的统一屏障，因此项目快照和 EventSource 都不得在 readiness 完成前启动。
+`FrpcStcpVisitorManager` 按 server config epoch 和单调 tunnel generation 管理状态。首次进入同一 generation 的 REST、健康检查、全局 SSE 和项目 SSE 共享一个 single-flight；全局状态锁只保护状态转换，backend I/O、HTTP、重试 delay 和 stop 均在锁外。成功只按 generation 缓存，失败不缓存并精确停止该 generation 保存的 session，不能按 serverId 误关后来建立的新隧道。配置或 Keystore 中 token/secret 的值变化会使旧 lease 失效，即使 credential key 未变化也必须新建 generation。GoMobile 与 Kotlin client 共享这些 config lease、generation、readiness、health probe、清理规则和 REST/SSE 屏障，不因 backend 选择改变。稳定的六操作 client contract 保持不变；Kotlin client 额外实现可选的默认网络变化能力，GoMobile adapter 不实现该能力。
 
-application readiness 使用独立短超时 profile 和整体时间预算。仅重试连接拒绝、reset、EOF、timeout、HTTP 408/425/429/5xx 和 `healthy == false`；401/403/404、TLS/hostname、序列化和配置错误快速失败。首次显式健康检查复用 readiness 的 health evidence，避免连续请求两次 `/global/health`；已经 Ready 的 generation 上手动健康检查仍执行一次 fresh health。
+已经取得 mux 但在 control Open 前失败的重连尝试，会先执行有界逻辑清理再发布类型化 retry 结果，因此失败建立清理不会无限保留上一轮通用 transport 状态。首次登录保持 10 秒短预算并快速失败；已经 Open 过的 control 使用相同 RunID 重连时，改用独立且有界的 60 秒登录预算，使 frps 能在 Yamux 陈旧连接检测窗口后完成黑洞旧 control 的替换。任一登录预算到期都由独立预算定时器处理：先 reset 正在使用的 control stream，再取消 codec coroutine，避免真实阻塞的 Yamux read 或被占用的 codec dispatcher 使 timeout 失效。安全恢复诊断可区分“正在中止超时重连登录”与“发生过超时后的下一次等待”，且不暴露异常文本、标识符或 payload 数据。该行为不启用 frp 应用层 heartbeat，不丢弃先前 RunID，也不改变 Yamux 协议参数。类型化 Yamux failure 穿过 protocol 与 crypto stream wrapper 时保持不变，固定 crypto 诊断继续不含 secret。
+
+已 Ready 的 generation 在后续 `getConnection()` 时读取 native runtime state。相同 control epoch 且 listener 仍 ready 时直接复用，不重复 health；frps 重连、listener 重绑或 control epoch 变化时，同一 generation 内共享一次 `WaitVisitorReady + /global/health` 恢复。Android 报告默认网络对象变化时，应用级 monitor 请求 Kotlin 可选能力把每个当前 Open control 作为类型化 transport failure 失效；该过程保留 visitor generation，通过正常 retry 路径关闭旧 listener/relay，并在重连后推进 control epoch，且不记录或持久化网络身份。Android App 中每次 Kotlin control 拨号都会捕获当前默认 `Network`，通过同一网络解析配置主机，并从其 socket factory 创建 TCP socket。拨号会在一份 TCP 与 TLS 总建立预算内按顺序尝试有界的解析候选；只有 TCP 连接、TLS 创建、握手和流获取全部成功才接受候选，避免某个不可达或 TLS 不兼容的 IPv4、IPv6 或 NAT64 候选让每次重连都固定失败在同一地址。解析地址只决定路由；每次 TLS 尝试仍接收原始配置主机和精确 leaf pin。无参 Kotlin 测试/interop client 保留系统 DNS/socket 路由，GoMobile 行为不变。已 Open control 重连且物理 transport 关闭后，一个仅用于重连的 watchdog 会覆盖后续全部旧会话清理屏障。超时只发信号中止旧 Yamux 的逻辑 join，不会直接完成 termination；finalizer 仍是终态完成的唯一所有者，完成后同一 visitor generation 才能继续进入下一 control epoch。显式 stop 与普通 close 仍保持严格清理，调用者取消或 JVM `Error` 继续传播。返回连接前再次读取 native state，并复验精确 generation/control epoch 与 manager 当前状态；该复验只作用于 STCP，直连和 SSH 不增加专用屏障。旧 epoch 的迟到结果不能覆盖新 generation。`ServerRepository.getConnection()` 是 REST 与 SSE 的统一屏障，因此项目快照和 EventSource 都不得在 readiness 完成前启动。
+
+manager 冷启动 native readiness 保持 10 秒快速失败预算。同 generation epoch refresh 使用独立、有界的 90 秒 native readiness 预算，覆盖 60 秒 control 重连登录窗口，之后才进入 15 秒 application health 总预算。可重试的 native readiness 或 application health timeout 只让当前 refresh flight 失败，并保留已建立 generation 供后续 refresh。application health timeout 会先在不可取消区段记录诊断，再发布类型化 timeout；真实调用者取消和 JVM `Error` 仍继续传播。
+
+`ServerRepository` 按服务器持有一份 HTTP client bundle，并在重新验证 transport readiness 后供重复及并发的 `getConnection()` 调用复用。缓存 key 包含规范化后的服务器/认证快照、effective URL、Repository config epoch，以及 STCP generation/control epoch。配置提交、结果不确定的 mutation、服务器删除或更新的 STCP transport identity 都会替换并显式关闭旧 bundle。即使 loopback URL 相同，也绝不跨 server ID 或 transport identity 共用 bundle。每次调用仍返回新的轻量 `ServerConnection` 视图，因此一次性的 readiness health evidence 不会被缓存，消费者也不能关闭共享 client。transport 重新捕获最多尝试三次；identity 持续抖动时返回不含身份信息的类型化 unstable-transport failure，不会无限循环。
+
+application readiness 使用独立短超时 profile 和 15 秒整体时间预算。仅重试连接拒绝、reset、EOF、timeout、HTTP 408/425/429/5xx 和 `healthy == false`；401/403/404、TLS/hostname、序列化和配置错误快速失败。首次显式健康检查复用 readiness 的 health evidence，避免连续请求两次 `/global/health`；已经 Ready 的 generation 上手动健康检查仍执行一次 fresh health。
 
 Retrofit JSON 配置：
 
@@ -416,7 +463,7 @@ SSE 设计要求：
 - 进入项目后先并行拉取 REST 快照，再建立项目 SSE。
 - SSE 事件只更新内存 Store，不直接操作 Compose 状态。
 - 使用指数退避自动重连，并保留明确的连接状态：`Connecting`、`Open`、`Retrying`、`Failed`、`Closed`。
-- App 前台恢复时执行健康检查，必要时重新同步当前项目快照。
+- App 前台恢复或默认网络替换时执行 health/readiness 检查，必要时重新同步当前项目快照。
 - 对事件 JSON 使用未知字段容忍，避免服务端升级导致客户端崩溃。
 - 生产路径不得使用先完整分配 `data: String` 的 okhttp-sse parser；使用 `ResponseBody.source()` 按字节解析，单个物理/逻辑行与累计 event data UTF-8 字节分别限制为 32 MiB。32 MiB 用于兼容单条最大 20 MiB raw 附件的 Base64 回显及 framing。
 - SSE 只接受 HTTP 200 与 `text/event-stream` media type（允许 charset）；204、其他非 200、缺失/错误 Content-Type 均在 `Open` 前关闭且不读取 body。204、非瞬时 4xx 和 Content-Type 错误进入 `Failed`，408/409/425/429 与 5xx 重试。
@@ -432,8 +479,8 @@ SSE 设计要求：
 - 项目 SSE 打开、重连和前台恢复后，由应用级 `ProjectSnapshotCoordinator` 按项目 key 和生命周期 token 执行 single-flight 校准；校准 token 区分 project/global 权威来源。项目流未 Open、重试、失败或不存在时，global fallback 的 LSP/MCP 能力事件也可发起校准；project 随后 Open 会取消旧 global flight。校准期间有界缓冲权威来源事件，成功时先快照后顺序重放，失败时保持 SSE 打开并重放；能力变更只标记 dirty，当前轮成功、失败或缓冲溢出后最多合并启动一轮 follow-up。
 - Store 分别维护项目数据、消息数据 revision 和按 session 隔离的历史 cursor 状态。每个第一页请求先原子注册 Store 共享的单调递增 generation，并同时捕获预期消息 revision；只有最后注册的 generation 能应用消息、第一页 ID 或 cursor 状态，因此旧 ViewModel 或恢复快照的响应即使最后到达也会视为 stale。初次消息第一页在 revision 未变化时替换，但保留 REST 缺失的本地乐观消息及 parts；建立 cursor 状态后，后续第一页刷新在 revision 未变化时校准其覆盖的最新窗口，仅在请求期间 revision 已前进时改用合并。若刷新页与上一次第一页的 message id 有重叠，则保留已加载历史的最旧 cursor，避免分页窗口移动丢失历史；若两页不相交，则采用刷新响应的新 cursor 并重置已消费链，使后续旧页加载补齐中间断层，必要时允许重新获取已加载页。更早页始终按 message/part id 合并，但只有请求的 `before` 仍等于当前最旧 cursor 时才应用；已消费 cursor 形成循环时不修改消息或 cursor 状态并直接失败。revision 变化时仍保留实时字段、delta、历史补全和请求期间的删除 tombstone。合并后的空 message text 从最终有效 text parts 重建，`session.deleted` 同步删除该 session 的 messages、parts、历史 cursor 与待处理第一页 generation，并推进删除 revision。ViewModel 直接 REST 项目快照继续使用 revision CAS 和 latest-request gate；connection/loading/通知变化不推进项目数据 revision。
 - 消息列表在 REST 分页、SSE upsert、乐观确认和消息移动中统一保持服务端 `(createdAt, id)` 升序。第一页响应按捕获的消息 revision 应用时，Store 校准其覆盖的最新窗口：保留严格早于响应边界的消息和本地乐观消息，替换响应返回的消息与 parts，并删除覆盖窗口内响应缺失的消息或 part；若请求期间 revision 已前进，则改用合并语义，使并发 SSE、乐观数据和 tombstone 获胜。
-- `OpenCodeRepository` 项目快照和 `DefaultForegroundHealthChecker` 在 REST/health I/O 成功或非取消失败后重新获取 connection 校验 transport identity；旧连接失败而 identity 已前进时以新连接有限重试，identity 未变时传播原异常，连续变化返回不含敏感信息的类型化失败。
-- `AppConnectionCoordinator` 在应用前台恢复时按 server 合并 health/readiness 检查；transport identity 改变时整体重建该服务器仍需保持的全局/项目流，不变时复用流并校准项目快照。明确 older-than 当前 identity 的迟到 open attempt 必须原子解绑当前 attempt 并进入标准 retry，close 或新 generation 使该 retry 失效。
+- `OpenCodeRepository` 项目快照和 `DefaultForegroundHealthChecker` 在 REST/health I/O 成功或非取消失败后重新获取 connection 校验 transport identity；旧连接失败而 identity 已前进时以新连接有限重试，Repository transport 重新捕获最多三次；identity 未变时传播原异常，连续变化返回不含敏感信息的类型化失败。
+- `AppConnectionCoordinator` 在应用前台恢复时按 server 合并 health/readiness 检查；应用级默认网络 callback 把当前网络替换或丢失都视为恢复信号，先请求可选 backend transport 失效，再执行同一组检查。丢失和后续可用都可能通知恢复并会被合并，不再是当前网络的陈旧丢失通知会被忽略。活动检查期间到达的切网通知合并为一次 follow-up，当前网络恢复检查失败时最多再排队一次有界 follow-up；捕获于最新 network revision 之前的结果直接丢弃，不得发布。Canary 诊断只能读取不含身份的 callback/dispatch 与恢复计数，不记录或持久化网络身份。transport identity 改变时整体重建该服务器仍需保持的全局/项目流，不变时复用流并校准项目快照。明确 older-than 当前 identity 的迟到 open attempt 必须原子解绑当前 attempt 并进入标准 retry，close 或新 generation 使该 retry 失效。
 - 全局 SSE 状态按 serverId 隔离；事件缓冲同时限制数量和估算字节数，溢出时取消快照并立即重放，避免无界内存增长。
 
 ## 8. 路径规范化
@@ -676,15 +723,18 @@ Existing session id
 - `RedactorTest`：key/token/password/header/env/config 脱敏。
 - `RetrofitInboundResponsePolicyTest` 与 `EncodedResponseLimitInterceptorTest`：所有 `OpenCodeApi` 方法显式声明模式；缺少策略时 fail-closed；encoded/decoded 已知、未知和低报长度均执行 `max + 1`；真实 OkHttp gzip chain 在 Bridge 解码前执行 encoded 上限；非 2xx 与成功 Unit body 不读取即关闭；无 `Invocation` 的 direct call 不进入 Retrofit 策略。
 - `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`InMemoryOpenCodeStoreRevisionTest`、`SessionMessageJumpTest`、`FileContentResponseReaderTest`：cursor query/header、旧页合并和 cursor 保留、逆序完成时拒绝过期第一页 generation、`(createdAt, id)` 同时间排序、第一页覆盖窗口删除校准、session 删除清理待处理 generation、空投影时间线加载与跳转控件可用性、无 body HTTP 失败、流式 decode、EOF 验证、取消/关闭竞态、session messages 每页 64 MiB 边界和 `/file/content` 第二道防御。
-- `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest`：不解析异常 message 的语义分类、本地化资源与操作 fallback 映射、Repository 传播，以及取消/JVM `Error` 行为。
+- `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest`：不解析异常 message 的语义分类，包括类型化 Kotlin runtime failure 与本地端口拒绝；本地化资源与操作 fallback 映射、Repository 传播，以及取消/JVM `Error` 行为。
 - `ProviderSettingsParsingTest` 与 `ProviderCapabilityRefreshTest`：对可能含密钥的 Provider/auth payload 做安全投影、以 `connected` 为权威、保留 auth wire index 与条件、安全解析 OAuth URL，并通过当前 project/global SSE authority lease 刷新 capability。
 - `ProviderSettingsViewModelTest`：项目作用域动态 auth 输入、明文 HTTP 冻结确认、mutation single-flight、OAuth code/callback scope、无 secret 状态摘要和 mutation 后 reload/calibration。
 - `CustomProviderValidationTest`、`OpenCodeProviderRepositoryCustomTest` 与 `CustomProviderFormViewModelTest`：Provider/model/Header 校验、disabled/auth/enable 分阶段顺序、安全 config 投影、partial/unknown outcome、先停用后清理 auth、deep-merge 防伪删除、secret 清除和持久化标识不可变。
 - `SensitiveValueToStringTest`：跨 network、domain、Store、feature 和 UI 对象验证结构化摘要不暴露人工凭据、URL、alias、路径、prompt、Base64、SSE payload 与 tool output。
 - `OpenCodeContrastTest`：浅色/深色主题的 4.5:1 文字和 3:1 图形对比度，覆盖主题、语义、语法、状态、附件和控件边界颜色。
 - `FrpcStcpVisitorUrlResolverTest`：STCP 本地端口 URL 改写保留 scheme/path。
-- `FrpcStcpVisitorManagerTest`：generation single-flight、native listener gate、application health 重试、配置失效、精确清理、调用者取消隔离、不同服务器互不阻塞、control epoch 恢复和旧 epoch 迟到保护。
-- `FrpcStcpReadinessRetryClassifierTest` 与 `GoMobileFrpcStcpVisitorClientTest`：瞬时重试分类、永久 inbound/bridge 失败、typed unavailable/API mismatch、安全摘要、API v2 JSON、revision/epoch、`WaitVisitorReady`，以及反射取消/JVM `Error` 传播。
+- `FrpcStcpVisitorClientFactoryTest`：在三套 App 验证 variant 中运行，验证 Debug `BuildConfig` 选择 GoMobile、Canary 与 Kotlin Release-Like 选择 Kotlin，同时显式 factory 可构造任一 backend，且不存在运行时 fallback。
+- `FrpcStcpVisitorManagerTest`：在同三套 App 单元测试任务下运行，验证 backend-neutral manager 契约，包括 generation single-flight、native listener gate、application health 重试、配置失效、精确清理、调用者取消隔离、不同服务器互不阻塞、control epoch 恢复、旧 epoch 迟到保护、类型化 bind conflict 转换，以及不解析 message 的前序 generation 重试。
+- `FrpcStcpReadinessRetryClassifierTest`、`GoMobileFrpcStcpVisitorClientTest`、`KotlinFrpcStcpVisitorClientTest` 与 `FrpcStcpVisitorClientDifferentialContractTest`：瞬时重试分类、永久 inbound/bridge 失败、typed unavailable/API mismatch/runtime 错误、安全摘要、API v1/v2 行为、revision/epoch、`WaitVisitorReady`、listener/relay 生命周期、本地停止后延迟的 best-effort relay reset 不阻塞 `stopVisitor`、session-owned permit 释放、四种 payload flag 组合、有界 Snappy framing、Go oracle 跨语言向量、归一化 host-JVM adapter/runtime 语义，以及取消/JVM `Error` 传播。差分 suite 不执行 native GoMobile 或真实 frps。
+- `SocketFrpLocalListenerFactoryTest`：活动 listener 保持独占；完整停止 generation 后，即使已完成 relay 的连接处于 `TIME_WAIT`，也可立即重绑原端口。
+- `FrpcStcpVisitorAndroidInteropTest` 由 `frpcAndroidInteropTest` 驱动：每个选中的 `compat` 或 `full` profile 都分别在独立 Android instrumentation 进程中运行真实 GoMobile AAR 与纯 Kotlin client，只有完成 `Closed`/端口释放校验后才复用同一个 bind port。它覆盖所有配置的 wire/payload 成功组合，并保持 global/project SSE 在线，同时并发执行 health、两次 echo、两次超窗口流量且读取同一 checkpoint；还覆盖三个类型化负例、重启/control epoch 恢复和严格的结构化 backend 等价证据，不存在活动 generation fallback。
 - Go wrapper/downstream tests：startup config 更新不丢失、真实 bind 后才 ready、bind failure、closed manager、control epoch、superseded revision、Stop 等待端口释放和敏感错误脱敏；并发相关包使用 `go test -race`。
 - `PromptSendStateMachineTest`：空输入、附件、纯项目上下文输入和工作中 stop/send 状态。
 - `OpenCodePromptSenderTest`：懒创建 session、Store 权威 capability revision、附件/项目上下文终检、乐观 `file://` parts、条件回滚、SSE 先确认、普通/已加载命令上下文透传、真实 session alias、abort 和 single-flight。
@@ -700,7 +750,7 @@ Existing session id
 - SSE 生命周期测试：关闭竞态、generation/lease、快照失败不阻断重连、每次恢复一次校准和前台恢复。
 - SSH/外部输入测试：host key 认证前校验、Server URL 结构约束、data URL header/payload、URI/网络响应/Base64/native 返回值和私钥的流式上限。
 
-现有 `app/src/androidTest` 只覆盖本地化独立窗口根，CI 仍没有 emulator/instrumentation job。在扩大设备自动化前，需要在紧凑手机屏幕、浅色/深色主题、IME 打开、200% 字体和 TalkBack 启用条件下人工验证以下交互：
+聚焦的 `app/src/androidTest` 测试集已覆盖本地化独立窗口根。普通 CI 仍没有 App UI emulator/instrumentation job；独立手动 K6V workflow 只自动化 STCP backend 互操作。在更广泛的 UI 设备自动化建立前，需要在紧凑手机屏幕、浅色/深色主题、IME 打开、200% 字体和 TalkBack 启用条件下人工验证以下交互：
 
 - 项目选择页与 Drawer 排序：长按纵向拖拽、边缘自动滚动、两个入口同步、普通点击不重排、项目选择页删除保持独立、乐观失败回滚、当前项目合入后最多 20 项、Drawer 固定操作，以及水平抽屉手势协调。
 - 会话列表打开详情。
@@ -715,23 +765,26 @@ Existing session id
 构建门禁：
 
 - `python .github/scripts/audit-community.py` 校验治理文件、issue forms、CODEOWNERS、中英文文档配对、相对链接、Release Notes 章节与标签、废弃路径、合成 fixture 和仓库卫生。
-- `python .github/scripts/audit-third-party.py` 校验版本、依赖、四个 Android Go 目标并集、资源哈希、frp modified/added provenance、法律文本和发布脚本引用。
+- `python .github/scripts/audit-third-party.py` 校验版本、依赖、四个 Android Go 目标并集、资源哈希、frp modified/added provenance、六个测试专用官方 frp release asset pin、法律文本和发布脚本引用。
 - `./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug`
-- `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`
+- `./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest` 显式以固定官方 frp v0.69.1 覆盖 wire v1/v2、四种 payload 模式、并发超窗口流、REST/SSE、类型化负例和重启/epoch 恢复；普通单元测试不会启动该 harness。
+- Android A/B 验证必须先在独立 invocation 中构建 GoMobile AAR，再运行 `./gradlew --no-daemon :frpc-stcp-visitor:frpcAndroidInteropTest -PrequireGoMobileBridge=true -Pocdeck.frp.androidInterop.deviceSerial=<serial> -Pocdeck.frp.androidInterop.suite=full`。显式 suite 为必填项，且必须是 `compat` 或 `full`；需要验收 summary 时还应传入 `-Pocdeck.frp.androidInterop.summaryFile=<new-path>`，目标必须尚不存在。Harness 复用固定官方 frp provisioner，并通过有界 adb stdin 将合成凭据写入测试私有文件，而不是通过 Gradle 或 instrumentation argument 传递。
+- 完整 bridge/CI Android 门禁为 `./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true`。
 - `go run ./cmd/preparefrp`、`go test -race -modfile=build/frp-patched.mod ./...`，以及在 patched frp module 中执行 `go test -race ./client/...`。
-- `build-aar.sh` 或 Windows 下的 `build-aar.ps1` 必须使用 `bridge-versions.properties` 的固定 Go/x-mobile/Android API/NDK 版本。
+- `.github/scripts/verify-bridge-reproducibility.sh` 或 Windows 下的 `.ps1` 必须使用 `bridge-versions.properties` 的固定 Go/x-mobile/Android API/NDK 版本；CI 与 Release 使用 shell 版本。
 - 仅修改 Kotlin bridge API 或失败处理时，即使生成 AAR 字节和 `BRIDGE_VERSION` 不变，也必须运行该完整门禁；native 或生成 AAR 字节发生任何变化时必须递增 `BRIDGE_VERSION`。
-- AAR 构建需验证同输入连续生成的 SHA-256 一致；Release APK 中每个 ABI 的 `libgojni.so` 必须与该 AAR 对应 entry 哈希一致，并重新检查 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态。
+- Bridge 门禁必须在同一主机平台使用干净的当前 checkout，以及位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar；Release APK 中每个 ABI 的 `libgojni.so` 必须与该 AAR 对应 entry 哈希一致，并重新检查 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态。
 - APK 必须逐字节包含当前 `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.txt`、`TRADEMARKS.md`、合并许可证全文和全部单独许可证；AAR 必须在 `META-INF/OCDECK/` 内嵌同源法律/API/provenance 元数据。
 - 后续增加 ktlint/detekt 时再纳入 CI；Android lint 应在修复现有错误后作为独立门禁接入。
-- `.github/workflows/ci.yml` 在 `main` push/PR 上执行无签名门禁；`.github/workflows/release.yml` 在稳定 tag 上重新执行全部门禁后构建签名制品。
-- 发布前校验 tag/源码版本、tag commit 属于 `origin/main` 历史、`VERSION_CODE` 单调递增、三个 APK输出、固定签名证书指纹和 `SHA256SUMS`。发布说明固定包含独立性、自备 OpenCode Server 和 pre-1.0 风险声明。当前自动发布流程不构建 AAB。设备上的 native load、16KB page-size 和真实 STCP闭环仍需人工完成。
+- `.github/workflows/ci.yml` 在 `main` push/PR 上执行固定 frp host 互操作 job，以及不使用 Release 签名 secret 的 Debug、Canary、Kotlin Release-Like unit/APK 门禁；只有手动 dispatch 设置 `run_frpc_android_interop=true` 时，才会为首次引入 bootstrap 调用分支内 reusable K6V workflow。`.github/workflows/frpc-kotlin-android-interop.yml` 是只读、精确 SHA 的 Android STCP 门禁，具有直接手动与 reusable-call 两种入口，固定 API 26 x86_64 `compat` 与 API 36 x86_64 `full` lane，在 preflight 运行 renderer 单元测试，生成 fail-closed 的有界报告 artifact，且绝不授权 K7；`.github/workflows/release.yml` 在 release Environment 之外的独立只读 job 中运行 host 互操作，并重跑普通验证 variant。手动 dispatch 可以选择使用正式签名、但不可发布的 Kotlin-default dry run；稳定 tag 与 publish job 均锁定为 GoMobile release profile。
+- 发布前校验 tag/源码版本、tag commit 属于 `origin/main` 历史、`VERSION_CODE` 单调递增、三个 APK输出、固定签名证书指纹和 `SHA256SUMS`。发布说明固定包含独立性、自备 OpenCode Server 和 pre-1.0 风险声明。当前自动发布流程不构建 AAB。目标 ABI 真机 native load、官方 Android 测试镜像或真机上的 16KB runtime 行为，以及真实 STCP 闭环仍需人工验证；这些可以是不同 lane。
 
 ## 15. 当前实现状态
 
 ### 15.1 已具备或主体已具备
 
 - Android 工程、手动 DI、DataStore/Keystore/内存 Store、带客户端说明空态的服务器列表、新增/健康检查和直连/SSH/STCP 三种互斥连接模式；不自动创建 localhost 服务器。
+- STCP 构建级装配为正式 `debug`/`release` 和不可发布的 `goMobileRelease` 对比构建选择 GoMobile，为内部 `canary`、不可发布的 `kotlinRelease` 和签名但不可发布的 `kotlinDefaultReleaseDryRun` 选择纯 Kotlin；所有 variant 共享同一 manager lease/readiness 契约，不提供用户设置、持久化 selector 或运行时 fallback。Release-Like 对比 variant 使用带 suffix 的身份和 Debug 证书；dry run 使用正式身份/版本/证书，签名输入不完整时 fail closed。Kotlin library 实现支持公共 encryption/compression 字段，而当前 App 创建的 STCP 配置继续将二者默认设为 `false`；正式 GoMobile `assembleRelease` 仍是唯一可发布输出。
 - 路径规范化、按服务器 `sortOrder` 持久化且新项目置顶并由项目选择页/Drawer 共享重排的最近项目、项目选择与壳层、支持网络加载更多的 Store 共享会话窗口、会话 drawer/详情、懒创建 session、普通 prompt、全局/项目 SSE、provider/model/agent 基础数据；session messages 支持 cursor 分页，并具备每页独立 64 MiB encoded 与 decoded 上限。
 - 所有普通 `OpenCodeApi` Retrofit 方法都具备显式且独立的 16 MiB encoded/decoded 边界或 empty-success 策略；非 2xx 与 Unit body 不读取即丢弃，`/file/content` 保留 reader 层 decoded 边界。
 - Slash command 与 `@` mention UI、agent/model/variant picker、手机本地附件、项目文件树/搜索/只读预览及完整文件 Composer 上下文、permission/question、会话内 Changes/diff 和 context usage。
@@ -744,8 +797,12 @@ Existing session id
 
 ### 15.2 部分完成或仍需加固
 
-- identity-only SSE 自定义流式 reader、32 MiB 行/event 上限、owner lease、关闭终态、project/global 去重与 fallback、generation/source/单调 transport identity、revision 快照防覆盖、消息并发合并、dirty follow-up 校准和应用级前台恢复已实现；仍需真实服务长时间断网、系统前后台、通知 channel 升级和 STCP control epoch 切换的设备验证。
+- identity-only SSE 自定义流式 reader、32 MiB 行/event 上限、owner lease、关闭终态、project/global 去重与 fallback、generation/source/单调 transport identity、revision 快照防覆盖、消息并发合并、dirty follow-up 校准和应用级前台恢复已实现。Release-Like 设备自动化现已覆盖系统前后台 callback、已确认的 Doze 退出恢复、有界长断连、确定性的 `frps` 已恢复/provider 未恢复窗口，以及从持久化配置重建进程。一份已配置的 working-tree Canary 构建已在显式 USB 物理 ARM 设备上、不使用 `adb reverse` 地通过完整 19 项 external-network 门禁：validated Wi-Fi→蜂窝→Wi-Fi、精确断线 Store 保留屏障、同 generation 且两次严格增加的 control epoch、global/project SSE 恢复、快照 reconciliation、目标应用私有且有界的前台 heartbeat，以及独立清理均通过。通知 channel 升级、性能、资源泄漏压力、soak、exact-candidate 证据冻结和正式稳定发布周期仍需独立验证。
+- 纯 Kotlin payload encryption/compression、跨语言 fixture、固定官方 frp host 专用门禁和扩展后的真实 Android A/B 自动化均已实现。Android harness 固定 API 26 使用只含 `success-v1-00` 的 `compat`，API 36 使用精确 12-profile wire/payload/negative/restart 矩阵的 `full`。每个 profile 都先运行 GoMobile，校验完整 stop/`Closed`/端口释放，再在独立 instrumentation 进程中让 Kotlin 使用同一端口；成功 profile 在 global/project SSE 在线时执行 health、两次 echo 与两次大于 Yamux 窗口的下载，并要求同一 checkpoint；重启 profile 验证既有 SSE 中断、control unavailable、`frps` 与 provider 恢复屏障、control epoch 严格增加，以及恢复后的 REST/SSE/大流量。严格 Host summary 证明 profile 参数、backend 顺序、语义结果、checks 与等价性，不把 Gradle success 当作证据。精确候选 `01ba5437276fb5074da5c654219668ac4cb69d48` 已在 [run 29763640048](https://github.com/ycfeng/ocdeck-android/actions/runs/29763640048) 通过普通完整验证 job、两条 Android lane 及 fail-closed 双语报告。当前已提供不可发布的 Kotlin Release-Like APK，用于不改变正式发布选择的纯 Kotlin Release 模式设备验证。pre-K7 使用分离证据矩阵：可用 ARM 真机覆盖目标 ABI 安装、class loading、真实 App/STCP、生命周期和资源行为；官方 Android 16KB 测试镜像或真机覆盖 runtime page size、启动和完整互操作，并由静态 16KB 对齐与打包门禁补强。两个 lane 不要求在同一台物理设备执行。缺少物理 ARM 16KB 组合仍需披露为残余风险和后续增强项，但不阻塞 pre-K7 收口或 K7 开发。App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、恢复、性能、资源泄漏证据、长期 soak 和正式稳定发布周期仍是独立门禁；emulator 报告与该验证 variant 单独都不授权 Kotlin 默认装配。
 - 独立 Review route 仍为占位；当前可用 diff 位于会话详情 Changes tab。
+- 专用 Kotlin Release-Like App STCP E2E 门禁现有严格的 `core`、`lifecycle`、两阶段 `process` 与 external `network` suite。除真实 `AppContainer`、Repository/manager readiness、REST snapshot、global/project SSE、Store reconciliation 与清理链路外，它还驱动 `MainActivity` 前后台 callback、已确认的 deep Doze 退出、120 秒断连、确定性的 `frps` 已恢复/provider 未恢复窗口、数据保留与同 generation control-epoch 恢复，以及普通进程终止后在新 `OpenCodeApplication` 中通过 DataStore/Keystore 重建。process suite 使用显式 project/session route，不跨进程比较 runtime generation/epoch。Clean exact 候选 `4b0df8af207b28846423902a61bf261501692101` 已在官方 Android 16KB x86_64 与物理 ARM 上分别通过 `core`、`lifecycle` 和 `process`；这些 suite 报告 `topology=adb_reverse` 与 `networkSwitchProven=false`。19 项 `network` suite 要求显式 USB 物理 ARM、无 reverse mapping、validated Wi-Fi 与蜂窝，以及包含公网 IP literal 或严格公网 DNS 名称、token、精确 leaf DER SHA-256 pin 和同一张非 CA leaf 的私有有界 schema；provider 使用该证书及配置名称校验。安装前与每个 active validated device network 都会解析 DNS；短暂的 active-network 或 DNS 未就绪会在有界窗口内重试，但一旦返回空结果或任一非公网地址就立即 fail closed，身份边界仍是 pin。每个方向都会先证明两条 stream 不可用且旧 Store 数据精确保留，再重启 provider 并推进 fixture。一份已配置的 working-tree Canary 构建已通过全部 19 项并报告 `topology=external`、`networkSwitchProven=true`，包括两次 control epoch 增加和 reconciliation；该未提交本地结果不冒充 exact-SHA 候选。性能、资源泄漏压力、soak、exact-candidate 重复和正式稳定发布周期仍是独立门禁。本地证据不授权 Kotlin 默认装配。
+- App E2E Host 现已支持对称运行 GoMobile/Kotlin Release-Like `core`、`lifecycle` 和 `process`；`network` 仍只允许 Kotlin，因为不能降低其精确 leaf-pin 契约。请求验收 summary 时必须使用干净仓库，并绑定小写 commit/tree 与本地/已安装 target/test APK SHA-256，只有清理成功后才原子发布。完整 external 证据明确为 17 个有序 instrumentation checks，加上 Host 断言 `configured_pinned_public_server` 与 `network_restored`。对称 `baseline`、`stress`、`leak`、`soak` 资源任务已实现，具备有界并发、重连节奏、最长 24 小时动态 timeout，以及最多 254 个 wall/CPU/PSS/heap/FD/thread sample。两个 backend 已在同一台 API 31、4 KiB page 的物理 `arm64-v8a` 设备上通过 working-tree `core`、`lifecycle`、有界资源 profile 与 60 秒 soak smoke。随后，clean exact 候选 `e429f360f38331875edb1483dc80a3e6062f5cc0` 在该设备上生成成对且通过 cross-validation 的 GoMobile/Kotlin JSON summary，覆盖默认 `baseline`、100 轮/concurrency 8 `stress`、200 次重连 `leak` 和 1 小时 `soak`；全部 summary 都绑定 clean 候选与 APK 字节身份、完成清理并保持 `authorizesKotlinDefault=false`。这已关闭单设备 exact 资源执行缺口，但尚未完成阈值评审、所需设备矩阵、更长时长 soak 或正式稳定发布观察。本次观察到 Kotlin PSS 较低而进程 CPU 较高，只作为评审输入，不是已接受的 pass/fail 标准。
+- 已实现正式签名的 `kotlinDefaultReleaseDryRun` 与 backend-aware release verifier，且未改变正式 backend。Dry run 使用公开身份/版本/证书，排除 bridge dependency 与 `libgojni.so`，并校验其他全部 native library；只能由手动 workflow dispatch 选择。稳定 tag 和发布仍只允许 GoMobile。该打包证明仍需实际运行受保护 workflow，也不授权 K7。
 - Provider 管理仍需在支持的真实 Server/provider 版本上做兼容验证，重点包括远程 loopback OAuth 拓扑、真机长 callback 取消，以及 custom-config partial/unknown outcome；global-config deep merge 不提供字段或配置的物理删除。
 - 模型 enabled/hidden 仅是按 server 保存的本机过滤偏好，不代表修改 OpenCode server config。
 - Settings 已包含通用、后台、服务器、Provider 和模型子页，但完整快捷键与其他 Web 设置仍未完成。
@@ -763,7 +820,7 @@ Existing session id
 | SSE 断线或事件乱序 | UI 状态不一致 | 前台恢复和重连后刷新 REST 快照，Store reducer 保持幂等 |
 | STCP 配置提交早于 listener ready | 首次健康检查或项目快照误报失败 | patched frp 暴露真实 revision/epoch listener 状态，Repository 在统一连接边界执行 single-flight `/global/health` |
 | frps 重连或旧异步任务迟到 | 复用失效 listener、旧任务误关新隧道 | per-generation identity/CAS 清理；control epoch 变化后共享恢复，旧 epoch 结果不得发布 |
-| GoMobile 制品不可复现或 API 漂移 | Release 难以审计、回滚或运行时反射失败 | 固定 Go/x-mobile/frp/patch，使用不可变 Maven 坐标、规范化 ZIP、SHA/API/provenance 和 Release 强制门禁 |
+| GoMobile 制品不可复现或 API 漂移 | Release 难以审计、回滚或运行时反射失败 | 固定 Go/x-mobile/frp/patch，使用版本化本地 module graph 与不可变 Maven 坐标，校验无本地路径的 BuildInfo/module digest，并跨不同 checkout 路径逐字节比较隔离 cache 的构建 |
 | 路径格式混乱 | 项目重复、请求失败 | 强制 `PathNormalizer`，所有 Repository 入参统一规范化 |
 | 敏感信息泄露 | 安全事故 | Redactor、日志拦截器、Provider UI 禁止明文回显 |
 | Provider 管理 API/版本或 OAuth 拓扑不匹配 | 认证失败或留下结果不确定的 server-global 配置 | 容错安全投影、保留原 method index 与 scope、有界可取消 callback、loopback 警告、disabled 分阶段写入、类型化 partial/unknown outcome，以及真实版本/设备验证 |
@@ -776,11 +833,13 @@ Existing session id
 
 建议按以下顺序推进当前缺口：
 
-1. 在真实服务与设备上验证 SSE 长时间断网、系统前后台、全局/项目重复事件和 STCP control epoch 切换，并根据结果继续加固。
-2. 在支持的真实 Server/provider 版本与设备上验证 Provider 管理，重点覆盖远程 loopback OAuth、长 callback 取消，以及 custom-config 分阶段提交出现 partial/unknown outcome 后的恢复。
-3. 在真实紧凑设备上验证项目文件 picker 与纯上下文发送/reset，包括 route 切换、IME、200% 字体、TalkBack 和两种主题；设备测试门禁建立后补充 instrumentation 覆盖。
-4. 继续逐端点审计 session messages 之外的潜在大 REST 响应，以及 native 返回值、图片解码和真实设备大输入失败路径，保持所有外部输入先有界后解析。
-5. 决定独立 Review route 的产品价值；在此之前以会话详情 Changes tab 为唯一已完成功能。
-6. 再评估 Shell、share、workspace/worktree 和 PTY/terminal；Room、Hilt、业务多模块仅在触发条件成立且经确认后启动。
+1. 在 reviewed candidate 上运行新的 exact-candidate Host 证据链，并冻结不含敏感细节的有界 artifact。保持 17 个 instrumentation + 2 个 Host assertion 的 external 契约、`topology=external`、`networkSwitchProven=true`、clean commit/tree 与 APK 字节身份、清理成功和 `authorizesKotlinDefault=false`。
+2. 评审单设备 exact GoMobile/Kotlin `baseline`、重连/并发 `stress`、`leak` 与 1 小时 `soak` 证据并定义验收阈值，再扩展到所需设备矩阵与更长时长 soak，之后才能把它视为门禁。
+3. 运行并评审受保护的签名 Kotlin-default dry-run workflow，再定义稳定观察周期和回滚标准。创建或切换 Kotlin-default 正式 Release 分支前仍需显式授权。
+4. 在支持的真实 Server/provider 版本与设备上验证 Provider 管理，重点覆盖远程 loopback OAuth、长 callback 取消，以及 custom-config 分阶段提交出现 partial/unknown outcome 后的恢复。
+5. 在真实紧凑设备上验证项目文件 picker 与纯上下文发送/reset，包括 route 切换、IME、200% 字体、TalkBack 和两种主题；设备测试门禁建立后补充 instrumentation 覆盖。
+6. 继续逐端点审计 session messages 之外的潜在大 REST 响应，以及 native 返回值、图片解码和真实设备大输入失败路径，保持所有外部输入先有界后解析。
+7. 决定独立 Review route 的产品价值；在此之前以会话详情 Changes tab 为唯一已完成功能。
+8. 再评估 Shell、share、workspace/worktree 和 PTY/terminal；Room、Hilt、业务多模块仅在触发条件成立且经确认后启动。
 
 历史 P0/P1/P2 仅用于理解功能演进，不再作为当前完成度或工程结构的权威描述。

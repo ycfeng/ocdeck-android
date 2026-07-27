@@ -1,11 +1,13 @@
 package io.github.ycfeng.ocdeck.data.server
 
 import io.github.ycfeng.ocdeck.core.network.OpenCodeApiFactory
+import io.github.ycfeng.ocdeck.core.network.OpenCodeConnectionClient
 import io.github.ycfeng.ocdeck.core.network.OpenCodeFailure
 import io.github.ycfeng.ocdeck.core.network.OpenCodeFailureClassifier
 import io.github.ycfeng.ocdeck.core.network.OpenCodeRequestException
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpConfigLease
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpConfigLeaseExpiredException
+import io.github.ycfeng.ocdeck.core.network.FrpcTlsServerCertificatePinUnavailableException
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorCredentials
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorGeneration
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorManager
@@ -72,6 +74,8 @@ interface OpenCodeServerRepository {
     suspend fun setModelHidden(serverId: String, providerId: String, modelId: String, hidden: Boolean)
 }
 
+private const val MAXIMUM_CONNECTION_PREPARATION_ATTEMPTS = 3
+
 class ServerRepository(
     private val preferencesStore: ServerConfigStore,
     private val credentialStore: CredentialStore,
@@ -87,6 +91,7 @@ class ServerRepository(
     private val serverConfigMutationLock = Mutex()
     private val connectionConfigLocks = ConcurrentHashMap<String, Mutex>()
     private val connectionConfigEpochs = ConcurrentHashMap<String, AtomicLong>()
+    private val connectionClients = ConcurrentHashMap<String, CachedConnectionClient>()
 
     fun observeServers(): Flow<List<ServerConfig>> = preferencesStore.servers
 
@@ -123,7 +128,8 @@ class ServerRepository(
         ?: throw OpenCodeRequestException(OpenCodeFailure.OperationRejected())
 
     override suspend fun getConnection(serverId: String): ServerConnection {
-        while (true) {
+        repeat(MAXIMUM_CONNECTION_PREPARATION_ATTEMPTS) attempt@{
+            currentCoroutineContext().ensureActive()
             val snapshot = connectionConfigLock(serverId).withLock {
                 val persistedServer = getServer(serverId)
                 val server = persistedServer.copy(baseUrl = normalizeServerBaseUrl(persistedServer.baseUrl))
@@ -142,27 +148,49 @@ class ServerRepository(
             }
 
             try {
-                if (prepareSshHostKey(snapshot)) continue
-                val connection = openConnection(snapshot)
+                if (prepareSshHostKey(snapshot)) return@attempt
+                val prepared = prepareConnection(snapshot)
                 val stcpTransportCurrent = snapshot.stcpConfigLease?.let {
-                    val generation = connection.stcpGeneration
-                    val controlEpoch = connection.stcpControlEpoch
+                    val generation = prepared.stcpGeneration
+                    val controlEpoch = prepared.stcpControlEpoch
                     generation != null && controlEpoch != null &&
                         frpcStcpVisitorManager.isReadyTransportCurrent(generation, controlEpoch)
                 } ?: true
-                val isCurrent = connectionConfigLock(serverId).withLock {
+                val connection = connectionConfigLock(serverId).withLock {
                     val stcpLeaseCurrent = snapshot.stcpConfigLease?.let { lease ->
                         frpcStcpVisitorManager.isConfigLeaseCurrent(lease)
                     } ?: true
-                    connectionConfigEpoch(serverId) == snapshot.configEpoch && stcpLeaseCurrent && stcpTransportCurrent
+                    val isCurrent = connectionConfigEpoch(serverId) == snapshot.configEpoch &&
+                        stcpLeaseCurrent &&
+                        stcpTransportCurrent
+                    if (!isCurrent) return@withLock null
+
+                    val cached = connectionClients[serverId]
+                    if (cached != null && prepared.transportIdentity.isOlderThan(cached.transportIdentity)) {
+                        return@withLock null
+                    }
+                    val connectionClient = if (cached?.matches(prepared) == true) {
+                        cached.client
+                    } else {
+                        val replacement = apiFactory.createConnectionClient(
+                            prepared.server,
+                            prepared.password,
+                            prepared.effectiveBaseUrl,
+                        )
+                        connectionClients[serverId] = CachedConnectionClient(prepared, replacement)
+                        cached?.client?.closeBestEffort()
+                        replacement
+                    }
+                    prepared.toServerConnection(connectionClient)
                 }
-                if (isCurrent) return connection
+                if (connection != null) return connection
             } catch (_: FrpcStcpConfigLeaseExpiredException) {
                 // The server changed while this snapshot was opening. Retry with the latest config.
             } catch (_: SshTunnelGenerationSupersededException) {
                 // The SSH config epoch changed while this snapshot was opening. Retry with the latest config.
             }
         }
+        throw ServerTransportUnstableException()
     }
 
     override suspend fun getSseConnection(serverId: String): SseConnection = getConnection(serverId).let { connection ->
@@ -174,7 +202,18 @@ class ServerRepository(
         )
     }
 
-    suspend fun migrateLegacyDefaultServer() = preferencesStore.migrateLegacyDefaultServer()
+    suspend fun migrateLegacyDefaultServer() {
+        serverConfigMutationLock.withLock {
+            val previousIds = preferencesStore.getServers().mapTo(mutableSetOf()) { it.id }
+            preferencesStore.migrateLegacyDefaultServer()
+            val currentIds = preferencesStore.getServers().mapTo(mutableSetOf()) { it.id }
+            (previousIds - currentIds).forEach { removedServerId ->
+                connectionConfigLock(removedServerId).withLock {
+                    advanceConnectionConfigLocked(removedServerId)
+                }
+            }
+        }
+    }
 
     suspend fun deleteServer(server: ServerConfig) {
         val aliasesToCleanup = serverConfigMutationLock.withLock {
@@ -182,7 +221,7 @@ class ServerRepository(
                 val persisted = preferencesStore.getServers().firstOrNull { it.id == server.id } ?: server
                 currentCoroutineContext().ensureActive()
                 val invalidateRuntime: suspend () -> Unit = {
-                    val minimumConfigEpoch = bumpConnectionConfigEpoch(server.id)
+                    val minimumConfigEpoch = advanceConnectionConfigLocked(server.id)
                     runtimeInvalidator.invalidate(
                         serverId = server.id,
                         minimumConfigEpoch = minimumConfigEpoch,
@@ -212,40 +251,42 @@ class ServerRepository(
         val normalizedBaseUrl = normalizeServerBaseUrl(baseUrl)
         val id = UUID.randomUUID().toString()
         return serverConfigMutationLock.withLock {
-            commitCandidateServer(
-                previous = null,
-                build = { candidates ->
-                    val passwordKey = password
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { candidates.write(CredentialPurpose.OpenCodePassword, it) }
-                    val sshTunnelConfig = sshTunnel
-                        ?.takeIf { it.enabled }
-                        ?.toConfig(current = null, candidates = candidates)
-                    val frpcStcpVisitorConfig = frpcStcpVisitor
-                        ?.takeIf { it.enabled }
-                        ?.toConfig(current = null, candidates = candidates)
-                    requireSingleTunnel(sshTunnelConfig, frpcStcpVisitorConfig)
-                    ServerConfig(
-                        id = id,
-                        name = name.takeIf { it.isNotBlank() } ?: normalizedBaseUrl.toDisplayName(),
-                        baseUrl = normalizedBaseUrl,
-                        username = username?.takeIf { it.isNotBlank() },
-                        passwordKey = passwordKey,
-                        sshTunnel = sshTunnelConfig,
-                        frpcStcpVisitor = frpcStcpVisitorConfig,
-                    )
-                },
-                onCommitted = { committed -> connectionConfigEpoch(committed.id) },
-                onUnknown = { uncertain ->
-                    val minimumConfigEpoch = bumpConnectionConfigEpoch(uncertain.id)
-                    runtimeInvalidator.invalidate(
-                        serverId = uncertain.id,
-                        minimumConfigEpoch = minimumConfigEpoch,
-                        ssh = uncertain.sshTunnel != null,
-                        stcp = uncertain.frpcStcpVisitor != null,
-                    )
-                },
-            )
+            connectionConfigLock(id).withLock {
+                commitCandidateServer(
+                    previous = null,
+                    build = { candidates ->
+                        val passwordKey = password
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { candidates.write(CredentialPurpose.OpenCodePassword, it) }
+                        val sshTunnelConfig = sshTunnel
+                            ?.takeIf { it.enabled }
+                            ?.toConfig(current = null, candidates = candidates)
+                        val frpcStcpVisitorConfig = frpcStcpVisitor
+                            ?.takeIf { it.enabled }
+                            ?.toConfig(current = null, candidates = candidates)
+                        requireSingleTunnel(sshTunnelConfig, frpcStcpVisitorConfig)
+                        ServerConfig(
+                            id = id,
+                            name = name.takeIf { it.isNotBlank() } ?: normalizedBaseUrl.toDisplayName(),
+                            baseUrl = normalizedBaseUrl,
+                            username = username?.takeIf { it.isNotBlank() },
+                            passwordKey = passwordKey,
+                            sshTunnel = sshTunnelConfig,
+                            frpcStcpVisitor = frpcStcpVisitorConfig,
+                        )
+                    },
+                    onCommitted = { committed -> connectionConfigEpoch(committed.id) },
+                    onUnknown = { uncertain ->
+                        val minimumConfigEpoch = advanceConnectionConfigLocked(uncertain.id)
+                        runtimeInvalidator.invalidate(
+                            serverId = uncertain.id,
+                            minimumConfigEpoch = minimumConfigEpoch,
+                            ssh = uncertain.sshTunnel != null,
+                            stcp = uncertain.frpcStcpVisitor != null,
+                        )
+                    },
+                )
+            }
         }
     }
 
@@ -277,7 +318,7 @@ class ServerRepository(
                     }
                     ?: false
                 val invalidateRuntime: suspend (ServerConfig) -> Unit = { candidate ->
-                    val minimumConfigEpoch = bumpConnectionConfigEpoch(candidate.id)
+                    val minimumConfigEpoch = advanceConnectionConfigLocked(candidate.id)
                     val sshConnectionChanged =
                         current.baseUrl != candidate.baseUrl ||
                             current.sshTunnel != candidate.sshTunnel ||
@@ -346,7 +387,7 @@ class ServerRepository(
         Result.failure(OpenCodeFailureClassifier.toRequestException(throwable))
     }
 
-    private suspend fun openConnection(snapshot: ConnectionConfigSnapshot): ServerConnection {
+    private suspend fun prepareConnection(snapshot: ConnectionConfigSnapshot): PreparedConnection {
         val server = snapshot.server
         val sshConfig = server.sshTunnel
         val tunnel = sshConfig?.let { config ->
@@ -365,13 +406,10 @@ class ServerRepository(
             )
         }
         val effectiveBaseUrl = tunnel?.effectiveBaseUrl ?: stcpResult?.tunnel?.effectiveBaseUrl ?: server.baseUrl
-        val connectionClient = apiFactory.createConnectionClient(server, snapshot.password, effectiveBaseUrl)
-        return ServerConnection(
+        return PreparedConnection(
             server = server,
             password = snapshot.password,
             effectiveBaseUrl = effectiveBaseUrl,
-            api = connectionClient.api,
-            providerOAuthApi = connectionClient.providerOAuthApi,
             stcpGeneration = stcpResult?.generation,
             stcpControlEpoch = stcpResult?.tunnel?.controlEpoch,
             transportIdentity = ServerTransportIdentity(
@@ -380,7 +418,6 @@ class ServerRepository(
                 stcpControlEpoch = stcpResult?.tunnel?.controlEpoch,
             ),
             readinessHealth = stcpResult?.readinessHealth,
-            sessionMessagesTransport = connectionClient.sessionMessagesTransport,
         )
     }
 
@@ -423,7 +460,7 @@ class ServerRepository(
                         )
                     },
                     onCommitted = { committed ->
-                        val minimumConfigEpoch = bumpConnectionConfigEpoch(committed.id)
+                        val minimumConfigEpoch = advanceConnectionConfigLocked(committed.id)
                         runtimeInvalidator.invalidate(
                             serverId = committed.id,
                             minimumConfigEpoch = minimumConfigEpoch,
@@ -432,7 +469,7 @@ class ServerRepository(
                         )
                     },
                     onUnknown = { uncertain ->
-                        val minimumConfigEpoch = bumpConnectionConfigEpoch(uncertain.id)
+                        val minimumConfigEpoch = advanceConnectionConfigLocked(uncertain.id)
                         runtimeInvalidator.invalidate(
                             serverId = uncertain.id,
                             minimumConfigEpoch = minimumConfigEpoch,
@@ -456,6 +493,20 @@ class ServerRepository(
     private fun bumpConnectionConfigEpoch(serverId: String): Long =
         connectionConfigEpochs.computeIfAbsent(serverId) { AtomicLong(1L) }.incrementAndGet()
 
+    private fun advanceConnectionConfigLocked(serverId: String): Long {
+        val nextEpoch = bumpConnectionConfigEpoch(serverId)
+        connectionClients.remove(serverId)?.client?.closeBestEffort()
+        return nextEpoch
+    }
+
+    private fun OpenCodeConnectionClient.closeBestEffort() {
+        try {
+            close()
+        } catch (_: Exception) {
+            // Configuration and transport invalidation remain authoritative if client cleanup fails.
+        }
+    }
+
     private fun String.toDisplayName(): String = removePrefix("http://")
         .removePrefix("https://")
         .trimEnd('/')
@@ -476,6 +527,9 @@ class ServerRepository(
 
     private suspend fun ServerFrpcStcpVisitorConfig.toCredentials(): FrpcStcpVisitorCredentials = FrpcStcpVisitorCredentials(
         authToken = authTokenKey?.let { credentialStore.getSecret(it) },
+        tlsServerCertificateSha256 = tlsServerCertificateSha256Key?.let { key ->
+            credentialStore.getSecret(key) ?: throw FrpcTlsServerCertificatePinUnavailableException()
+        },
         secretKey = credentialStore.getSecret(secretKeyKey),
     )
 
@@ -565,17 +619,26 @@ class ServerRepository(
         require(serverPort in 1..65_535) { "frps server port is invalid" }
         require(serverName.isNotBlank()) { "STCP server name is required" }
         require(bindPort in 1..65_535) { "STCP local bind port is invalid" }
+        val normalizedServerAddr = serverAddr.trim()
+        val sameEndpoint = current != null && current.serverPort == serverPort &&
+            current.serverAddr.trim().equals(normalizedServerAddr, ignoreCase = true)
         val authTokenKey = authToken.takeIf { it.isNotBlank() }
             ?.let { candidates.write(CredentialPurpose.FrpcAuthToken, it) }
             ?: current?.authTokenKey
+        val tlsServerCertificateSha256Key = tlsServerCertificateSha256
+            ?.takeIf { it.isNotBlank() }
+            ?.also { require(TLS_SERVER_CERTIFICATE_SHA256.matches(it)) { "frps TLS certificate pin is invalid" } }
+            ?.let { candidates.write(CredentialPurpose.FrpcTlsServerCertificateSha256, it) }
+            ?: current?.tlsServerCertificateSha256Key?.takeIf { sameEndpoint }
         val secretKeyKey = secretKey.takeIf { it.isNotBlank() }
             ?.let { candidates.write(CredentialPurpose.FrpcSecretKey, it) }
             ?: current?.secretKeyKey
             ?: throw IllegalArgumentException("STCP secret key is required")
         return ServerFrpcStcpVisitorConfig(
-            serverAddr = serverAddr.trim(),
+            serverAddr = normalizedServerAddr,
             serverPort = serverPort,
             authTokenKey = authTokenKey,
+            tlsServerCertificateSha256Key = tlsServerCertificateSha256Key,
             user = user?.takeIf { it.isNotBlank() }?.trim(),
             serverUser = serverUser?.takeIf { it.isNotBlank() }?.trim(),
             serverName = serverName.trim(),
@@ -593,6 +656,7 @@ class ServerRepository(
         sshTunnel?.passphraseKey,
         sshTunnel?.hostFingerprintKey,
         frpcStcpVisitor?.authTokenKey,
+        frpcStcpVisitor?.tlsServerCertificateSha256Key,
         frpcStcpVisitor?.secretKeyKey,
     )
 
@@ -775,6 +839,7 @@ class ServerRepository(
         SshPassphrase("ssh-passphrase"),
         SshHostFingerprint("ssh-host-fingerprint"),
         FrpcAuthToken("frpc-auth-token"),
+        FrpcTlsServerCertificateSha256("frpc-tls-server-certificate-sha256"),
         FrpcSecretKey("frpc-secret-key"),
     }
 
@@ -851,7 +916,10 @@ class NewServerFrpcStcpVisitor(
     val bindPort: Int,
     val transportProtocol: FrpcTransportProtocol,
     val wireProtocol: FrpcWireProtocol,
+    val tlsServerCertificateSha256: String? = null,
 )
+
+private val TLS_SERVER_CERTIFICATE_SHA256 = Regex("[0-9a-f]{64}")
 
 data class ServerConnection(
     val server: ServerConfig,
@@ -882,6 +950,55 @@ private class ConnectionConfigSnapshot(
     val stcpConfigLease: FrpcStcpConfigLease?,
     val configEpoch: Long,
 )
+
+private class PreparedConnection(
+    val server: ServerConfig,
+    val password: String?,
+    val effectiveBaseUrl: String,
+    val stcpGeneration: FrpcStcpVisitorGeneration?,
+    val stcpControlEpoch: Long?,
+    val transportIdentity: ServerTransportIdentity,
+    val readinessHealth: ServerHealthDto?,
+) {
+    fun toServerConnection(client: OpenCodeConnectionClient): ServerConnection = ServerConnection(
+        server = server,
+        password = password,
+        effectiveBaseUrl = effectiveBaseUrl,
+        api = client.api,
+        providerOAuthApi = client.providerOAuthApi,
+        stcpGeneration = stcpGeneration,
+        stcpControlEpoch = stcpControlEpoch,
+        transportIdentity = transportIdentity,
+        readinessHealth = readinessHealth,
+        sessionMessagesTransport = client.sessionMessagesTransport,
+    )
+
+    override fun toString(): String =
+        "PreparedConnection(serverId=<redacted>, password=${if (password == null) "null" else "<redacted>"}, " +
+            "effectiveBaseUrl=<redacted>, stcpGenerationPresent=${stcpGeneration != null}, " +
+            "stcpControlEpochPresent=${stcpControlEpoch != null}, transportIdentity=$transportIdentity, " +
+            "readinessHealthPresent=${readinessHealth != null})"
+}
+
+private class CachedConnectionClient(
+    prepared: PreparedConnection,
+    val client: OpenCodeConnectionClient,
+) {
+    private val server = prepared.server
+    private val password = prepared.password
+    private val effectiveBaseUrl = prepared.effectiveBaseUrl
+    val transportIdentity = prepared.transportIdentity
+
+    fun matches(prepared: PreparedConnection): Boolean =
+        server == prepared.server &&
+            password == prepared.password &&
+            effectiveBaseUrl == prepared.effectiveBaseUrl &&
+            transportIdentity == prepared.transportIdentity
+
+    override fun toString(): String =
+        "CachedConnectionClient(serverId=<redacted>, password=${if (password == null) "null" else "<redacted>"}, " +
+            "effectiveBaseUrl=<redacted>, transportIdentity=$transportIdentity, clientPresent=true)"
+}
 
 private class CommittedServerMutation(
     val server: ServerConfig,

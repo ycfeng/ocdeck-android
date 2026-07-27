@@ -49,6 +49,7 @@ data class ServerFrpcStcpVisitorConfig(
     val serverAddr: String,
     val serverPort: Int = 7000,
     val authTokenKey: String? = null,
+    val tlsServerCertificateSha256Key: String? = null,
     val user: String? = null,
     val serverUser: String? = null,
     val serverName: String,
@@ -60,6 +61,7 @@ data class ServerFrpcStcpVisitorConfig(
     override fun toString(): String =
         "ServerFrpcStcpVisitorConfig(serverAddr=$REDACTED, serverPort=$serverPort, " +
             "authTokenKey=${redactedIfPresent(authTokenKey)}, user=${redactedIfPresent(user)}, " +
+            "tlsServerCertificateSha256Key=${redactedIfPresent(tlsServerCertificateSha256Key)}, " +
             "serverUser=${redactedIfPresent(serverUser)}, serverName=$REDACTED, " +
             "secretKeyKey=$REDACTED, bindPort=$bindPort, transportProtocol=$transportProtocol, " +
             "wireProtocol=$wireProtocol)"

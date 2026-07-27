@@ -92,6 +92,9 @@ class AddServerViewModel(
     fun onFrpcServerAddrChanged(value: String) = _uiState.update { it.copy(frpcServerAddr = value, error = null) }
     fun onFrpcServerPortChanged(value: String) = _uiState.update { it.copy(frpcServerPort = value, error = null) }
     fun onFrpcAuthTokenChanged(value: String) = _uiState.update { it.copy(frpcAuthToken = value, error = null) }
+    fun onFrpcTlsServerCertificateSha256Changed(value: String) = _uiState.update {
+        it.copy(frpcTlsServerCertificateSha256 = value, error = null)
+    }
     fun onFrpcUserChanged(value: String) = _uiState.update { it.copy(frpcUser = value, error = null) }
     fun onFrpcServerUserChanged(value: String) = _uiState.update { it.copy(frpcServerUser = value, error = null) }
     fun onFrpcServerNameChanged(value: String) = _uiState.update { it.copy(frpcServerName = value, error = null) }
@@ -275,10 +278,20 @@ class AddServerViewModel(
         if (frpcServerAddr.isBlank()) return fail(UiText.Resource(R.string.server_error_frpc_server_addr_empty))
         if (frpcServerName.isBlank()) return fail(UiText.Resource(R.string.server_error_frpc_server_name_empty))
         if (frpcSecretKey.isBlank() && !hasSavedFrpcSecretKey) return fail(UiText.Resource(R.string.server_error_frpc_secret_key_empty))
+        val parsedServerPort = parsePort(frpcServerPort, R.string.server_error_frpc_server_port_range) ?: return null
+        val normalizedTlsPin = frpcTlsServerCertificateSha256.trim()
+        if (normalizedTlsPin.isNotEmpty() && !TLS_SERVER_CERTIFICATE_SHA256.matches(normalizedTlsPin)) {
+            return fail(UiText.Resource(R.string.server_error_frpc_tls_certificate_pin_invalid))
+        }
+        val endpointChanged = originalFrpcServerPort != parsedServerPort ||
+            !originalFrpcServerAddr.orEmpty().trim().equals(frpcServerAddr.trim(), ignoreCase = true)
+        if (normalizedTlsPin.isEmpty() && hasSavedFrpcTlsServerCertificateSha256 && endpointChanged) {
+            return fail(UiText.Resource(R.string.server_error_frpc_tls_certificate_pin_required_for_changed_endpoint))
+        }
         return NewServerFrpcStcpVisitor(
             enabled = true,
             serverAddr = frpcServerAddr,
-            serverPort = parsePort(frpcServerPort, R.string.server_error_frpc_server_port_range) ?: return null,
+            serverPort = parsedServerPort,
             authToken = frpcAuthToken,
             user = frpcUser,
             serverUser = frpcServerUser,
@@ -287,6 +300,7 @@ class AddServerViewModel(
             bindPort = parsePort(frpcBindPort, R.string.server_error_frpc_bind_port_range) ?: return null,
             transportProtocol = frpcTransportProtocol,
             wireProtocol = frpcWireProtocol,
+            tlsServerCertificateSha256 = normalizedTlsPin,
         )
     }
 
@@ -339,6 +353,7 @@ class AddServerViewModel(
             frpcServerAddr = stcp?.serverAddr.orEmpty(),
             frpcServerPort = stcp?.serverPort?.toString() ?: "7000",
             frpcAuthToken = "",
+            frpcTlsServerCertificateSha256 = "",
             frpcUser = stcp?.user.orEmpty(),
             frpcServerUser = stcp?.serverUser.orEmpty(),
             frpcServerName = stcp?.serverName.orEmpty(),
@@ -354,7 +369,10 @@ class AddServerViewModel(
             originalSshHost = tunnel?.host,
             originalSshPort = tunnel?.port,
             hasSavedFrpcAuthToken = stcp?.authTokenKey != null,
+            hasSavedFrpcTlsServerCertificateSha256 = stcp?.tlsServerCertificateSha256Key != null,
             hasSavedFrpcSecretKey = stcp?.secretKeyKey != null,
+            originalFrpcServerAddr = stcp?.serverAddr,
+            originalFrpcServerPort = stcp?.serverPort,
             isLoading = false,
             error = if (displayBaseUrl == null) UiText.Resource(R.string.server_error_url_invalid) else null,
         )
@@ -385,6 +403,7 @@ data class AddServerUiState(
     val frpcServerAddr: String = "",
     val frpcServerPort: String = "7000",
     val frpcAuthToken: String = "",
+    val frpcTlsServerCertificateSha256: String = "",
     val frpcUser: String = "",
     val frpcServerUser: String = "",
     val frpcServerName: String = "",
@@ -400,7 +419,10 @@ data class AddServerUiState(
     val originalSshHost: String? = null,
     val originalSshPort: Int? = null,
     val hasSavedFrpcAuthToken: Boolean = false,
+    val hasSavedFrpcTlsServerCertificateSha256: Boolean = false,
     val hasSavedFrpcSecretKey: Boolean = false,
+    val originalFrpcServerAddr: String? = null,
+    val originalFrpcServerPort: Int? = null,
     val isLoading: Boolean = false,
     val isSaving: Boolean = false,
     val isReadingPrivateKey: Boolean = false,
@@ -416,6 +438,7 @@ data class AddServerUiState(
             "hasSavedOpenCodePassword=$hasSavedOpenCodePassword, hasSavedSshPassword=$hasSavedSshPassword, " +
             "hasSavedPrivateKey=$hasSavedPrivateKey, hasSavedPrivateKeyPassphrase=$hasSavedPrivateKeyPassphrase, " +
             "hasSavedHostFingerprint=$hasSavedHostFingerprint, hasSavedFrpcAuthToken=$hasSavedFrpcAuthToken, " +
+            "hasSavedFrpcTlsServerCertificateSha256=$hasSavedFrpcTlsServerCertificateSha256, " +
             "hasSavedFrpcSecretKey=$hasSavedFrpcSecretKey, isLoading=$isLoading, isSaving=$isSaving, " +
             "showCleartextHttpCredentialsWarning=$showCleartextHttpCredentialsWarning)"
 }
@@ -441,6 +464,7 @@ private fun AddServerUiState.requiresCleartextHttpCredentialsWarning(normalizedB
         (password.isNotBlank() || hasSavedOpenCodePassword)
 
 private const val DEFAULT_TUNNEL_BASE_URL = "http://127.0.0.1:4096"
+private val TLS_SERVER_CERTIFICATE_SHA256 = Regex("[0-9a-f]{64}")
 
 private val SshAuthMethod.usesPassword: Boolean
     get() = this == SshAuthMethod.Password || this == SshAuthMethod.PasswordAndPrivateKey

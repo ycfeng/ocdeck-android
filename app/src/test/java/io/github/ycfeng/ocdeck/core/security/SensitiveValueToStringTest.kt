@@ -105,6 +105,7 @@ class SensitiveValueToStringTest {
         val stcpConfig = ServerFrpcStcpVisitorConfig(
             serverAddr = SYNTHETIC_HOST,
             authTokenKey = SYNTHETIC_CREDENTIAL_ALIAS,
+            tlsServerCertificateSha256Key = SYNTHETIC_CREDENTIAL_ALIAS,
             user = SYNTHETIC_SERVER_TEXT,
             serverUser = SYNTHETIC_SERVER_TEXT,
             serverName = SYNTHETIC_SERVER_TEXT,

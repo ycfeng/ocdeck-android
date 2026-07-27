@@ -50,6 +50,8 @@
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
+这是普通基线，不要求每项文档、UI 或小型 App 改动都构建 Canary 或 Kotlin Release-Like。改动涉及 STCP backend 选择、纯 Kotlin backend、`AppContainer` STCP 装配、共享 manager 集成或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleKotlinRelease` 与 `:app:verifyPureKotlinPackaging`。
+
 ## 架构规则
 
 - 业务代码保持在单一 `:app` 模块。`:frpc-stcp-visitor` 是已批准的 native bridge 边界，不代表可以继续拆分业务 Gradle 模块。
@@ -78,19 +80,23 @@
 :app:assembleDebug
 ```
 
+普通开发中的 Canary 与 Kotlin Release-Like 任务按影响范围执行，不是所有改动的统一最低要求；STCP backend/选择改动必须运行，完整 bridge/等价 CI 门禁也始终包含这些任务。
+
 如果改动涉及 `frpc-stcp-visitor-go/`、`frpc-stcp-visitor/`、frp patch、bridge API、bridge 依赖或 bridge 版本，还必须执行与 CI 等价的额外门禁：
 
 ```text
 frpc-stcp-visitor-go: go run ./cmd/preparefrp
 仓库根目录: python3 .github/scripts/audit-third-party.py
 仓库根目录: python3 .github/scripts/audit-community.py
+仓库根目录: python3 .github/scripts/check-go-race-environment.py
 frpc-stcp-visitor-go: go test -race -modfile=build/frp-patched.mod ./...
 frpc-stcp-visitor-go/build/frp-v0.69.1-p1: go test -race ./client/...
 仓库根目录: bash frpc-stcp-visitor-go/build-aar.sh
-仓库根目录: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug -PrequireGoMobileBridge=true
+仓库根目录: ./gradlew :frpc-stcp-visitor:frpcInteropTest
+仓库根目录: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。bridge 字节发生变化时必须递增 bridge 版本；不得在同一 Maven 坐标下发布不同字节。
+Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。Go race 门禁必须在具备受支持 CGO 工具链的原生 Windows、WSL2、原生 Linux 或 Ubuntu CI runner 上运行。WSL1 的 socket 翻译可能允许重复绑定 loopback listener，不能作为替代环境；环境检查会在测试前给出明确错误并失败。`frpcInteropTest` 只会显式下载当前主机对应、经哈希固定的官方 frp release asset，保存在 Gradle cache 中，并在发布签名 environment 之外运行；普通单元测试不会启动它。完整 Android 门禁会验证 Debug/GoMobile 装配，并验证无 bridge 的 Canary/Kotlin 与 Kotlin Release-Like/Kotlin runtime classpath 和 APK；两个 Kotlin 验证 APK 都不会因此成为发布制品。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。bridge 字节发生变化时必须递增 bridge 版本；不得在同一 Maven 坐标下发布不同字节。
 
 ## 敏感信息与测试 Fixture
 

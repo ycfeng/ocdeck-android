@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      run_kotlin_default_release_dry_run:
+        description: Build a non-publishable Kotlin-default APK set with the production identity and signing certificate
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -22,6 +28,7 @@ jobs:
       version_name: ${{ steps.version.outputs.version_name }}
       version_code: ${{ steps.version.outputs.version_code }}
       release_tag: ${{ steps.version.outputs.release_tag }}
+      artifact_profile: ${{ steps.profile.outputs.artifact_profile }}
 
     steps:
       - name: Check out repository and tags
@@ -43,6 +50,29 @@ jobs:
             }
             bash .github/scripts/check-release-version.sh
           fi
+
+      - name: Select artifact profile
+        id: profile
+        shell: bash
+        env:
+          RUN_KOTLIN_DRY_RUN: ${{ github.event.inputs.run_kotlin_default_release_dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            artifact_profile=gomobile-release
+          elif [[ "$RUN_KOTLIN_DRY_RUN" == "true" ]]; then
+            artifact_profile=kotlin-default-release-dry-run
+          else
+            artifact_profile=gomobile-release
+          fi
+          case "$artifact_profile" in
+            gomobile-release|kotlin-default-release-dry-run) ;;
+            *)
+              printf 'unsupported artifact profile: %s\n' "$artifact_profile" >&2
+              exit 1
+              ;;
+          esac
+          printf 'artifact_profile=%s\n' "$artifact_profile" >> "$GITHUB_OUTPUT"
 
       - name: Audit community and documentation metadata
         shell: bash
@@ -148,11 +178,52 @@ jobs:
           overwrite: false
           include-hidden-files: false
 
-  build-release:
-    name: Build and verify signed release
+  frpc-interop:
+    name: Verify fixed-frp Kotlin STCP interoperability
     needs: preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+          cache-read-only: true
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses >/dev/null
+          set -o pipefail
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Run fixed-frp interoperability tests
+        shell: bash
+        run: bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+
+  build-release:
+    name: Build and verify signed release
+    needs:
+      - preflight
+      - frpc-interop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     environment: release
     permissions:
       contents: read
@@ -198,6 +269,10 @@ jobs:
         shell: bash
         run: go run ./cmd/preparefrp
 
+      - name: Validate Go race environment
+        shell: bash
+        run: python3 .github/scripts/check-go-race-environment.py
+
       - name: Audit third-party and legal inventory
         shell: bash
         run: python3 .github/scripts/audit-third-party.py
@@ -212,20 +287,27 @@ jobs:
         shell: bash
         run: go test -race ./client/...
 
-      - name: Build GoMobile bridge twice
+      - name: Verify reproducible GoMobile bridge
         shell: bash
-        run: |
-          bash frpc-stcp-visitor-go/build-aar.sh
-          bash frpc-stcp-visitor-go/build-aar.sh
+        run: bash .github/scripts/verify-bridge-reproducibility.sh
 
-      - name: Run Android tests and build debug APKs
+      - name: Run Android tests and build verification APKs
         shell: bash
         run: >-
           bash ./gradlew --no-daemon
           :frpc-stcp-visitor:checkGoMobileBridgeAar
           :app:testDebugUnitTest
+          :app:testCanaryUnitTest
+          :app:testGoMobileReleaseUnitTest
+          :app:testKotlinReleaseUnitTest
           :frpc-stcp-visitor:testDebugUnitTest
           :app:assembleDebug
+          :app:assembleCanary
+          :app:assembleGoMobileRelease
+          :app:assembleGoMobileReleaseAndroidTest
+          :app:assembleKotlinRelease
+          :app:assembleKotlinReleaseAndroidTest
+          :app:verifyPureKotlinPackaging
           -PrequireGoMobileBridge=true
 
       - name: Decode release keystore
@@ -241,15 +323,33 @@ jobs:
       - name: Build signed APKs
         shell: bash
         env:
+          ARTIFACT_PROFILE: ${{ needs.preflight.outputs.artifact_profile }}
           RELEASE_STORE_FILE: ${{ runner.temp }}/release.jks
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: >-
-          bash ./gradlew --no-daemon
-          :app:validateReleaseSigning
-          :app:assembleRelease
-          -PrequireGoMobileBridge=true
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT_PROFILE" in
+            gomobile-release)
+              gradle_tasks=(:app:assembleRelease)
+              ;;
+            kotlin-default-release-dry-run)
+              gradle_tasks=(
+                :app:testKotlinDefaultReleaseDryRunUnitTest
+                :app:assembleKotlinDefaultReleaseDryRun
+                :app:verifyKotlinDefaultReleaseDryRunPackaging
+              )
+              ;;
+            *)
+              printf 'unsupported artifact profile: %s\n' "$ARTIFACT_PROFILE" >&2
+              exit 1
+              ;;
+          esac
+          bash ./gradlew --no-daemon \
+            :app:validateReleaseSigning \
+            "${gradle_tasks[@]}" \
+            -PrequireGoMobileBridge=true
 
       - name: Verify and stage release assets
         shell: bash
@@ -257,6 +357,7 @@ jobs:
           RELEASE_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 }}
         run: >-
           bash .github/scripts/verify-release-artifacts.sh
+          "${{ needs.preflight.outputs.artifact_profile }}"
           "${{ needs.preflight.outputs.version_name }}"
           "${{ needs.preflight.outputs.version_code }}"
           "$RELEASE_CERT_SHA256"
@@ -265,7 +366,7 @@ jobs:
       - name: Upload verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ocdeck-${{ needs.preflight.outputs.version_name }}-release
+          name: ocdeck-${{ needs.preflight.outputs.version_name }}-${{ needs.preflight.outputs.artifact_profile }}
           path: ${{ runner.temp }}/release-assets/
           if-no-files-found: error
           retention-days: 3
@@ -280,7 +381,10 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: >-
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/') &&
+      needs.preflight.outputs.artifact_profile == 'gomobile-release'
     needs:
       - preflight
       - prepare-notes
@@ -294,7 +398,7 @@ jobs:
       - name: Download verified release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ocdeck-${{ needs.preflight.outputs.version_name }}-release
+          name: ocdeck-${{ needs.preflight.outputs.version_name }}-gomobile-release
           path: release-assets
 
       - name: Download prepared release notes

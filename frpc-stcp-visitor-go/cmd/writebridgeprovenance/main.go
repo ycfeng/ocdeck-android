@@ -1,102 +1,133 @@
 package main
 
 import (
-	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
-	"strings"
+
+	"opencode-frpc-stcp-visitor/internal/reprobuild"
 )
 
 type provenance struct {
-	SchemaVersion       int      `json:"schemaVersion"`
-	BridgeVersion       string   `json:"bridgeVersion"`
-	BridgeAPIVersion    int      `json:"bridgeApiVersion"`
-	GoVersion           string   `json:"goVersion"`
-	XMobileVersion      string   `json:"xMobileVersion"`
-	AndroidAPI          int      `json:"androidApi"`
-	NDKVersion          string   `json:"ndkVersion"`
-	FRPVersion          string   `json:"frpVersion"`
-	FRPPatch            string   `json:"frpPatch"`
-	NativePageAlignment int      `json:"nativePageAlignment"`
-	NativeStripped      bool     `json:"nativeStripped"`
-	NativeABIs          []string `json:"nativeAbis"`
-	AARSHA256           string   `json:"aarSha256,omitempty"`
+	SchemaVersion            int      `json:"schemaVersion"`
+	BridgeVersion            string   `json:"bridgeVersion"`
+	BridgeAPIVersion         int      `json:"bridgeApiVersion"`
+	GoVersion                string   `json:"goVersion"`
+	XMobileVersion           string   `json:"xMobileVersion"`
+	AndroidAPI               int      `json:"androidApi"`
+	NDKVersion               string   `json:"ndkVersion"`
+	FRPVersion               string   `json:"frpVersion"`
+	FRPPatch                 string   `json:"frpPatch"`
+	NativePageAlignment      int      `json:"nativePageAlignment"`
+	NativeStripped           bool     `json:"nativeStripped"`
+	NativeABIs               []string `json:"nativeAbis"`
+	ModuleGraphSHA256        string   `json:"moduleGraphSha256"`
+	ModuleGraphLocalPathFree bool     `json:"moduleGraphLocalPathFree"`
+	AARSHA256                string   `json:"aarSha256,omitempty"`
+}
+
+type nativeValidation struct {
+	SchemaVersion                   int    `json:"schemaVersion"`
+	ModuleGraphSHA256               string `json:"moduleGraphSha256"`
+	ModuleGraphLocalPathFree        bool   `json:"moduleGraphLocalPathFree"`
+	ModuleGraphConsistentAcrossABIs bool   `json:"moduleGraphConsistentAcrossAbis"`
 }
 
 func main() {
 	versionsPath := flag.String("versions", "bridge-versions.properties", "bridge versions properties")
 	outputPath := flag.String("output", "", "output JSON path")
+	nativeReportPath := flag.String("native-report", "", "validated native metadata report")
 	aarSHA256 := flag.String("aar-sha256", "", "optional final AAR SHA-256")
 	flag.Parse()
-	if *outputPath == "" {
-		fmt.Fprintln(os.Stderr, "-output is required")
+	if *outputPath == "" || *nativeReportPath == "" {
+		fmt.Fprintln(os.Stderr, "-output and -native-report are required")
 		os.Exit(2)
 	}
-	values, err := readProperties(*versionsPath)
+	versions, err := reprobuild.ReadVersions(*versionsPath)
 	if err != nil {
 		fail(err)
 	}
-	androidAPI, err := strconv.Atoi(values["ANDROID_API"])
+	native, err := readNativeValidation(*nativeReportPath)
 	if err != nil {
-		fail(fmt.Errorf("invalid ANDROID_API: %w", err))
+		fail(err)
 	}
-	result := provenance{
-		SchemaVersion:       1,
-		BridgeVersion:       values["BRIDGE_VERSION"],
-		BridgeAPIVersion:    2,
-		GoVersion:           values["GO_VERSION"],
-		XMobileVersion:      values["XMOBILE_VERSION"],
-		AndroidAPI:          androidAPI,
-		NDKVersion:          values["NDK_VERSION"],
-		FRPVersion:          "v0.69.1",
-		FRPPatch:            "frp-v0.69.1-p1",
-		NativePageAlignment: 16384,
-		NativeStripped:      true,
-		NativeABIs:          []string{"arm64-v8a", "armeabi-v7a", "x86", "x86_64"},
-		AARSHA256:           *aarSHA256,
+	result, err := buildProvenance(versions, native, *aarSHA256)
+	if err != nil {
+		fail(err)
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
-		fail(err)
+		fail(errors.New("encode bridge provenance"))
 	}
 	data = append(data, '\n')
 	if err := os.WriteFile(*outputPath, data, 0o644); err != nil {
-		fail(err)
+		fail(errors.New("write bridge provenance"))
 	}
 }
 
-func readProperties(path string) (map[string]string, error) {
-	file, err := os.Open(path)
+func readNativeValidation(path string) (nativeValidation, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nativeValidation{}, errors.New("read native validation report")
 	}
-	defer file.Close()
-	values := make(map[string]string)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	var result nativeValidation
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nativeValidation{}, errors.New("decode native validation report")
+	}
+	if result.SchemaVersion != 2 || !isLowerSHA256(result.ModuleGraphSHA256) ||
+		!result.ModuleGraphLocalPathFree || !result.ModuleGraphConsistentAcrossABIs {
+		return nativeValidation{}, errors.New("native validation module graph proof is invalid")
+	}
+	return result, nil
+}
+
+func buildProvenance(
+	versions reprobuild.Versions,
+	native nativeValidation,
+	aarSHA256 string,
+) (provenance, error) {
+	if err := versions.Validate(); err != nil {
+		return provenance{}, err
+	}
+	if native.SchemaVersion != 2 || !isLowerSHA256(native.ModuleGraphSHA256) ||
+		!native.ModuleGraphLocalPathFree || !native.ModuleGraphConsistentAcrossABIs {
+		return provenance{}, errors.New("native validation module graph proof is invalid")
+	}
+	if aarSHA256 != "" && !isLowerSHA256(aarSHA256) {
+		return provenance{}, errors.New("AAR SHA-256 is invalid")
+	}
+	return provenance{
+		SchemaVersion:            2,
+		BridgeVersion:            versions.BridgeVersion,
+		BridgeAPIVersion:         2,
+		GoVersion:                versions.GoVersion,
+		XMobileVersion:           versions.XMobileVersion,
+		AndroidAPI:               versions.AndroidAPI,
+		NDKVersion:               versions.NDKVersion,
+		FRPVersion:               reprobuild.FRPUpstreamVersion,
+		FRPPatch:                 reprobuild.FRPPatchName,
+		NativePageAlignment:      16384,
+		NativeStripped:           true,
+		NativeABIs:               []string{"arm64-v8a", "armeabi-v7a", "x86", "x86_64"},
+		ModuleGraphSHA256:        native.ModuleGraphSHA256,
+		ModuleGraphLocalPathFree: true,
+		AARSHA256:                aarSHA256,
+	}, nil
+}
+
+func isLowerSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
 		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
-			return nil, fmt.Errorf("invalid properties line %q", line)
-		}
-		values[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	for _, key := range []string{"BRIDGE_VERSION", "GO_VERSION", "XMOBILE_VERSION", "ANDROID_API", "NDK_VERSION"} {
-		if values[key] == "" {
-			return nil, errors.New("missing property " + key)
-		}
-	}
-	return values, nil
+	return true
 }
 
 func fail(err error) {

@@ -1,6 +1,7 @@
 package io.github.ycfeng.ocdeck.data.server
 
 import io.github.ycfeng.ocdeck.core.network.FrpcStcpVisitorManager
+import io.github.ycfeng.ocdeck.core.network.FrpcTlsServerCertificatePinUnavailableException
 import io.github.ycfeng.ocdeck.core.network.OpenCodeApiFactory
 import io.github.ycfeng.ocdeck.core.network.OpenCodeHealthProbe
 import io.github.ycfeng.ocdeck.core.network.OpenCodeHealthProbeFactory
@@ -666,6 +667,78 @@ class ServerRepositoryCredentialPersistenceTest {
     }
 
     @Test
+    fun stcpTlsPinUsesPurposeSpecificAliasAndSurvivesSameEndpointUpdate() = runTest {
+        val preferences = FakeServerConfigStore()
+        val credentials = FakeCredentialStore()
+        val repository = repository(preferences, credentials)
+
+        val added = repository.addServer(
+            baseUrl = BASE_URL,
+            name = "Remote",
+            username = null,
+            password = null,
+            frpcStcpVisitor = stcpInput(tlsPin = STCP_TLS_PIN),
+        )
+
+        val pinAlias = requireNotNull(added.frpcStcpVisitor?.tlsServerCertificateSha256Key)
+        assertTrue(pinAlias.contains("credential-candidate-frpc-tls-server-certificate-sha256"))
+        assertEquals(STCP_TLS_PIN, credentials.values[pinAlias])
+
+        val updated = repository.updateServer(
+            serverId = added.id,
+            baseUrl = added.baseUrl,
+            name = added.name,
+            username = added.username,
+            password = null,
+            frpcStcpVisitor = stcpInput(authToken = "", secretKey = "", tlsPin = null),
+        )
+
+        assertEquals(pinAlias, updated.frpcStcpVisitor?.tlsServerCertificateSha256Key)
+        assertEquals(STCP_TLS_PIN, credentials.values[pinAlias])
+    }
+
+    @Test
+    fun stcpEndpointChangeDoesNotInheritTlsPin() = runTest {
+        val current = stcpServer()
+        val preferences = FakeServerConfigStore(listOf(current))
+        val credentials = FakeCredentialStore(stcpSecretValues())
+
+        val updated = repository(preferences, credentials).updateServer(
+            serverId = current.id,
+            baseUrl = current.baseUrl,
+            name = current.name,
+            username = current.username,
+            password = null,
+            frpcStcpVisitor = stcpInput(
+                serverAddr = "203.0.113.8",
+                authToken = "",
+                secretKey = "",
+                tlsPin = null,
+            ),
+        )
+
+        assertNull(updated.frpcStcpVisitor?.tlsServerCertificateSha256Key)
+        assertFalse(credentials.values.containsKey(OLD_STCP_TLS_PIN_ALIAS))
+        assertTrue(credentials.removeAliases.contains(OLD_STCP_TLS_PIN_ALIAS))
+    }
+
+    @Test
+    fun missingPersistedStcpTlsPinFailsClosedBeforeStartingTheVisitor() = runTest {
+        val current = stcpServer()
+        val preferences = FakeServerConfigStore(listOf(current))
+        val credentials = FakeCredentialStore(
+            stcpSecretValues() - OLD_STCP_TLS_PIN_ALIAS,
+        )
+
+        val thrown = captureFailure {
+            repository(preferences, credentials).getConnection(current.id)
+        }
+
+        assertTrue(thrown is FrpcTlsServerCertificatePinUnavailableException)
+        assertFalse(thrown.toString().contains(STCP_TLS_PIN))
+    }
+
+    @Test
     fun secretBearingInputsDoNotExposeValuesThroughToString() {
         val ssh = sshInput(
             authMethod = SshAuthMethod.PasswordAndPrivateKey,
@@ -687,6 +760,7 @@ class ServerRepositoryCredentialPersistenceTest {
             bindPort = 4096,
             transportProtocol = FrpcTransportProtocol.Tcp,
             wireProtocol = FrpcWireProtocol.V1,
+            tlsServerCertificateSha256 = STCP_TLS_PIN,
         )
 
         listOf(
@@ -697,6 +771,7 @@ class ServerRepositoryCredentialPersistenceTest {
         ).forEach { assertFalse(ssh.toString().contains(it)) }
         assertFalse(stcp.toString().contains("frps-auth-value"))
         assertFalse(stcp.toString().contains("stcp-secret-value"))
+        assertFalse(stcp.toString().contains(STCP_TLS_PIN))
     }
 
     @Test
@@ -767,6 +842,41 @@ class ServerRepositoryCredentialPersistenceTest {
         )
     }
 
+    private fun stcpServer(): ServerConfig = directServer().copy(
+        frpcStcpVisitor = ServerFrpcStcpVisitorConfig(
+            serverAddr = "198.51.100.7",
+            serverPort = 7000,
+            authTokenKey = OLD_STCP_AUTH_ALIAS,
+            tlsServerCertificateSha256Key = OLD_STCP_TLS_PIN_ALIAS,
+            user = "mobile",
+            serverUser = "opencode",
+            serverName = "opencode_stcp",
+            secretKeyKey = OLD_STCP_SECRET_ALIAS,
+            bindPort = 5096,
+            wireProtocol = FrpcWireProtocol.V2,
+        ),
+    )
+
+    private fun stcpInput(
+        serverAddr: String = "198.51.100.7",
+        authToken: String = STCP_AUTH_TOKEN,
+        secretKey: String = STCP_SECRET,
+        tlsPin: String? = STCP_TLS_PIN,
+    ): NewServerFrpcStcpVisitor = NewServerFrpcStcpVisitor(
+        enabled = true,
+        serverAddr = serverAddr,
+        serverPort = 7000,
+        authToken = authToken,
+        user = "mobile",
+        serverUser = "opencode",
+        serverName = "opencode_stcp",
+        secretKey = secretKey,
+        bindPort = 5096,
+        transportProtocol = FrpcTransportProtocol.Tcp,
+        wireProtocol = FrpcWireProtocol.V2,
+        tlsServerCertificateSha256 = tlsPin,
+    )
+
     private fun sshInput(
         host: String = "ssh.example.com",
         port: Int = 22,
@@ -799,6 +909,12 @@ class ServerRepositoryCredentialPersistenceTest {
         OLD_PRIVATE_KEY_ALIAS to OLD_PRIVATE_KEY_SECRET,
         OLD_PASSPHRASE_ALIAS to OLD_PASSPHRASE_SECRET,
         OLD_FINGERPRINT_ALIAS to OLD_FINGERPRINT_SECRET,
+    )
+
+    private fun stcpSecretValues(): Map<String, String> = mapOf(
+        OLD_STCP_AUTH_ALIAS to STCP_AUTH_TOKEN,
+        OLD_STCP_TLS_PIN_ALIAS to STCP_TLS_PIN,
+        OLD_STCP_SECRET_ALIAS to STCP_SECRET,
     )
 
     private fun assertAliasesDoNotContainSecrets(aliases: List<String>) {
@@ -840,6 +956,12 @@ class ServerRepositoryCredentialPersistenceTest {
         const val OLD_PASSPHRASE_SECRET = "passphrase-value"
         const val OLD_FINGERPRINT_SECRET = "old-fingerprint-value"
         const val NEW_FINGERPRINT_SECRET = "new-fingerprint-value"
+        const val OLD_STCP_AUTH_ALIAS = "legacy-frpc-auth-token"
+        const val OLD_STCP_TLS_PIN_ALIAS = "legacy-frpc-tls-certificate-pin"
+        const val OLD_STCP_SECRET_ALIAS = "legacy-frpc-secret"
+        const val STCP_AUTH_TOKEN = "stcp-auth-token-value"
+        const val STCP_SECRET = "stcp-secret-value"
+        const val STCP_TLS_PIN = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
 }
 

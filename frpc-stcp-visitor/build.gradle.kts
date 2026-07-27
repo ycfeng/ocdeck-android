@@ -3,6 +3,9 @@ import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Properties
 import java.util.zip.ZipFile
+import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.testing.Test
+import org.gradle.api.file.Directory
 
 plugins {
     alias(libs.plugins.android.library)
@@ -45,6 +48,8 @@ fun sha256(input: InputStream): String {
 
 fun sha256(file: File): String = sha256(file.inputStream())
 
+fun normalizeTextLineEndings(text: String): String = text.replace("\r\n", "\n").replace('\r', '\n')
+
 fun parseJsonObject(file: File): Map<*, *> {
     val parsed = JsonSlurper().parse(file)
     check(parsed is Map<*, *>) { "Expected a JSON object in ${file.absolutePath}" }
@@ -58,11 +63,29 @@ android {
 
     defaultConfig {
         minSdk = 26
+        testApplicationId = "io.github.ycfeng.ocdeck.frpcstcpvisitor.test"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    testOptions {
+        targetSdk = 36
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    buildTypes {
+        create("canary") {
+            initWith(getByName("debug"))
+        }
+        create("kotlinRelease") {
+            initWith(getByName("release"))
+        }
+        create("kotlinDefaultReleaseDryRun") {
+            initWith(getByName("release"))
+        }
     }
 }
 
@@ -71,15 +94,262 @@ kotlin {
 }
 
 dependencies {
+    implementation(libs.bcprov)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
     if (goMobileBridgeAar.exists()) {
-        implementation("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
+        debugRuntimeOnly("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
+        releaseRuntimeOnly("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
     }
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+}
+
+val frpcInteropTest = tasks.register<JavaExec>("frpcInteropTest") {
+    group = "verification"
+    description = "Runs the pinned official-frp interoperability harness for the Kotlin STCP visitor."
+    dependsOn(
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcInteropHarness")
+    classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+    workingDir(rootProject.projectDir)
+    systemProperty(
+        "ocdeck.frp.interop.cacheDir",
+        gradle.gradleUserHomeDir.resolve("caches/ocdeck/frp-interop/v0.69.1").absolutePath,
+    )
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "512m"
+}
+
+val adbExecutable = androidComponents.sdkComponents.adb
+val androidInteropApkDirectory = layout.buildDirectory.dir("outputs/apk/androidTest/debug")
+val appKotlinReleaseApkDirectory = rootProject.layout.projectDirectory.dir("app/build/outputs/apk/kotlinRelease")
+val appKotlinReleaseTestApkDirectory =
+    rootProject.layout.projectDirectory.dir("app/build/outputs/apk/androidTest/kotlinRelease")
+val appGoMobileReleaseApkDirectory = rootProject.layout.projectDirectory.dir("app/build/outputs/apk/goMobileRelease")
+val appGoMobileReleaseTestApkDirectory =
+    rootProject.layout.projectDirectory.dir("app/build/outputs/apk/androidTest/goMobileRelease")
+
+tasks.register<JavaExec>("frpcAndroidInteropTest") {
+    group = "verification"
+    description = "Runs the selected real GoMobile/Kotlin Android STCP differential suite."
+    dependsOn(
+        "checkGoMobileBridgeAar",
+        "assembleDebugAndroidTest",
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcAndroidInteropHost")
+    classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+    workingDir(rootProject.projectDir)
+    systemProperty(
+        "ocdeck.frp.interop.cacheDir",
+        gradle.gradleUserHomeDir.resolve("caches/ocdeck/frp-interop/v0.69.1").absolutePath,
+    )
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "512m"
+    doFirst {
+        systemProperty("ocdeck.frp.androidInterop.adb", adbExecutable.get().asFile.absolutePath)
+        systemProperty(
+            "ocdeck.frp.androidInterop.apkDirectory",
+            androidInteropApkDirectory.get().asFile.absolutePath,
+        )
+        providers.gradleProperty("ocdeck.frp.androidInterop.deviceSerial").orNull?.let { serial ->
+            systemProperty("ocdeck.frp.androidInterop.deviceSerial", serial)
+        }
+        providers.gradleProperty("ocdeck.frp.androidInterop.suite").orNull?.let { suite ->
+            systemProperty("ocdeck.frp.androidInterop.suite", suite)
+        }
+        providers.gradleProperty("ocdeck.frp.androidInterop.summaryFile").orNull?.let { summaryFile ->
+            systemProperty("ocdeck.frp.androidInterop.summaryFile", summaryFile)
+        }
+    }
+}
+
+fun registerAppE2eTask(
+    name: String,
+    backend: String,
+    variantName: String,
+    appApkDirectory: Directory,
+    testApkDirectory: Directory,
+    resourceMode: Boolean,
+) = tasks.register<JavaExec>(name) {
+    group = "verification"
+    description = if (resourceMode) {
+        "Runs the $backend Release-Like App core workload with bounded process resource evidence."
+    } else {
+        "Runs the $backend Release-Like App Store/SSE/snapshot STCP end-to-end gate."
+    }
+    dependsOn(
+        "checkGoMobileBridgeAar",
+        ":app:assemble$variantName",
+        ":app:assemble${variantName}AndroidTest",
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.FrpcAppE2eHost")
+    classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+    workingDir(rootProject.projectDir)
+    systemProperty(
+        "ocdeck.frp.interop.cacheDir",
+        gradle.gradleUserHomeDir.resolve("caches/ocdeck/frp-interop/v0.69.1").absolutePath,
+    )
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "512m"
+    doFirst {
+        systemProperty("ocdeck.frp.appE2e.adb", adbExecutable.get().asFile.absolutePath)
+        systemProperty(
+            "ocdeck.frp.appE2e.appApkDirectory",
+            appApkDirectory.asFile.absolutePath,
+        )
+        systemProperty(
+            "ocdeck.frp.appE2e.testApkDirectory",
+            testApkDirectory.asFile.absolutePath,
+        )
+        systemProperty("ocdeck.frp.appE2e.backend", backend)
+        val configuredDeviceSerial = providers.gradleProperty("ocdeck.frp.appE2e.deviceSerial").orNull
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+        if (resourceMode && configuredDeviceSerial == null) {
+            throw GradleException(
+                "ocdeck.frp.appE2e.deviceSerial is required for resource evidence tasks.",
+            )
+        }
+        configuredDeviceSerial?.let { serial ->
+            systemProperty("ocdeck.frp.appE2e.deviceSerial", serial)
+        }
+        if (resourceMode) {
+            systemProperty("ocdeck.frp.appE2e.suite", "core")
+            systemProperty(
+                "ocdeck.frp.appE2e.profile",
+                providers.gradleProperty("ocdeck.frp.appResource.profile").orNull ?: "baseline",
+            )
+            listOf(
+                "iterations",
+                "concurrency",
+                "durationMillis",
+                "reconnectEveryIterations",
+                "sampleEveryIterations",
+            ).forEach { propertyName ->
+                providers.gradleProperty("ocdeck.frp.appResource.$propertyName").orNull?.let { value ->
+                    systemProperty("ocdeck.frp.appE2e.$propertyName", value)
+                }
+            }
+            val evidenceDirectory = providers.gradleProperty("ocdeck.frp.appResource.evidenceDirectory").orNull
+                ?: throw GradleException(
+                    "ocdeck.frp.appResource.evidenceDirectory is required for resource evidence tasks.",
+                )
+            val evidenceParent = rootProject.file(evidenceDirectory)
+            check(evidenceParent.isDirectory) {
+                "App resource evidence directory must already exist."
+            }
+            val evidenceFile = evidenceParent.resolve("$backend-app-resource.json")
+            systemProperty("ocdeck.frp.appE2e.summaryFile", evidenceFile.absolutePath)
+        } else {
+            providers.gradleProperty("ocdeck.frp.appE2e.suite").orNull?.let { suite ->
+                systemProperty("ocdeck.frp.appE2e.suite", suite)
+            }
+            providers.gradleProperty("ocdeck.frp.appE2e.outageMillis").orNull?.let { outageMillis ->
+                systemProperty("ocdeck.frp.appE2e.outageMillis", outageMillis)
+            }
+            providers.gradleProperty("ocdeck.frp.appE2e.summaryFile").orNull?.let { summaryFile ->
+                systemProperty("ocdeck.frp.appE2e.summaryFile", summaryFile)
+            }
+        }
+    }
+}
+
+registerAppE2eTask(
+    name = "frpcAppE2eTest",
+    backend = "kotlin",
+    variantName = "KotlinRelease",
+    appApkDirectory = appKotlinReleaseApkDirectory,
+    testApkDirectory = appKotlinReleaseTestApkDirectory,
+    resourceMode = false,
+)
+registerAppE2eTask(
+    name = "frpcGoMobileAppE2eTest",
+    backend = "gomobile",
+    variantName = "GoMobileRelease",
+    appApkDirectory = appGoMobileReleaseApkDirectory,
+    testApkDirectory = appGoMobileReleaseTestApkDirectory,
+    resourceMode = false,
+)
+val frpcGoMobileAppResourceTest = registerAppE2eTask(
+    name = "frpcGoMobileAppResourceTest",
+    backend = "gomobile",
+    variantName = "GoMobileRelease",
+    appApkDirectory = appGoMobileReleaseApkDirectory,
+    testApkDirectory = appGoMobileReleaseTestApkDirectory,
+    resourceMode = true,
+)
+val frpcKotlinAppResourceTest = registerAppE2eTask(
+    name = "frpcKotlinAppResourceTest",
+    backend = "kotlin",
+    variantName = "KotlinRelease",
+    appApkDirectory = appKotlinReleaseApkDirectory,
+    testApkDirectory = appKotlinReleaseTestApkDirectory,
+    resourceMode = true,
+)
+frpcKotlinAppResourceTest.configure { mustRunAfter(frpcGoMobileAppResourceTest) }
+tasks.register("frpcAppResourceTest") {
+    group = "verification"
+    description = "Runs symmetric GoMobile and Kotlin Release-Like App resource evidence gates."
+    dependsOn(frpcGoMobileAppResourceTest, frpcKotlinAppResourceTest)
+    doLast {
+        val configuredDirectory = providers.gradleProperty("ocdeck.frp.appResource.evidenceDirectory").orNull
+            ?: throw GradleException(
+                "ocdeck.frp.appResource.evidenceDirectory is required for symmetric resource evidence.",
+            )
+        val evidenceDirectory = rootProject.file(configuredDirectory)
+        fun readSummary(backend: String): Map<*, *> {
+            val evidenceFile = evidenceDirectory.resolve("$backend-app-resource.json")
+            check(evidenceFile.isFile && evidenceFile.length() in 1..(64 * 1024)) {
+                "App resource evidence output was missing or exceeded its bounded size."
+            }
+            return evidenceFile.inputStream().buffered().use { input ->
+                JsonSlurper().parse(input) as? Map<*, *>
+                    ?: throw GradleException("App resource evidence did not contain a JSON object.")
+            }
+        }
+        fun requireValidSummary(summary: Map<*, *>, backend: String) {
+            val targetApk = summary["targetApk"] as? Map<*, *>
+            val testApk = summary["testApk"] as? Map<*, *>
+            val workload = summary["workload"] as? Map<*, *>
+            val workloadResults = summary["workloads"] as? List<*>
+            val resources = summary["resources"] as? List<*>
+            check(
+                summary["schemaVersion"] == 8 && summary["backend"] == backend &&
+                    summary["suite"] == "core" && summary["status"] == "passed" &&
+                    summary["cleanupVerified"] == true && summary["authorizesKotlinDefault"] == false &&
+                    targetApk?.get("byteIdentical") == true && testApk?.get("byteIdentical") == true &&
+                    workload != null && workloadResults?.size == 1 && resources?.size == 1 &&
+                    (workloadResults.single() as? Map<*, *>)?.get("profile") == workload["profile"],
+            ) {
+                "App resource evidence did not satisfy its bounded acceptance contract."
+            }
+        }
+
+        val goMobile = readSummary("gomobile")
+        val kotlin = readSummary("kotlin")
+        requireValidSummary(goMobile, "gomobile")
+        requireValidSummary(kotlin, "kotlin")
+        check(goMobile["repository"] == kotlin["repository"] && goMobile["device"] == kotlin["device"] &&
+            goMobile["workload"] == kotlin["workload"]
+        ) {
+            "GoMobile and Kotlin resource evidence did not use the same candidate, device, and workload."
+        }
+    }
 }
 
 tasks.register("checkGoMobileBridgeAar") {
@@ -106,13 +376,15 @@ tasks.register("checkGoMobileBridgeAar") {
         check(sha256(goMobileBridgeAar) == expectedSha) {
             "GoMobile STCP visitor AAR checksum does not match its immutable artifact metadata."
         }
-        check(goMobileBridgeApi.readBytes().contentEquals(expectedBridgeApi.readBytes())) {
+        val publishedApi = normalizeTextLineEndings(goMobileBridgeApi.readText())
+        val committedApi = normalizeTextLineEndings(expectedBridgeApi.readText())
+        check(publishedApi == committedApi) {
             "GoMobile STCP visitor API does not exactly match the committed signature."
         }
 
         val provenance = parseJsonObject(goMobileBridgeProvenance)
         val expectedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
-        check(provenance["schemaVersion"] == 1 && provenance["bridgeApiVersion"] == 2) {
+        check(provenance["schemaVersion"] == 2 && provenance["bridgeApiVersion"] == 2) {
             "GoMobile STCP visitor provenance schema or API version is invalid."
         }
         check(provenance["bridgeVersion"] == goMobileBridgeVersion) {
@@ -138,6 +410,10 @@ tasks.register("checkGoMobileBridgeAar") {
         }
         check(provenance["nativeAbis"] == expectedAbis && provenance["aarSha256"] == expectedSha) {
             "GoMobile STCP visitor provenance ABI list or AAR checksum is invalid."
+        }
+        val moduleGraphSha = provenance["moduleGraphSha256"] as? String
+        check(moduleGraphSha?.matches(Regex("[0-9a-f]{64}")) == true && provenance["moduleGraphLocalPathFree"] == true) {
+            "GoMobile STCP visitor provenance module graph proof is invalid."
         }
         check(goMobileBridgeFrpProvenance.readBytes().contentEquals(expectedFrpProvenance.readBytes())) {
             "GoMobile STCP visitor frp provenance does not match the generated patch provenance."
@@ -166,9 +442,18 @@ tasks.register("checkGoMobileBridgeAar") {
         ) { "GoMobile STCP visitor frp provenance added-file list is invalid." }
 
         val nativeMetadata = parseJsonObject(goMobileBridgeNative)
-        check((nativeMetadata["pageAlignment"] as? Number)?.toInt() == 16384 && nativeMetadata["stripped"] == true) {
+        check(
+            nativeMetadata["schemaVersion"] == 2 &&
+                (nativeMetadata["pageAlignment"] as? Number)?.toInt() == 16384 &&
+                nativeMetadata["stripped"] == true,
+        ) {
             "GoMobile STCP visitor native libraries are not verified as stripped and 16KB aligned."
         }
+        check(
+            nativeMetadata["moduleGraphSha256"] == moduleGraphSha &&
+                nativeMetadata["moduleGraphLocalPathFree"] == true &&
+                nativeMetadata["moduleGraphConsistentAcrossAbis"] == true,
+        ) { "GoMobile STCP visitor native module graph proof is invalid." }
         val libraries = (nativeMetadata["libraries"] as? List<*>)
             ?.map { it as? Map<*, *> ?: error("Invalid native library report entry.") }
             ?: error("GoMobile STCP visitor native validation is missing libraries.")
@@ -199,7 +484,8 @@ tasks.register("checkGoMobileBridgeAar") {
                 }
             expectedMetadataFiles.forEach { (path, source) ->
                 val entry = archive.getEntry(path) ?: error("GoMobile STCP visitor AAR is missing $path.")
-                check(archive.getInputStream(entry).readBytes().contentEquals(source.readBytes())) {
+                val embeddedText = archive.getInputStream(entry).bufferedReader().use { it.readText() }
+                check(normalizeTextLineEndings(embeddedText) == normalizeTextLineEndings(source.readText())) {
                     "GoMobile STCP visitor AAR metadata does not match $source."
                 }
             }

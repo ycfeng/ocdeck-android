@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-    printf 'usage: %s <version-name> <version-code> <expected-cert-sha256> <staging-directory>\n' "$0" >&2
+if [[ $# -ne 5 ]]; then
+    printf 'usage: %s <gomobile-release|kotlin-default-release-dry-run> <version-name> <version-code> <expected-cert-sha256> <staging-directory>\n' "$0" >&2
     exit 2
 fi
 
-VERSION_NAME=$1
-VERSION_CODE=$2
-EXPECTED_CERT_SHA256=$3
-STAGING_DIR=$4
-APK_DIR=app/build/outputs/apk/release
+PROFILE=$1
+VERSION_NAME=$2
+VERSION_CODE=$3
+EXPECTED_CERT_SHA256=$4
+STAGING_DIR=$5
+case "$PROFILE" in
+    gomobile-release)
+        APK_VARIANT=release
+        ;;
+    kotlin-default-release-dry-run)
+        APK_VARIANT=kotlinDefaultReleaseDryRun
+        ;;
+    *)
+        printf 'release artifact verification failed: unsupported artifact profile: %s\n' "$PROFILE" >&2
+        exit 1
+        ;;
+esac
+APK_DIR="app/build/outputs/apk/$APK_VARIANT"
 APK_METADATA="$APK_DIR/output-metadata.json"
 BRIDGE_VERSION=$(sed -n 's/^BRIDGE_VERSION=//p' frpc-stcp-visitor-go/bridge-versions.properties)
 BRIDGE_REPO_DIR="frpc-stcp-visitor-go/build/repo/io/github/ycfeng/ocdeck/frpc-stcp-visitor-gobridge/$BRIDGE_VERSION"
@@ -22,6 +35,8 @@ APKSIGNER_BATCH=${APKSIGNER_BATCH:-}
 APKSIGNER_JAR=${APKSIGNER_JAR:-}
 JAVA_COMMAND=${JAVA_COMMAND:-java}
 ZIPALIGN=${ZIPALIGN:-}
+APKANALYZER=${APKANALYZER:-}
+BRIDGE_DEFINITION=io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor
 
 if [[ -z $APKSIGNER && -z $APKSIGNER_BATCH && -z $APKSIGNER_JAR ]]; then
     if [[ -x ${BUILD_TOOLS_DIR}/apksigner ]]; then
@@ -38,6 +53,15 @@ if [[ -z $ZIPALIGN ]]; then
     for candidate in "${BUILD_TOOLS_DIR}/zipalign" "${BUILD_TOOLS_DIR}/zipalign.exe"; do
         if [[ -x $candidate ]]; then
             ZIPALIGN=$candidate
+            break
+        fi
+    done
+fi
+
+if [[ -z $APKANALYZER ]]; then
+    for candidate in "${ANDROID_SDK_PATH}/cmdline-tools/latest/bin/apkanalyzer"; do
+        if [[ -x $candidate ]]; then
+            APKANALYZER=$candidate
             break
         fi
     done
@@ -71,14 +95,14 @@ run_apksigner() {
 }
 
 validate_apk_metadata() {
-    python3 - "$APK_METADATA" <<'PY'
+    python3 - "$APK_METADATA" "$1" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as source:
     metadata = json.load(source)
 
-if metadata.get("applicationId") != "io.github.ycfeng.ocdeck" or metadata.get("variantName") != "release":
+if metadata.get("applicationId") != "io.github.ycfeng.ocdeck" or metadata.get("variantName") != sys.argv[2]:
     raise SystemExit(1)
 PY
 }
@@ -132,6 +156,58 @@ print(matches[0])
 PY
 }
 
+apk_defines_bridge() {
+    local apk_path=$1
+    local output_file
+    output_file=$(mktemp)
+    if ! "$APKANALYZER" dex packages --defined-only "$apk_path" >"$output_file"; then
+        rm -f "$output_file"
+        return 2
+    fi
+    python3 - "$output_file" "$BRIDGE_DEFINITION" <<'PY'
+from pathlib import Path
+import sys
+
+expected = sys.argv[2]
+for line in Path(sys.argv[1]).read_text(encoding="utf-8", errors="strict").splitlines():
+    for token in line.split():
+        normalized = token.replace("/", ".").removeprefix("L").removesuffix(";")
+        if normalized == expected:
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+    local status=$?
+    rm -f "$output_file"
+    return "$status"
+}
+
+apk_manifest_value() {
+    local apk_path=$1
+    local attribute=$2
+    local output_file
+    output_file=$(mktemp)
+    if ! "$APKANALYZER" manifest "$attribute" "$apk_path" >"$output_file"; then
+        rm -f "$output_file"
+        return 2
+    fi
+    python3 - "$output_file" <<'PY'
+from pathlib import Path
+import sys
+
+raw = Path(sys.argv[1]).read_bytes()
+if not 1 <= len(raw) <= 4096 or b"\0" in raw:
+    raise SystemExit(1)
+text = raw.decode("utf-8", errors="strict")
+lines = text.splitlines()
+if len(lines) != 1 or not lines[0] or lines[0] != lines[0].strip():
+    raise SystemExit(1)
+print(lines[0])
+PY
+    local status=$?
+    rm -f "$output_file"
+    return "$status"
+}
+
 EXPECTED_CERT_SHA256=$(normalize_fingerprint "$EXPECTED_CERT_SHA256")
 [[ $VERSION_NAME =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
     fail "version name must be stable SemVer: $VERSION_NAME"
@@ -151,12 +227,16 @@ else
     fi
 fi
 [[ -n $ZIPALIGN && -x $ZIPALIGN ]] || fail "zipalign not found under $BUILD_TOOLS_DIR"
+[[ -n $APKANALYZER && -x $APKANALYZER ]] || fail "apkanalyzer not found under ${ANDROID_SDK_PATH}/cmdline-tools/latest/bin"
 [[ -f $APK_METADATA ]] || fail "APK metadata not found: $APK_METADATA"
-[[ -f $BRIDGE_NATIVE_REPORT ]] || fail "bridge native report not found: $BRIDGE_NATIVE_REPORT"
+if [[ $PROFILE == gomobile-release ]]; then
+    [[ -n $BRIDGE_VERSION ]] || fail "BRIDGE_VERSION is missing or duplicated"
+    [[ -f $BRIDGE_NATIVE_REPORT ]] || fail "bridge native report not found: $BRIDGE_NATIVE_REPORT"
+fi
 command -v python3 >/dev/null || fail "python3 is required"
 command -v unzip >/dev/null || fail "unzip is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required"
-validate_apk_metadata ||
+validate_apk_metadata "$APK_VARIANT" ||
     fail "APK metadata has an unexpected applicationId or variantName"
 
 if [[ -e $STAGING_DIR ]]; then
@@ -207,6 +287,19 @@ for row in "${APK_ROWS[@]}"; do
     apk_path="$APK_DIR/$output_file"
     [[ -f $apk_path ]] || fail "APK not found: $apk_path"
 
+    actual_application_id=$(apk_manifest_value "$apk_path" application-id) ||
+        fail "$output_file manifest application ID inspection failed"
+    [[ $actual_application_id == io.github.ycfeng.ocdeck ]] ||
+        fail "$output_file manifest application ID is unexpected"
+    actual_version_name=$(apk_manifest_value "$apk_path" version-name) ||
+        fail "$output_file manifest version name inspection failed"
+    [[ $actual_version_name == "$VERSION_NAME" ]] ||
+        fail "$output_file manifest version name is unexpected"
+    actual_version_code=$(apk_manifest_value "$apk_path" version-code) ||
+        fail "$output_file manifest version code inspection failed"
+    [[ $actual_version_code == "$VERSION_CODE" ]] ||
+        fail "$output_file manifest version code is unexpected"
+
     signer_output=$(run_apksigner verify --verbose --print-certs "$apk_path") ||
         fail "apksigner verification failed: $output_file"
     mapfile -t signer_digests < <(
@@ -220,24 +313,36 @@ for row in "${APK_ROWS[@]}"; do
 
     "$ZIPALIGN" -c -P 16 -v 4 "$apk_path" >/dev/null || fail "zipalign verification failed: $output_file"
 
-    mapfile -t native_entries < <(unzip -Z1 "$apk_path" | grep -E '^lib/[^/]+/[^/]+\.so$' || true)
-    [[ ${#native_entries[@]} -gt 0 ]] || fail "$output_file does not contain native libraries"
-    has_gojni=false
-    for entry in "${native_entries[@]}"; do
-        entry_abi=${entry#lib/}
-        entry_abi=${entry_abi%%/*}
-        [[ $entry_abi == "$abi" ]] || fail "$output_file contains unexpected native ABI $entry_abi"
-        [[ $entry == "lib/${abi}/libgojni.so" ]] && has_gojni=true
-    done
-    [[ $has_gojni == true ]] || fail "$output_file does not contain lib/${abi}/libgojni.so"
-
-    expected_native_sha=$(native_sha_for_abi "$abi") ||
-        fail "bridge native report does not contain ABI $abi"
     apk_absolute_path=$(realpath "$apk_path")
-    (
-        cd frpc-stcp-visitor-go
-        go run ./cmd/checkapk "$apk_absolute_path" "$abi" "$expected_native_sha" >/dev/null
-    ) || fail "$output_file native ELF or AAR byte binding verification failed"
+    case "$PROFILE" in
+        gomobile-release)
+            expected_native_sha=$(native_sha_for_abi "$abi") ||
+                fail "bridge native report does not contain ABI $abi"
+            (
+                cd frpc-stcp-visitor-go
+                go run ./cmd/checkapk gomobile-release "$apk_absolute_path" "$abi" "$expected_native_sha" >/dev/null
+            ) || fail "$output_file native ELF or AAR byte binding verification failed"
+            if apk_defines_bridge "$apk_path"; then
+                :
+            else
+                status=$?
+                [[ $status -eq 1 ]] || fail "$output_file bridge class inspection failed"
+                fail "$output_file does not define the GoMobile bridge class"
+            fi
+            ;;
+        kotlin-default-release-dry-run)
+            (
+                cd frpc-stcp-visitor-go
+                go run ./cmd/checkapk kotlin-default-release-dry-run "$apk_absolute_path" "$abi" >/dev/null
+            ) || fail "$output_file native ELF verification or GoMobile exclusion failed"
+            if apk_defines_bridge "$apk_path"; then
+                fail "$output_file unexpectedly defines the GoMobile bridge class"
+            else
+                status=$?
+                [[ $status -eq 1 ]] || fail "$output_file bridge class inspection failed"
+            fi
+            ;;
+    esac
 
     verify_apk_asset "$apk_path" LICENSE "assets/legal/LICENSE.txt"
     verify_apk_asset "$apk_path" NOTICE "assets/legal/NOTICE.txt"
