@@ -48,7 +48,7 @@ jobs:
               printf 'manual release dry-run must use the main branch\n' >&2
               exit 1
             }
-            bash .github/scripts/check-release-version.sh
+            bash .github/scripts/check-release-version.sh --dry-run
           fi
 
       - name: Select artifact profile

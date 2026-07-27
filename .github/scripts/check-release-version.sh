@@ -48,7 +48,14 @@ VERSION_CODE=$(read_property VERSION_CODE gradle.properties)
 (( VERSION_CODE <= 2100000000 )) || fail "VERSION_CODE exceeds Android's 2100000000 limit"
 
 RELEASE_TAG="v${VERSION_NAME}"
-REQUESTED_TAG=${1:-}
+[[ $# -le 1 ]] || fail "expected at most one tag or --dry-run argument"
+REQUESTED_TAG=
+DRY_RUN=false
+case ${1:-} in
+    "") ;;
+    --dry-run) DRY_RUN=true ;;
+    *) REQUESTED_TAG=$1 ;;
+esac
 if [[ -n $REQUESTED_TAG ]]; then
     [[ $REQUESTED_TAG =~ $TAG_PATTERN ]] || fail "tag must match vMAJOR.MINOR.PATCH: $REQUESTED_TAG"
     [[ $REQUESTED_TAG == "$RELEASE_TAG" ]] || fail "tag $REQUESTED_TAG does not match VERSION_NAME=$VERSION_NAME"
@@ -68,7 +75,19 @@ PREVIOUS_TAG=
 if [[ $TAG_EXISTS == true ]]; then
     TAG_COMMIT=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
     HEAD_COMMIT=$(git rev-parse HEAD)
-    [[ $TAG_COMMIT == "$HEAD_COMMIT" ]] || fail "tag $RELEASE_TAG does not resolve to the checked-out commit"
+    if [[ $DRY_RUN == true ]]; then
+        git merge-base --is-ancestor "$TAG_COMMIT" "$HEAD_COMMIT" ||
+            fail "tag $RELEASE_TAG is not an ancestor of the checked-out dry-run commit"
+        TAG_VERSION_NAME=$(read_property_from_ref VERSION_NAME "$RELEASE_TAG")
+        TAG_VERSION_CODE=$(read_property_from_ref VERSION_CODE "$RELEASE_TAG")
+        [[ $TAG_VERSION_NAME == "$VERSION_NAME" ]] ||
+            fail "dry-run VERSION_NAME does not match tag $RELEASE_TAG"
+        [[ $TAG_VERSION_CODE == "$VERSION_CODE" ]] ||
+            fail "dry-run VERSION_CODE does not match tag $RELEASE_TAG"
+    else
+        [[ $TAG_COMMIT == "$HEAD_COMMIT" ]] ||
+            fail "tag $RELEASE_TAG does not resolve to the checked-out commit"
+    fi
     if [[ -n $REQUESTED_TAG ]]; then
         git rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null ||
             fail "origin/main is missing; fetch the default branch before validating a release tag"

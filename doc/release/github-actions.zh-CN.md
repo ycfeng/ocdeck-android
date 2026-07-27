@@ -146,6 +146,7 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 3. 完成[发布检查清单](checklist.zh-CN.md)，包括目标 ABI 真机 native load、在官方 Android 测试镜像或真机上的 16KB runtime 验证，以及真实 STCP 验证。这些维度可以使用不同设备；缺少任一必要维度时仍必须阻止正式发布。
 4. 合并到 `main`，确认 CI 通过。
 5. 可先从 `main` 手动运行 `Release` workflow。`run_kotlin_default_release_dry_run=false` 表示普通签名 GoMobile dry run；设为 `true` 表示使用正式身份与签名的 Kotlin-default 打包 dry run。两条路径都会准备可审阅说明，重新构建、签名、校验并保留三天 artifact，且都不会创建 GitHub Release；Kotlin 路径明确不可发布。
+   - 手动 dry run 的版本校验不要求 `main` HEAD 等于当前稳定 tag。当 `v<VERSION_NAME>` 已存在时，该 tag 必须是最高稳定 tag、必须是检出 `main` commit 的祖先，且 tag 中的 `VERSION_NAME` 与 `VERSION_CODE` 必须和当前文件完全一致。tag 触发的正式发布仍使用更严格规则，继续要求 tag 精确指向检出的 commit。
 6. 在已经验证的 commit 上创建并推送 `vMAJOR.MINOR.PATCH` tag。
 7. `preflight` 校验源码版本、tag、`origin/main` 祖先关系、最高版本规则和历史 `VERSION_CODE` 单调递增。
 8. `prepare-notes` 在不读取签名 secret 的情况下生成并上传最终 `release-notes.md`。真实 tag 会追加 GitHub 自动说明。

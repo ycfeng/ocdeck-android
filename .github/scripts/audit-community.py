@@ -313,6 +313,7 @@ def audit_release_metadata(version_name: str) -> None:
     version_check_run = step_named(preflight_job, "Check version and tag").get("run")
     require(isinstance(version_check_run, str), "Check version and tag must use a run script")
     require("check-release-version.sh" in version_check_run, "preflight does not run the release version check")
+    require("--dry-run" in version_check_run, "manual release preflight must use dry-run version semantics")
     require("git fetch" not in version_check_run, "preflight must rely on authenticated checkout instead of an unauthenticated fetch")
 
     reproducibility_run = step_named(build_job, "Verify reproducible GoMobile bridge").get("run")
