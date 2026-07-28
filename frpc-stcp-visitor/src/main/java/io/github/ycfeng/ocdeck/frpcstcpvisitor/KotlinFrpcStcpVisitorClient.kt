@@ -381,6 +381,8 @@ internal data class KotlinFrpcRuntimeLifecycleHooks(
     val observeRuntimeCommandSummary: (String) -> Unit = {},
     val afterRelayCompletion: suspend () -> Unit = {},
     val afterRelayWatcherScheduled: suspend () -> Unit = {},
+    val beforeVisitorHandshakeCommit: suspend () -> Unit = {},
+    val visitorHandshakeTimeoutMillis: Long = 10_000L,
 )
 
 private class KotlinFrpcRuntimeSession(
@@ -1086,6 +1088,8 @@ private class KotlinFrpcRuntimeSession(
             parentScope = scope,
             unixTimeSource = unixTimeSource,
             ioDispatcher = ioDispatcher,
+            beforeHandshakeCommit = lifecycleHooks.beforeVisitorHandshakeCommit,
+            handshakeTimeoutMillis = lifecycleHooks.visitorHandshakeTimeoutMillis,
         )
         val record = RuntimeRelayRecord(owner.visitorName, owner, relay, relayPermit)
         relays += record

@@ -2,7 +2,7 @@
 
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol
 
-import java.io.ByteArrayOutputStream
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.CharacterCodingException
@@ -241,6 +241,43 @@ internal object FrpWireV2 {
         return FrpV2Frame(type, flags, payload)
     }
 
+    suspend fun readFrame(input: FrpMuxStream): FrpV2Frame? {
+        val first = readByteSafely(input)
+        if (first < 0) return null
+        val header = ByteArray(FRAME_HEADER_SIZE)
+        var payload: ByteArray? = null
+        try {
+            header[0] = first.toByte()
+            readFullySafely(
+                input = input,
+                destination = header,
+                offset = 1,
+                length = FRAME_HEADER_SIZE - 1,
+                truncatedFailure = FrpProtocolFailure.TRUNCATED_HEADER,
+            )
+
+            val type = decodeUInt16(header, 0)
+            val flags = decodeUInt16(header, 2)
+            val payloadLength = decodeUInt32(header, 4)
+            if (!isKnownFrameType(type)) throw FrpProtocolException(FrpProtocolFailure.UNKNOWN_TYPE)
+            if (flags != 0) throw FrpProtocolException(FrpProtocolFailure.INVALID_FLAGS)
+            if (payloadLength > MAX_FRAME_PAYLOAD.toLong()) {
+                throw FrpProtocolException(FrpProtocolFailure.LENGTH_LIMIT)
+            }
+
+            payload = ByteArray(payloadLength.toInt())
+            readFullySafely(
+                input = input,
+                destination = payload,
+                truncatedFailure = FrpProtocolFailure.TRUNCATED_BODY,
+            )
+            return FrpV2Frame(type, flags, payload)
+        } finally {
+            header.fill(0)
+            payload?.fill(0)
+        }
+    }
+
     fun writeFrame(output: OutputStream, frame: FrpV2Frame) {
         if (!isKnownFrameType(frame.type)) {
             throw FrpProtocolException(FrpProtocolFailure.UNKNOWN_TYPE)
@@ -390,22 +427,54 @@ internal object FrpWireV2 {
         return decodeMessageFrame(frame)
     }
 
+    suspend fun readMessage(input: FrpMuxStream): FrpMessage? {
+        val frame = readFrame(input) ?: return null
+        return decodeMessageFrame(frame)
+    }
+
     fun writeMessage(output: OutputStream, message: FrpMessage) {
-        writeFrame(output, encodeMessageFrame(message))
+        val frame = encodeMessageFrame(message)
+        try {
+            writeFrame(output, frame)
+        } finally {
+            frame.payload.fill(0)
+        }
     }
 
     fun encodeMessage(message: FrpMessage): ByteArray {
-        val output = ByteArrayOutputStream(128)
-        writeMessage(output, message)
-        return output.toByteArray()
+        val output = ClearingByteArrayOutputStream(128)
+        return try {
+            writeMessage(output, message)
+            output.copyAndClear()
+        } catch (failure: Throwable) {
+            output.clear()
+            throw failure
+        }
+    }
+
+    fun encodeMessageWithMagic(message: FrpMessage): ByteArray {
+        val encoded = encodeMessage(message)
+        return try {
+            ByteArray(MAGIC_BYTES.size + encoded.size).also { combined ->
+                MAGIC_BYTES.copyInto(combined)
+                encoded.copyInto(combined, destinationOffset = MAGIC_BYTES.size)
+            }
+        } finally {
+            encoded.fill(0)
+        }
     }
 
     fun encodeMessageFrame(message: FrpMessage): FrpV2Frame {
         val jsonPayload = FrpMessageJson.encode(message, MAX_FRAME_PAYLOAD - MESSAGE_TYPE_SIZE)
         val payload = ByteArray(MESSAGE_TYPE_SIZE + jsonPayload.size)
-        encodeUInt16(FrpMessageTypes.v2TypeOf(message), payload, 0)
-        jsonPayload.copyInto(payload, destinationOffset = MESSAGE_TYPE_SIZE)
-        return FrpV2Frame(FRAME_TYPE_MESSAGE, payload = payload)
+        return try {
+            encodeUInt16(FrpMessageTypes.v2TypeOf(message), payload, 0)
+            jsonPayload.copyInto(payload, destinationOffset = MESSAGE_TYPE_SIZE)
+            FrpV2Frame(FRAME_TYPE_MESSAGE, payload = payload)
+        } finally {
+            jsonPayload.fill(0)
+            payload.fill(0)
+        }
     }
 
     fun decodeMessageFrame(frame: FrpV2Frame): FrpMessage {

@@ -20,6 +20,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpWireV1
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.FrpWireV2
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConn
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConnResp
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.writeSafely
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.BlockingIoThreadGuard
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTcpEndpoint
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.TcpDialRouteProvider
@@ -348,6 +349,12 @@ internal enum class FrpVisitorRelayCleanupPhase {
     COMPLETE,
 }
 
+private enum class FrpVisitorHandshakeState {
+    ACTIVE,
+    COMPLETED,
+    TIMED_OUT,
+}
+
 internal class FrpVisitorRelay(
     val visitorRevision: Long,
     val listenerAttempt: Long,
@@ -360,7 +367,13 @@ internal class FrpVisitorRelay(
     private val ioDispatcher: CoroutineDispatcher,
     private val afterPumpOutcomeReceived: suspend () -> Unit = {},
     private val afterOrdinaryPumpFailureClassified: suspend () -> Unit = {},
+    private val beforeHandshakeCommit: suspend () -> Unit = {},
+    private val handshakeTimeoutMillis: Long = VISITOR_HANDSHAKE_TIMEOUT_MILLIS,
 ) {
+    init {
+        require(handshakeTimeoutMillis > 0L)
+    }
+
     private val closeStarted = AtomicBoolean(false)
     private val activeLease = AtomicReference<FrpClientStreamLease?>()
     private val fatalFailure = AtomicReference<Throwable?>()
@@ -464,7 +477,11 @@ internal class FrpVisitorRelay(
             lease = opened
             activeLease.set(opened)
             if (closeStarted.get()) throw FrpRelayClosedCancellation()
-            val io = YamuxStreamBlockingIo(opened.stream, scope, blockingIoGuard)
+            val io = if (visitor.useEncryption || visitor.useCompression) {
+                YamuxStreamBlockingIo(opened.stream, scope, blockingIoGuard)
+            } else {
+                null
+            }
             handshakeIo = io
             performHandshake(opened, io)
             relayCleanupPhase.set(FrpVisitorRelayCleanupPhase.RELAYING)
@@ -535,53 +552,85 @@ internal class FrpVisitorRelay(
 
     private suspend fun performHandshake(
         lease: FrpClientStreamLease,
-        io: YamuxStreamBlockingIo,
+        io: YamuxStreamBlockingIo?,
     ) = coroutineScope {
-        val timeoutExpired = AtomicBoolean(false)
+        val handshakeState = AtomicReference(FrpVisitorHandshakeState.ACTIVE)
         val timer = launch {
-            delay(VISITOR_HANDSHAKE_TIMEOUT_MILLIS)
-            timeoutExpired.set(true)
-            lease.beginReset()
+            delay(handshakeTimeoutMillis)
+            if (handshakeState.compareAndSet(
+                    FrpVisitorHandshakeState.ACTIVE,
+                    FrpVisitorHandshakeState.TIMED_OUT,
+                )
+            ) {
+                lease.beginReset()
+            }
         }
         try {
-            runInterruptible(blockingIoContext) {
-                val timestamp = unixTimeSource.nowSeconds()
-                val prefix = visitor.serverUser.ifEmpty { visitor.sessionUser }
-                val proxyName = if (prefix.isEmpty()) visitor.serverName else "$prefix.${visitor.serverName}"
-                val request = NewVisitorConn(
-                    runId = lease.runId,
-                    proxyName = proxyName,
-                    signKey = FrpTimestampAuth.key(visitor.secretKey, timestamp),
-                    timestamp = timestamp,
-                    useEncryption = visitor.useEncryption,
-                    useCompression = visitor.useCompression,
-                )
-                if (lease.wireProtocol == FrpWireProtocol.V2) FrpWireV2.writeMagic(io.output)
+            val timestamp = unixTimeSource.nowSeconds()
+            val prefix = visitor.serverUser.ifEmpty { visitor.sessionUser }
+            val proxyName = if (prefix.isEmpty()) visitor.serverName else "$prefix.${visitor.serverName}"
+            val request = NewVisitorConn(
+                runId = lease.runId,
+                proxyName = proxyName,
+                signKey = FrpTimestampAuth.key(visitor.secretKey, timestamp),
+                timestamp = timestamp,
+                useEncryption = visitor.useEncryption,
+                useCompression = visitor.useCompression,
+            )
+            val response = if (io == null) {
                 val encoded = when (lease.wireProtocol) {
                     FrpWireProtocol.V1 -> FrpWireV1.encodeMessage(request)
-                    FrpWireProtocol.V2 -> FrpWireV2.encodeMessage(request)
+                    FrpWireProtocol.V2 -> FrpWireV2.encodeMessageWithMagic(request)
                 }
                 try {
-                    io.output.write(encoded)
-                    io.output.flush()
+                    writeSafely(lease.stream, encoded)
                 } finally {
                     encoded.fill(0)
                 }
-                val response = when (lease.wireProtocol) {
-                    FrpWireProtocol.V1 -> FrpWireV1.readMessage(io.input)
-                    FrpWireProtocol.V2 -> FrpWireV2.readMessage(io.input)
-                } as? NewVisitorConnResp
-                    ?: throw KotlinFrpcStcpVisitorException(
-                        KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_FAILED,
-                    )
-                if (response.error.isNotEmpty()) {
-                    throw KotlinFrpcStcpVisitorException(
-                        KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_FAILED,
-                    )
+                when (lease.wireProtocol) {
+                    FrpWireProtocol.V1 -> FrpWireV1.readMessage(lease.stream)
+                    FrpWireProtocol.V2 -> FrpWireV2.readMessage(lease.stream)
+                }
+            } else {
+                runInterruptible(blockingIoContext) {
+                    if (lease.wireProtocol == FrpWireProtocol.V2) FrpWireV2.writeMagic(io.output)
+                    val encoded = when (lease.wireProtocol) {
+                        FrpWireProtocol.V1 -> FrpWireV1.encodeMessage(request)
+                        FrpWireProtocol.V2 -> FrpWireV2.encodeMessage(request)
+                    }
+                    try {
+                        io.output.write(encoded)
+                        io.output.flush()
+                    } finally {
+                        encoded.fill(0)
+                    }
+                    when (lease.wireProtocol) {
+                        FrpWireProtocol.V1 -> FrpWireV1.readMessage(io.input)
+                        FrpWireProtocol.V2 -> FrpWireV2.readMessage(io.input)
+                    }
                 }
             }
+            val visitorResponse = response as? NewVisitorConnResp
+                ?: throw KotlinFrpcStcpVisitorException(
+                    KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_FAILED,
+                )
+            if (visitorResponse.error.isNotEmpty()) {
+                throw KotlinFrpcStcpVisitorException(
+                    KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_FAILED,
+                )
+            }
+            beforeHandshakeCommit()
+            if (!handshakeState.compareAndSet(
+                    FrpVisitorHandshakeState.ACTIVE,
+                    FrpVisitorHandshakeState.COMPLETED,
+                )
+            ) {
+                throw KotlinFrpcStcpVisitorException(
+                    KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_TIMEOUT,
+                )
+            }
         } catch (failure: CancellationException) {
-            if (timeoutExpired.get()) {
+            if (handshakeState.get() == FrpVisitorHandshakeState.TIMED_OUT) {
                 throw KotlinFrpcStcpVisitorException(
                     KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_TIMEOUT,
                 )
@@ -590,7 +639,7 @@ internal class FrpVisitorRelay(
         } catch (failure: Error) {
             throw failure
         } catch (failure: Exception) {
-            if (timeoutExpired.get()) {
+            if (handshakeState.get() == FrpVisitorHandshakeState.TIMED_OUT) {
                 throw KotlinFrpcStcpVisitorException(
                     KotlinFrpcStcpVisitorFailure.VISITOR_HANDSHAKE_TIMEOUT,
                 )
@@ -606,7 +655,7 @@ internal class FrpVisitorRelay(
 
     private suspend fun relayBidirectionally(
         lease: FrpClientStreamLease,
-        io: YamuxStreamBlockingIo,
+        io: YamuxStreamBlockingIo?,
         relayingFatalFailure: AtomicReference<Throwable?>,
     ) = supervisorScope {
         val completedPumps = Channel<Int>(capacity = Channel.UNLIMITED)
@@ -618,9 +667,10 @@ internal class FrpVisitorRelay(
                 launchRelayPump(1, outcomes[1], completedPumps) { copyRemoteToLocalDirect(lease) },
             )
         } else {
+            val transformedIo = checkNotNull(io)
             listOf(
-                launchRelayPump(0, outcomes[0], completedPumps) { copyLocalToRemote(lease, io.output) },
-                launchRelayPump(1, outcomes[1], completedPumps) { copyRemoteToLocal(io.input) },
+                launchRelayPump(0, outcomes[0], completedPumps) { copyLocalToRemote(lease, transformedIo.output) },
+                launchRelayPump(1, outcomes[1], completedPumps) { copyRemoteToLocal(transformedIo.input) },
             )
         }
         var selectedFailure: Throwable? = null

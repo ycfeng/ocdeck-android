@@ -2,6 +2,7 @@ package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol
 
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.FrpContractFixtures
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.PlannedChunkInputStream
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -11,6 +12,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CancellationException
 import kotlin.random.Random
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -346,6 +348,137 @@ class FrpWireProtocolContractTest {
         assertFalse(writeFailure.toString().contains("write-detail-marker"))
     }
 
+    @Test
+    fun suspendReadersPreserveCoalescedPayloadAcrossSingleByteChunks() = runBlocking {
+        val trailing = byteArrayOf(0x51, 0x52, 0x53)
+        listOf(false, true).forEach { useV2 ->
+            val response = if (useV2) {
+                FrpWireV2.encodeMessage(NewVisitorConnResp(proxyName = "fixture"))
+            } else {
+                FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "fixture"))
+            }
+            val stream = ChunkedMuxStream(response + trailing, maximumChunkSize = 1)
+
+            val decoded = if (useV2) {
+                FrpWireV2.readMessage(stream)
+            } else {
+                FrpWireV1.readMessage(stream)
+            }
+
+            assertEquals(NewVisitorConnResp(proxyName = "fixture"), decoded)
+            val remaining = ByteArray(trailing.size)
+            var remainingCount = 0
+            while (remainingCount < remaining.size) {
+                remainingCount += stream.read(
+                    remaining,
+                    remainingCount,
+                    remaining.size - remainingCount,
+                )
+            }
+            assertArrayEquals(trailing, remaining)
+        }
+    }
+
+    @Test
+    fun suspendIoFailsClosedOnZeroReadsAndPreservesFatalIdentity() = runBlocking {
+        val zeroRead = ChunkedMuxStream(ByteArray(0), returnZero = true)
+        val protocolFailure = try {
+            FrpWireV1.readMessage(zeroRead)
+            throw AssertionError("Expected zero-length read to fail")
+        } catch (failure: FrpProtocolException) {
+            failure
+        }
+        assertEquals(FrpProtocolFailure.IO_FAILURE, protocolFailure.failure)
+
+        val cancellation = CancellationException("cancel-marker")
+        val cancelled = ThrowingMuxStream(cancellation)
+        try {
+            FrpWireV1.readMessage(cancelled)
+            throw AssertionError("Expected cancellation")
+        } catch (failure: CancellationException) {
+            assertSame(cancellation, failure)
+        }
+
+        val fatal = AssertionError("fatal-marker")
+        val failed = ThrowingMuxStream(fatal)
+        try {
+            FrpWireV2.readMessage(failed)
+            throw AssertionError("Expected fatal failure")
+        } catch (failure: AssertionError) {
+            assertSame(fatal, failure)
+        }
+    }
+
+    @Test
+    fun suspendReadersApplyTheSameFramingFailures() = runBlocking {
+        suspend fun assertSuspendFailure(
+            expected: FrpProtocolFailure,
+            source: ByteArray,
+            reader: suspend (FrpMuxStream) -> FrpMessage?,
+        ) {
+            val failure = try {
+                reader(ChunkedMuxStream(source, maximumChunkSize = 3))
+                throw AssertionError("Expected protocol failure: $expected")
+            } catch (failure: FrpProtocolException) {
+                failure
+            }
+            assertEquals(expected, failure.failure)
+        }
+
+        assertSuspendFailure(
+            FrpProtocolFailure.LENGTH_LIMIT,
+            FrpContractFixtures.mutated("wire-v1-length-max-plus-one"),
+            FrpWireV1::readMessage,
+        )
+        assertSuspendFailure(
+            FrpProtocolFailure.NEGATIVE_LENGTH,
+            FrpContractFixtures.mutated("wire-v1-negative-length"),
+            FrpWireV1::readMessage,
+        )
+        assertSuspendFailure(
+            FrpProtocolFailure.TRUNCATED_BODY,
+            FrpContractFixtures.mutated("wire-v1-truncated"),
+            FrpWireV1::readMessage,
+        )
+        assertSuspendFailure(
+            FrpProtocolFailure.UNKNOWN_TYPE,
+            FrpContractFixtures.mutated("wire-v1-unknown-type"),
+            FrpWireV1::readMessage,
+        )
+
+        val v2Response = FrpWireV2.encodeMessage(NewVisitorConnResp(proxyName = "fixture"))
+        assertSuspendFailure(
+            FrpProtocolFailure.TRUNCATED_HEADER,
+            v2Response.copyOf(4),
+            FrpWireV2::readMessage,
+        )
+        assertSuspendFailure(
+            FrpProtocolFailure.INVALID_FLAGS,
+            v2Response.copyOf().also { it[3] = 1 },
+            FrpWireV2::readMessage,
+        )
+        assertSuspendFailure(
+            FrpProtocolFailure.LENGTH_LIMIT,
+            v2Response.copyOf(8).also {
+                ByteBuffer.wrap(it, 4, 4).order(ByteOrder.BIG_ENDIAN).putInt(FrpWireV2.MAX_FRAME_PAYLOAD + 1)
+            },
+            FrpWireV2::readMessage,
+        )
+        assertSuspendFailure(
+            FrpProtocolFailure.TRUNCATED_BODY,
+            v2Response.copyOf(v2Response.size - 1),
+            FrpWireV2::readMessage,
+        )
+        assertSuspendFailure(
+            FrpProtocolFailure.UNKNOWN_TYPE,
+            v2Response.copyOf().also {
+                it[8] = 0x7f
+                it[9] = 0x7f
+            },
+            FrpWireV2::readMessage,
+        )
+    }
+
     private fun assertV2BootstrapFailure(mutationId: String, expected: FrpProtocolFailure) {
         val input = ByteArrayInputStream(FrpContractFixtures.mutated(mutationId))
         FrpWireV2.readMagic(input)
@@ -417,6 +550,42 @@ class FrpWireProtocolContractTest {
             )
             else -> throw AssertionError("Unknown fixture message: $entryId")
         }
+    }
+
+    private class ChunkedMuxStream(
+        source: ByteArray,
+        private val maximumChunkSize: Int = Int.MAX_VALUE,
+        private val returnZero: Boolean = false,
+    ) : FrpMuxStream {
+        private val input = source.copyOf()
+        private var position = 0
+
+        override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
+            if (returnZero) return 0
+            if (position >= input.size) return -1
+            val count = minOf(length, maximumChunkSize, input.size - position)
+            input.copyInto(destination, offset, position, position + count)
+            position += count
+            return count
+        }
+
+        override suspend fun write(source: ByteArray, offset: Int, length: Int) = Unit
+
+        override suspend fun closeWrite() = Unit
+
+        override suspend fun reset() = Unit
+    }
+
+    private class ThrowingMuxStream(
+        private val failure: Throwable,
+    ) : FrpMuxStream {
+        override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int = throw failure
+
+        override suspend fun write(source: ByteArray, offset: Int, length: Int) = throw failure
+
+        override suspend fun closeWrite() = Unit
+
+        override suspend fun reset() = Unit
     }
 
     private fun assertFailure(expected: FrpProtocolFailure, operation: () -> Unit) {

@@ -428,6 +428,59 @@ class KotlinFrpcStcpVisitorClientTest {
     }
 
     @Test
+    fun visitorHandshakeTimeoutWinsBeforeRelayCommit() = runBlocking {
+        val commitEntered = CompletableDeferred<Unit>()
+        val releaseCommit = CompletableDeferred<Unit>()
+        val relayCompleted = CompletableDeferred<Unit>()
+        val controlFactory = FakeControlFactory()
+        val listenerFactory = FakeListenerFactory()
+        val parentScope = newParentScope()
+        val client = newClient(
+            parentScope,
+            controlFactory,
+            listenerFactory,
+            hooks = KotlinFrpcRuntimeLifecycleHooks(
+                beforeVisitorHandshakeCommit = {
+                    commitEntered.complete(Unit)
+                    releaseCommit.await()
+                },
+                visitorHandshakeTimeoutMillis = 50L,
+                afterRelayCompletion = { relayCompleted.complete(Unit) },
+            ),
+        )
+        val sessionId = client.startSession(sessionConfig())
+        val control = controlFactory.single()
+        try {
+            control.open(epoch = 1L, transport = 1L)
+            val ensured = client.ensureVisitor(sessionId, visitorConfig(bindPort = 50_039))
+            val listener = listenerFactory.takeBinding().listener
+            client.waitVisitorReady(sessionId, "visitor", ensured.desiredRevision, 1_000L)
+            val serverPayload = "must-not-be-relayed".encodeToByteArray()
+            val response = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored"))
+            val stream = ScriptedMuxStream(response + serverPayload)
+            control.enqueueStream(stream)
+            val local = FakeLocalConnection(ByteArray(0))
+            listener.offer(local)
+
+            commitEntered.await()
+            withTimeout(5_000L) { stream.resetStarted.await() }
+            releaseCommit.complete(Unit)
+            withTimeout(5_000L) { relayCompleted.await() }
+
+            assertTrue(local.writtenBytes().isEmpty())
+            assertEquals(1, local.closeCount.get())
+            assertEquals(1, stream.resetCount.get())
+            assertEquals("ready", client.getState(sessionId).visitors.getValue("visitor").phase)
+        } finally {
+            releaseCommit.complete(Unit)
+            control.releaseStop()
+            client.stopSession(sessionId, 5_000L)
+            client.close()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun completedFailedRelayCannotRejectTheNextAcceptedConnection() = runBlocking {
         val blockNextEnsure = AtomicBoolean(false)
         val actorBlocked = CompletableDeferred<Unit>()
