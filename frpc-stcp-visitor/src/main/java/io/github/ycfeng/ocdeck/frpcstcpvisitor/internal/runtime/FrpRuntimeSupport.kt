@@ -612,10 +612,17 @@ internal class FrpVisitorRelay(
         val completedPumps = Channel<Int>(capacity = Channel.UNLIMITED)
         val outcomes = List(2) { AtomicReference<RelayPumpOutcome?>() }
         val mergedOutcomes = BooleanArray(2)
-        val pumps = listOf(
-            launchRelayPump(0, outcomes[0], completedPumps) { copyLocalToRemote(lease, io.output) },
-            launchRelayPump(1, outcomes[1], completedPumps) { copyRemoteToLocal(io.input) },
-        )
+        val pumps = if (!visitor.useEncryption && !visitor.useCompression) {
+            listOf(
+                launchRelayPump(0, outcomes[0], completedPumps) { copyLocalToRemoteDirect(lease) },
+                launchRelayPump(1, outcomes[1], completedPumps) { copyRemoteToLocalDirect(lease) },
+            )
+        } else {
+            listOf(
+                launchRelayPump(0, outcomes[0], completedPumps) { copyLocalToRemote(lease, io.output) },
+                launchRelayPump(1, outcomes[1], completedPumps) { copyRemoteToLocal(io.input) },
+            )
+        }
         var selectedFailure: Throwable? = null
         var abortStarted = false
         var observed = 0
@@ -773,6 +780,41 @@ internal class FrpVisitorRelay(
         }
     }
 
+    private suspend fun copyLocalToRemoteDirect(lease: FrpClientStreamLease) {
+        val buffer = ByteArray(RELAY_BUFFER_SIZE)
+        var selectedFailure: Throwable? = null
+        try {
+            while (true) {
+                val count = runInterruptible(ioDispatcher) { local.input.read(buffer) }
+                if (count < 0) break
+                if (count == 0) throw KotlinFrpcStcpVisitorException(
+                    KotlinFrpcStcpVisitorFailure.RELAY_FAILED,
+                )
+                lease.stream.write(buffer, 0, count)
+            }
+        } catch (failure: CancellationException) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Error) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Exception) {
+            classifyOrdinaryRelayIoFailure(failure)?.let { classified ->
+                selectedFailure = preferRelayFatal(selectedFailure, classified)
+            }
+        } finally {
+            buffer.fill(0)
+        }
+        selectedFailure?.let { throw it }
+        try {
+            lease.stream.closeWrite()
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Error) {
+            throw failure
+        } catch (failure: Exception) {
+            classifyOrdinaryRelayIoFailure(failure)?.let { throw it }
+        }
+    }
+
     private suspend fun copyRemoteToLocal(baseInput: InputStream) {
         val buffer = ByteArray(RELAY_BUFFER_SIZE)
         var remoteInput: InputStream? = null
@@ -810,6 +852,41 @@ internal class FrpVisitorRelay(
                     }
                 }
             }
+        }
+        selectedFailure?.let { throw it }
+        try {
+            runInterruptible(ioDispatcher) { local.shutdownOutput() }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Error) {
+            throw failure
+        } catch (failure: Exception) {
+            classifyOrdinaryRelayIoFailure(failure)?.let { throw it }
+        }
+    }
+
+    private suspend fun copyRemoteToLocalDirect(lease: FrpClientStreamLease) {
+        val buffer = ByteArray(RELAY_BUFFER_SIZE)
+        var selectedFailure: Throwable? = null
+        try {
+            while (true) {
+                val count = lease.stream.read(buffer, 0, buffer.size)
+                if (count < 0) break
+                if (count == 0) throw KotlinFrpcStcpVisitorException(
+                    KotlinFrpcStcpVisitorFailure.RELAY_FAILED,
+                )
+                runInterruptible(ioDispatcher) { local.output.write(buffer, 0, count) }
+            }
+        } catch (failure: CancellationException) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Error) {
+            selectedFailure = preferRelayFatal(selectedFailure, failure)
+        } catch (failure: Exception) {
+            classifyOrdinaryRelayIoFailure(failure)?.let { classified ->
+                selectedFailure = preferRelayFatal(selectedFailure, classified)
+            }
+        } finally {
+            buffer.fill(0)
         }
         selectedFailure?.let { throw it }
         try {
