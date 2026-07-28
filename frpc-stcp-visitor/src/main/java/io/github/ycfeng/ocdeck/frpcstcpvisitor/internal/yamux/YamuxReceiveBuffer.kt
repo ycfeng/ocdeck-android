@@ -14,17 +14,11 @@ internal class YamuxReceiveBuffer {
     val blockCount: Int
         get() = blocks.size
 
-    // Takes ownership of the payload segment arrays.
-    fun takeFrame(payload: YamuxPayloadSegments) {
+    fun appendFrame(payload: YamuxPayloadSegments) {
         require(payload.length >= 0)
         require(payload.segments.sumOf(ByteArray::size) == payload.length)
         require(payload.segments.all(ByteArray::isNotEmpty))
         payload.segments.forEach { source ->
-            if ((blocks.isEmpty() || tailLength == BLOCK_SIZE) && source.size == BLOCK_SIZE) {
-                blocks.addLast(source)
-                tailLength = BLOCK_SIZE
-                return@forEach
-            }
             var sourceOffset = 0
             while (sourceOffset < source.size) {
                 if (blocks.isEmpty() || tailLength == BLOCK_SIZE) {
