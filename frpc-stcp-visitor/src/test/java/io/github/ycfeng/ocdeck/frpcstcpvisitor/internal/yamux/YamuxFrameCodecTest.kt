@@ -212,7 +212,7 @@ class YamuxFrameCodecTest {
         val buffer = YamuxReceiveBuffer()
         val tinyFrameCount = 100_000
         repeat(tinyFrameCount) { index ->
-            buffer.appendFrame(
+            buffer.takeFrame(
                 YamuxPayloadSegments(
                     segments = listOf(byteArrayOf(index.toByte())),
                     length = 1,
@@ -229,7 +229,7 @@ class YamuxFrameCodecTest {
         val chunk = ByteArray(YamuxReceiveBuffer.BLOCK_SIZE) { index -> index.toByte() }
         while (remaining > 0) {
             val count = minOf(remaining, chunk.size)
-            buffer.appendFrame(
+            buffer.takeFrame(
                 YamuxPayloadSegments(
                     segments = listOf(chunk.copyOf(count)),
                     length = count,
@@ -246,6 +246,71 @@ class YamuxFrameCodecTest {
             assertTrue(buffer.read(destination, 0, destination.size) > 0)
         }
         assertEquals(0, buffer.blockCount)
+    }
+
+    @Test
+    fun receiveBufferTakesOwnershipOfAlignedSegmentsWithoutWeakeningTinyFrameCoalescing() {
+        val buffer = YamuxReceiveBuffer()
+        val aligned = ByteArray(YamuxReceiveBuffer.BLOCK_SIZE) { index -> index.toByte() }
+
+        buffer.takeFrame(YamuxPayloadSegments(listOf(aligned), aligned.size))
+        aligned[0] = 99
+
+        assertEquals(1, buffer.blockCount)
+        assertEquals(aligned.size.toLong(), buffer.byteCount)
+        val destination = ByteArray(aligned.size)
+        assertEquals(aligned.size, buffer.read(destination, 0, destination.size))
+        assertEquals(99, destination[0].toInt())
+        assertEquals(aligned.last(), destination.last())
+        assertEquals(0, buffer.blockCount)
+    }
+
+    @Test
+    fun receiveBufferTransfersAlignedSegmentAfterPartiallyReadHead() {
+        val buffer = YamuxReceiveBuffer()
+        val first = ByteArray(YamuxReceiveBuffer.BLOCK_SIZE) { 1 }
+        val second = ByteArray(YamuxReceiveBuffer.BLOCK_SIZE) { 2 }
+        buffer.takeFrame(YamuxPayloadSegments(listOf(first), first.size))
+        assertEquals(1, buffer.read(ByteArray(1), 0, 1))
+
+        buffer.takeFrame(YamuxPayloadSegments(listOf(second), second.size))
+        second[0] = 99
+
+        val remainingFirst = ByteArray(first.size - 1)
+        assertEquals(remainingFirst.size, buffer.read(remainingFirst, 0, remainingFirst.size))
+        assertTrue(remainingFirst.all { it == 1.toByte() })
+        val next = ByteArray(1)
+        assertEquals(1, buffer.read(next, 0, 1))
+        assertEquals(99, next[0].toInt())
+    }
+
+    @Test
+    fun receiveBufferCopiesAcrossPartialTailAndValidatesBeforeMutation() {
+        val buffer = YamuxReceiveBuffer()
+        val prefix = byteArrayOf(1, 2, 3)
+        val aligned = ByteArray(YamuxReceiveBuffer.BLOCK_SIZE) { 4 }
+        buffer.takeFrame(YamuxPayloadSegments(listOf(prefix), prefix.size))
+        buffer.takeFrame(YamuxPayloadSegments(listOf(aligned), aligned.size))
+        aligned.fill(9)
+
+        val destination = ByteArray(prefix.size + aligned.size)
+        assertEquals(destination.size, buffer.read(destination, 0, destination.size))
+        assertTrue(destination.copyOfRange(0, prefix.size).contentEquals(prefix))
+        assertTrue(destination.copyOfRange(prefix.size, destination.size).all { it == 4.toByte() })
+
+        val invalidBuffer = YamuxReceiveBuffer()
+        assertTrue(
+            failureOf {
+                invalidBuffer.takeFrame(
+                    YamuxPayloadSegments(
+                        segments = listOf(ByteArray(YamuxReceiveBuffer.BLOCK_SIZE), byteArrayOf()),
+                        length = YamuxReceiveBuffer.BLOCK_SIZE,
+                    ),
+                )
+            } is IllegalArgumentException,
+        )
+        assertEquals(0L, invalidBuffer.byteCount)
+        assertEquals(0, invalidBuffer.blockCount)
     }
 
     @Test

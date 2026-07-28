@@ -245,7 +245,7 @@ internal class YamuxStream internal constructor(
             if (terminalFailure == null && !closed) {
                 check(reservedInboundBytes >= payload.length.toLong())
                 reservedInboundBytes -= payload.length.toLong()
-                receiveBuffer.appendFrame(payload)
+                receiveBuffer.takeFrame(payload)
                 published = true
                 if (hasFin) remoteWriteClosed = true
                 notifyClosed = completeGracefullyIfReadyLocked()
