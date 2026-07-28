@@ -229,6 +229,7 @@ fun registerAppE2eTask(
             systemProperty("ocdeck.frp.appE2e.deviceSerial", serial)
         }
         if (resourceMode) {
+            environment("OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE", "")
             systemProperty("ocdeck.frp.appE2e.suite", "core")
             systemProperty(
                 "ocdeck.frp.appE2e.profile",

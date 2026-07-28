@@ -192,7 +192,7 @@ OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE="${TMPDIR:-/tmp}/opencode/<private-confi
 
 ### 对称资源、压力、泄漏与 Soak Harness
 
-Release-Like 资源任务会在同一个 App/instrumentation 进程中，针对任一 backend 运行共享 `core` workload。`frpcGoMobileAppResourceTest` 与 `frpcKotlinAppResourceTest` 分别运行单一 backend；`frpcAppResourceTest` 会串行运行两者并应用版本化策略 `k7-resource-v1`。每个资源证据任务都要求显式提供非空 `ocdeck.frp.appE2e.deviceSerial`，从而把两次 backend 运行锁定到同一设备，同时不把 serial 写入证据。证据目录同样是必填项且必须已存在。`ocdeck.frp.appResource.backendOrder` 只接受 `gomobile,kotlin` 或 `kotlin,gomobile`，默认使用前者。聚合任务还会要求两份有界 summary 使用相同的干净候选、设备 metadata 与 workload 后才会成功：
+Release-Like 资源任务会在同一个 App/instrumentation 进程中，针对任一 backend 运行共享 `core` workload。`frpcGoMobileAppResourceTest` 与 `frpcKotlinAppResourceTest` 分别运行单一 backend；`frpcAppResourceTest` 会串行运行两者并应用版本化策略 `k7-resource-v1`。资源任务会显式清空 `OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE`，避免从调用环境继承的私有 network-suite 配置进入 `core` 证据路径。每个资源证据任务都要求显式提供非空 `ocdeck.frp.appE2e.deviceSerial`，从而把两次 backend 运行锁定到同一设备，同时不把 serial 写入证据。证据目录同样是必填项且必须已存在。`ocdeck.frp.appResource.backendOrder` 只接受 `gomobile,kotlin` 或 `kotlin,gomobile`，默认使用前者。聚合任务还会要求两份有界 summary 使用相同的干净候选、设备 metadata 与 workload 后才会成功：
 
 ```powershell
 .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcAppResourceTest `
