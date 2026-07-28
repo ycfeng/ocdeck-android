@@ -293,22 +293,27 @@ jobs:
 
       - name: Run Android tests and build verification APKs
         shell: bash
-        run: >-
-          bash ./gradlew --no-daemon
-          :frpc-stcp-visitor:checkGoMobileBridgeAar
-          :app:testDebugUnitTest
-          :app:testCanaryUnitTest
-          :app:testGoMobileReleaseUnitTest
-          :app:testKotlinReleaseUnitTest
-          :frpc-stcp-visitor:testDebugUnitTest
-          :app:assembleDebug
-          :app:assembleCanary
-          :app:assembleGoMobileRelease
-          :app:assembleGoMobileReleaseAndroidTest
-          :app:assembleKotlinRelease
-          :app:assembleKotlinReleaseAndroidTest
-          :app:verifyPureKotlinPackaging
-          -PrequireGoMobileBridge=true
+        run: |
+          set -euo pipefail
+          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
+            :frpc-stcp-visitor:checkGoMobileBridgeAar \
+            :app:testDebugUnitTest \
+            :app:testCanaryUnitTest \
+            :app:testGoMobileReleaseUnitTest \
+            :app:testKotlinReleaseUnitTest \
+            :frpc-stcp-visitor:testDebugUnitTest \
+            :app:assembleDebug \
+            :app:assembleCanary \
+            -PrequireGoMobileBridge=true
+          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
+            :app:assembleGoMobileRelease \
+            :app:assembleGoMobileReleaseAndroidTest \
+            -PrequireGoMobileBridge=true
+          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
+            :app:assembleKotlinRelease \
+            :app:assembleKotlinReleaseAndroidTest \
+            :app:verifyPureKotlinPackaging \
+            -PrequireGoMobileBridge=true
 
       - name: Decode release keystore
         shell: bash
