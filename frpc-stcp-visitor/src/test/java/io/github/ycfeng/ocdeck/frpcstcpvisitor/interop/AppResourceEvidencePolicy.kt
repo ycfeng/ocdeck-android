@@ -12,7 +12,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
-internal const val APP_RESOURCE_POLICY_VERSION = "k7-resource-v1"
+internal const val APP_RESOURCE_POLICY_VERSION = "k7-resource-v2"
 private const val MAXIMUM_EVIDENCE_BYTES = 64 * 1024L
 private const val MAXIMUM_CPU_REGRESSION_RATIO = 1.50
 private const val MAXIMUM_WALL_REGRESSION_RATIO = 1.25
@@ -49,9 +49,12 @@ internal data class AppResourcePolicyInput(
     val wallDurationMillis: Long,
     val cpuDurationMillis: Long,
     val start: AppResourcePolicySnapshot,
+    val visitorReady: AppResourcePolicySnapshot,
     val end: AppResourcePolicySnapshot,
     val samples: List<AppResourcePolicySnapshot>,
     val quiescence: AppResourcePolicySnapshot,
+    val threadLifecycle: AppE2eThreadLifecycle,
+    val threadCohorts: AppE2eThreadLifecycleCohorts,
 )
 
 internal data class AppResourcePolicyEvaluation(
@@ -73,7 +76,7 @@ internal fun loadAppResourcePolicyInput(file: File, expectedBackend: String): Ap
         "App resource evidence was missing or exceeded its bounded size."
     }
     val root = Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)).jsonObject
-    require(root.int("schemaVersion") == 9L && root.string("backend") == expectedBackend &&
+    require(root.int("schemaVersion") == 10L && root.string("backend") == expectedBackend &&
         root.string("suite") == "core" && root.string("status") == "passed" &&
         root.boolean("cleanupVerified") && !root.boolean("authorizesKotlinDefault")
     ) {
@@ -128,11 +131,15 @@ internal fun loadAppResourcePolicyInput(file: File, expectedBackend: String): Ap
     }
     val resource = resources.single().jsonObject
     val start = resource.objectValue("start").resourceSnapshot()
+    val visitorReady = resource.objectValue("visitorReady").resourceSnapshot()
     val end = resource.objectValue("end").resourceSnapshot()
     val wallDurationMillis = resource.int("wallDurationMillis")
     val cpuDurationMillis = resource.int("cpuDurationMillis")
-    require(start.sampleOrdinal == null && end.sampleOrdinal == null &&
+    require(start.sampleOrdinal == null && visitorReady.sampleOrdinal == null && end.sampleOrdinal == null &&
+        visitorReady.elapsedRealtimeMillis in start.elapsedRealtimeMillis..end.elapsedRealtimeMillis &&
+        visitorReady.processCpuMillis in start.processCpuMillis..end.processCpuMillis &&
         wallDurationMillis > 0L && cpuDurationMillis >= 0L &&
+        cpuDurationMillis <= wallDurationMillis * 64L &&
         wallDurationMillis == end.elapsedRealtimeMillis - start.elapsedRealtimeMillis &&
         cpuDurationMillis == end.processCpuMillis - start.processCpuMillis
     ) {
@@ -178,6 +185,42 @@ internal fun loadAppResourcePolicyInput(file: File, expectedBackend: String): Ap
     ) {
         "App resource evidence did not contain the required post-cleanup quiescence snapshot."
     }
+    val lifecycleObject = resource.objectValue("threadLifecycle")
+    val histogram = lifecycleObject.arrayValue("presenceHistogram").map { element ->
+        val value = element.jsonPrimitive.longOrNull
+            ?: throw IllegalArgumentException("App resource evidence thread lifecycle was invalid.")
+        require(value in 0..APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT.toLong()) {
+            "App resource evidence thread lifecycle was invalid."
+        }
+        value.toInt()
+    }
+    val lifecycleSchemaVersion = lifecycleObject.int("schemaVersion")
+    val lifecycleCaptureLimit = lifecycleObject.int("captureLimit")
+    require(lifecycleSchemaVersion == APP_E2E_THREAD_LIFECYCLE_SCHEMA_VERSION.toLong() &&
+        lifecycleCaptureLimit == APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT.toLong()
+    ) {
+        "App resource evidence thread lifecycle was invalid."
+    }
+    val threadLifecycle = AppE2eThreadLifecycle(
+        schemaVersion = lifecycleSchemaVersion.toInt(),
+        classifier = lifecycleObject.string("classifier"),
+        captureLimit = lifecycleCaptureLimit.toInt(),
+        presenceHistogram = histogram,
+    )
+    require(isValidThreadLifecycle(threadLifecycle) &&
+        start.threadCount == threadLifecycleCheckpointTotal(threadLifecycle, APP_E2E_THREAD_START).toLong() &&
+        visitorReady.threadCount == threadLifecycleCheckpointTotal(
+            threadLifecycle,
+            APP_E2E_THREAD_VISITOR_READY,
+        ).toLong() &&
+        end.threadCount == threadLifecycleCheckpointTotal(threadLifecycle, APP_E2E_THREAD_POST_CLEANUP).toLong() &&
+        quiescenceSnapshot.threadCount == threadLifecycleCheckpointTotal(
+            threadLifecycle,
+            APP_E2E_THREAD_QUIESCENCE,
+        ).toLong()
+    ) {
+        "App resource evidence thread lifecycle was invalid."
+    }
     return AppResourcePolicyInput(
         backend = expectedBackend,
         profile = profile,
@@ -188,9 +231,12 @@ internal fun loadAppResourcePolicyInput(file: File, expectedBackend: String): Ap
         wallDurationMillis = wallDurationMillis,
         cpuDurationMillis = cpuDurationMillis,
         start = start,
+        visitorReady = visitorReady,
         end = end,
         samples = samples,
         quiescence = quiescenceSnapshot,
+        threadLifecycle = threadLifecycle,
+        threadCohorts = threadLifecycleCohorts(threadLifecycle),
     )
 }
 
@@ -283,16 +329,23 @@ private fun windowSize(samples: List<AppResourcePolicySnapshot>): Int = ceil(sam
 private fun ratio(numerator: Long, denominator: Long): Double? =
     if (denominator > 0L) numerator.toDouble() / denominator else null
 
-private fun JsonObject.resourceSnapshot(): AppResourcePolicySnapshot = AppResourcePolicySnapshot(
-    elapsedRealtimeMillis = nonNegative("elapsedRealtimeMillis"),
-    processCpuMillis = nonNegative("processCpuMillis"),
-    pssKiB = nonNegative("pssKiB"),
-    javaHeapBytes = nonNegative("javaHeapBytes"),
-    nativeHeapBytes = nonNegative("nativeHeapBytes"),
-    openFdCount = positive("openFdCount"),
-    threadCount = positive("threadCount"),
-    sampleOrdinal = optionalPositiveInt("sampleOrdinal"),
-)
+private fun JsonObject.resourceSnapshot(): AppResourcePolicySnapshot {
+    val openFdCount = positive("openFdCount")
+    val threadCount = positive("threadCount")
+    require(openFdCount <= MAXIMUM_APP_E2E_RESOURCE_COUNT && threadCount <= MAXIMUM_APP_E2E_RESOURCE_COUNT) {
+        "App resource evidence contained an out-of-range resource count."
+    }
+    return AppResourcePolicySnapshot(
+        elapsedRealtimeMillis = nonNegative("elapsedRealtimeMillis"),
+        processCpuMillis = nonNegative("processCpuMillis"),
+        pssKiB = nonNegative("pssKiB"),
+        javaHeapBytes = nonNegative("javaHeapBytes"),
+        nativeHeapBytes = nonNegative("nativeHeapBytes"),
+        openFdCount = openFdCount,
+        threadCount = threadCount,
+        sampleOrdinal = optionalPositiveInt("sampleOrdinal"),
+    )
+}
 
 private fun JsonObject.optionalPositiveInt(name: String): Int? {
     val value = this[name] ?: return null
@@ -328,20 +381,33 @@ private fun JsonObject.boolean(name: String): Boolean =
 fun main(args: Array<String>) {
     require(args.size == 1) { "Expected one App resource evidence directory." }
     val directory = File(args.single())
+    val goMobile = loadAppResourcePolicyInput(directory.resolve("gomobile-app-resource.json"), "gomobile")
+    val kotlin = loadAppResourcePolicyInput(directory.resolve("kotlin-app-resource.json"), "kotlin")
     val evaluation = evaluateAppResourcePolicy(
-        loadAppResourcePolicyInput(directory.resolve("gomobile-app-resource.json"), "gomobile"),
-        loadAppResourcePolicyInput(directory.resolve("kotlin-app-resource.json"), "kotlin"),
+        goMobile,
+        kotlin,
     )
-    println(
-        "policy=$APP_RESOURCE_POLICY_VERSION profile=${evaluation.profile} " +
-            "cpuRatio=${evaluation.cpuRegressionRatio?.format()} " +
-            "wallRatio=${evaluation.wallRegressionRatio?.format()} " +
-            "pssRatio=${evaluation.pssRegressionRatio?.format()} status=" +
-            if (evaluation.failures.isEmpty()) "passed" else "failed",
-    )
+    println(formatAppResourcePolicySummary(goMobile, kotlin, evaluation))
     check(evaluation.failures.isEmpty()) {
         "App resource evidence failed $APP_RESOURCE_POLICY_VERSION: ${evaluation.failures.joinToString(" ")}"
     }
 }
+
+internal fun formatAppResourcePolicySummary(
+    goMobile: AppResourcePolicyInput,
+    kotlin: AppResourcePolicyInput,
+    evaluation: AppResourcePolicyEvaluation,
+): String =
+        "policy=$APP_RESOURCE_POLICY_VERSION profile=${evaluation.profile} " +
+            "cpuRatio=${evaluation.cpuRegressionRatio?.format()} " +
+            "wallRatio=${evaluation.wallRegressionRatio?.format()} " +
+            "pssRatio=${evaluation.pssRegressionRatio?.format()} " +
+            "gomobileThreads=${goMobile.threadCohorts.format()} " +
+            "kotlinThreads=${kotlin.threadCohorts.format()} status=" +
+            if (evaluation.failures.isEmpty()) "passed" else "failed"
+
+private fun AppE2eThreadLifecycleCohorts.format(): String =
+    "baseline:$quiescenceBaselineSurvivors,warmup:$warmupCreatedSurvivors," +
+        "postWarmup:$postWarmupCreatedSurvivors"
 
 private fun Double.format(): String = "%.3f".format(java.util.Locale.ROOT, this)

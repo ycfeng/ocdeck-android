@@ -1,6 +1,7 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.interop
 
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -13,13 +14,18 @@ import org.junit.Test
 class AppResourceEvidencePolicyTest {
     @Test
     fun matchingEvidenceWithinPolicyPasses() {
-        val evaluation = evaluateAppResourcePolicy(
-            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100),
-            input("kotlin", cpu = 140_000, pss = 60_000, threads = 104),
-        )
+        val goMobile = input("gomobile", cpu = 100_000, pss = 80_000, threads = 100)
+        val kotlin = input("kotlin", cpu = 140_000, pss = 60_000, threads = 104)
+        val evaluation = evaluateAppResourcePolicy(goMobile, kotlin)
 
         assertTrue(evaluation.failures.isEmpty())
         assertEquals(1.4, evaluation.cpuRegressionRatio!!, 0.001)
+        assertTrue(
+            formatAppResourcePolicySummary(goMobile, kotlin, evaluation).contains(
+                "gomobileThreads=baseline:100,warmup:0,postWarmup:0 " +
+                    "kotlinThreads=baseline:104,warmup:0,postWarmup:0 status=passed",
+            ),
+        )
     }
 
     @Test
@@ -70,7 +76,7 @@ class AppResourceEvidencePolicyTest {
     fun legacySummarySchemaFailsClosedBeforePayloadParsing() {
         val file = Files.createTempFile("ocdeck-resource-schema", ".json")
         try {
-            Files.write(file, "{\"schemaVersion\":8}".toByteArray())
+            Files.write(file, "{\"schemaVersion\":9}".toByteArray())
 
             assertThrows(IllegalArgumentException::class.java) {
                 loadAppResourcePolicyInput(file.toFile(), "gomobile")
@@ -81,12 +87,46 @@ class AppResourceEvidencePolicyTest {
     }
 
     @Test
-    fun validSchemaNineEvidenceLoads() {
+    fun validSchemaTenEvidenceLoadsAndRecomputesCohorts() {
         withEvidenceFile(evidenceJson()) { file ->
             val input = loadAppResourcePolicyInput(file, "gomobile")
 
             assertEquals(10, input.workloadResult.completedIterations)
             assertEquals((1..5).toList(), input.samples.map { it.sampleOrdinal })
+            assertEquals(AppE2eThreadLifecycleCohorts(100, 0, 0), input.threadCohorts)
+        }
+    }
+
+    @Test
+    fun malformedThreadLifecycleAndCheckpointMismatchFailClosed() {
+        listOf(
+            evidenceJson(histogram = List(15) { 0 }),
+            evidenceJson(histogram = MutableList(16) { 0 }.also { it[0] = 1; it[15] = 100 }),
+            evidenceJson(histogram = MutableList(16) { 0 }.also {
+                it[15] = APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT + 1
+            }),
+            evidenceJson(histogram = MutableList(16) { 0 }.also { it[1] = 9_000; it[2] = 9_000 }),
+            evidenceJson(startThreads = 99),
+        ).forEach { evidence ->
+            withEvidenceFile(evidence) { file ->
+                assertThrows(IllegalArgumentException::class.java) {
+                    loadAppResourcePolicyInput(file, "gomobile")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun hostResourceBoundsAlsoFailClosedOffline() {
+        listOf(
+            evidenceJson(endCpu = 10_000_000, resourceCpu = 10_000_000),
+            evidenceJson(openFdCount = APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT + 1),
+        ).forEach { evidence ->
+            withEvidenceFile(evidence) { file ->
+                assertThrows(IllegalArgumentException::class.java) {
+                    loadAppResourcePolicyInput(file, "gomobile")
+                }
+            }
         }
     }
 
@@ -136,6 +176,12 @@ class AppResourceEvidencePolicyTest {
             )
         }
         val workload = AppE2eWorkload("leak", 16, 1, 0, 4, 1)
+        val lifecycle = AppE2eThreadLifecycle(
+            schemaVersion = APP_E2E_THREAD_LIFECYCLE_SCHEMA_VERSION,
+            classifier = APP_E2E_THREAD_LIFECYCLE_CLASSIFIER,
+            captureLimit = APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT,
+            presenceHistogram = MutableList(16) { 0 }.also { it[15] = threads.toInt() },
+        )
         return AppResourcePolicyInput(
             backend = backend,
             profile = "leak",
@@ -146,12 +192,15 @@ class AppResourceEvidencePolicyTest {
             wallDurationMillis = wall,
             cpuDurationMillis = cpu,
             start = samples.first(),
+            visitorReady = samples.first(),
             end = samples.last(),
             samples = samples,
             quiescence = samples.first().copy(
                 elapsedRealtimeMillis = samples.last().elapsedRealtimeMillis + APP_E2E_RESOURCE_QUIESCENCE_MILLIS,
                 processCpuMillis = samples.last().processCpuMillis,
             ),
+            threadLifecycle = lifecycle,
+            threadCohorts = threadLifecycleCohorts(lifecycle),
         )
     }
 
@@ -159,8 +208,13 @@ class AppResourceEvidencePolicyTest {
         completedIterations: Int = 10,
         reconnectCount: Int = 5,
         sampleOrdinals: List<Int> = (1..5).toList(),
+        histogram: List<Int> = MutableList(16) { 0 }.also { it[15] = 100 },
+        startThreads: Int = 100,
+        endCpu: Long = 10_000,
+        resourceCpu: Long = 10_000,
+        openFdCount: Int = 100,
     ): String = buildJsonObject {
-            put("schemaVersion", 9)
+            put("schemaVersion", 10)
             put("backend", "gomobile")
             put("suite", "core")
             put("status", "passed")
@@ -190,13 +244,16 @@ class AppResourceEvidencePolicyTest {
             }
             putJsonArray("resources") {
                 add(buildJsonObject {
-                    putJsonObject("start") { addSnapshot(0, 0, null) }
-                    putJsonObject("end") { addSnapshot(120_000, 10_000, null) }
+                    putJsonObject("start") { addSnapshot(0, 0, null, startThreads, openFdCount) }
+                    putJsonObject("visitorReady") { addSnapshot(100, 10, null, openFdCount = openFdCount) }
+                    putJsonObject("end") { addSnapshot(120_000, endCpu, null, openFdCount = openFdCount) }
                     put("wallDurationMillis", 120_000)
-                    put("cpuDurationMillis", 10_000)
+                    put("cpuDurationMillis", resourceCpu)
                     putJsonArray("samples") {
                         sampleOrdinals.forEach { ordinal ->
-                            add(buildJsonObject { addSnapshot(ordinal * 1_000L, ordinal * 100L, ordinal) })
+                            add(buildJsonObject {
+                                addSnapshot(ordinal * 1_000L, ordinal * 100L, ordinal, openFdCount = openFdCount)
+                            })
                         }
                     }
                     put("droppedSampleCount", 0)
@@ -208,7 +265,15 @@ class AppResourceEvidencePolicyTest {
                     }
                     putJsonObject("quiescence") {
                         put("requestedDelayMillis", APP_E2E_RESOURCE_QUIESCENCE_MILLIS)
-                        putJsonObject("snapshot") { addSnapshot(210_000, 10_000, null) }
+                        putJsonObject("snapshot") {
+                            addSnapshot(210_000, endCpu, null, openFdCount = openFdCount)
+                        }
+                    }
+                    putJsonObject("threadLifecycle") {
+                        put("schemaVersion", APP_E2E_THREAD_LIFECYCLE_SCHEMA_VERSION)
+                        put("classifier", APP_E2E_THREAD_LIFECYCLE_CLASSIFIER)
+                        put("captureLimit", APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT)
+                        putJsonArray("presenceHistogram") { histogram.forEach { add(it) } }
                     }
                 })
             }
@@ -218,14 +283,16 @@ class AppResourceEvidencePolicyTest {
         elapsed: Long,
         cpu: Long,
         ordinal: Int?,
+        threads: Int = 100,
+        openFdCount: Int = 100,
     ) {
         put("elapsedRealtimeMillis", elapsed)
         put("processCpuMillis", cpu)
         put("pssKiB", 64_000)
         put("javaHeapBytes", 8L * 1024 * 1024)
         put("nativeHeapBytes", 12L * 1024 * 1024)
-        put("openFdCount", 100)
-        put("threadCount", 100)
+        put("openFdCount", openFdCount)
+        put("threadCount", threads)
         if (ordinal != null) put("sampleOrdinal", ordinal)
     }
 

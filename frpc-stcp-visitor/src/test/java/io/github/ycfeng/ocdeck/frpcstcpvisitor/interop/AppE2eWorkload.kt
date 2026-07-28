@@ -46,8 +46,17 @@ internal data class AppE2eResourceQuiescence(
 )
 
 @Serializable
+internal data class AppE2eThreadLifecycle(
+    val schemaVersion: Int,
+    val classifier: String,
+    val captureLimit: Int,
+    val presenceHistogram: List<Int>,
+)
+
+@Serializable
 internal data class AppE2eResourceEvidence(
     val start: AppE2eResourceSnapshot,
+    val visitorReady: AppE2eResourceSnapshot? = null,
     val end: AppE2eResourceSnapshot,
     val wallDurationMillis: Long,
     val cpuDurationMillis: Long,
@@ -55,6 +64,13 @@ internal data class AppE2eResourceEvidence(
     val droppedSampleCount: Int,
     val sampleRetention: AppE2eResourceSampleRetention,
     val quiescence: AppE2eResourceQuiescence? = null,
+    val threadLifecycle: AppE2eThreadLifecycle? = null,
+)
+
+internal data class AppE2eThreadLifecycleCohorts(
+    val quiescenceBaselineSurvivors: Int,
+    val warmupCreatedSurvivors: Int,
+    val postWarmupCreatedSurvivors: Int,
 )
 
 internal fun parseAppE2eWorkload(
@@ -159,15 +175,30 @@ internal fun isValidAppE2eResourceEvidence(
                 it.processCpuMillis in evidence.start.processCpuMillis..evidence.end.processCpuMillis
         }
     val quiescenceValid = if (workload.profile == APP_E2E_PROFILE_FUNCTIONAL) {
-        evidence.quiescence == null
+        evidence.visitorReady == null && evidence.quiescence == null && evidence.threadLifecycle == null
     } else {
+        val visitorReady = evidence.visitorReady
+        val lifecycle = evidence.threadLifecycle
         evidence.quiescence?.let { quiescence ->
+            val ready = visitorReady ?: return@let false
+            val validLifecycle = lifecycle ?: return@let false
             quiescence.requestedDelayMillis == APP_E2E_RESOURCE_QUIESCENCE_MILLIS &&
                 valid(quiescence.snapshot) &&
                 quiescence.snapshot.sampleOrdinal == null &&
                 quiescence.snapshot.elapsedRealtimeMillis - evidence.end.elapsedRealtimeMillis >=
                 quiescence.requestedDelayMillis &&
-                quiescence.snapshot.processCpuMillis >= evidence.end.processCpuMillis
+                quiescence.snapshot.processCpuMillis >= evidence.end.processCpuMillis &&
+                valid(ready) && ready.sampleOrdinal == null &&
+                ready.elapsedRealtimeMillis in evidence.start.elapsedRealtimeMillis..evidence.end.elapsedRealtimeMillis &&
+                ready.processCpuMillis in evidence.start.processCpuMillis..evidence.end.processCpuMillis &&
+                isValidThreadLifecycle(validLifecycle) &&
+                evidence.start.threadCount == threadLifecycleCheckpointTotal(validLifecycle, APP_E2E_THREAD_START) &&
+                ready.threadCount == threadLifecycleCheckpointTotal(validLifecycle, APP_E2E_THREAD_VISITOR_READY) &&
+                evidence.end.threadCount == threadLifecycleCheckpointTotal(validLifecycle, APP_E2E_THREAD_POST_CLEANUP) &&
+                quiescence.snapshot.threadCount == threadLifecycleCheckpointTotal(
+                    validLifecycle,
+                    APP_E2E_THREAD_QUIESCENCE,
+                )
         } == true
     }
     return valid(evidence.start) && evidence.start.sampleOrdinal == null &&
@@ -177,6 +208,53 @@ internal fun isValidAppE2eResourceEvidence(
         evidence.wallDurationMillis >= 0L && evidence.cpuDurationMillis >= 0L &&
         evidence.cpuDurationMillis <= evidence.wallDurationMillis * 64L
 }
+
+internal fun isValidThreadLifecycle(lifecycle: AppE2eThreadLifecycle?): Boolean {
+    if (lifecycle == null || lifecycle.schemaVersion != APP_E2E_THREAD_LIFECYCLE_SCHEMA_VERSION ||
+        lifecycle.classifier != APP_E2E_THREAD_LIFECYCLE_CLASSIFIER ||
+        lifecycle.captureLimit != APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT ||
+        lifecycle.presenceHistogram.size != APP_E2E_THREAD_LIFECYCLE_BUCKET_COUNT ||
+        lifecycle.presenceHistogram[0] != 0 ||
+        lifecycle.presenceHistogram.any { it !in 0..APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT }
+    ) {
+        return false
+    }
+    return lifecycle.presenceHistogram.sumOf(Int::toLong) <= APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT
+}
+
+internal fun threadLifecycleCheckpointTotal(lifecycle: AppE2eThreadLifecycle, checkpointBit: Int): Int =
+    lifecycle.presenceHistogram.indices.sumOf { mask ->
+        if (mask and checkpointBit != 0) lifecycle.presenceHistogram[mask] else 0
+    }
+
+internal fun threadLifecycleCohorts(lifecycle: AppE2eThreadLifecycle): AppE2eThreadLifecycleCohorts =
+    AppE2eThreadLifecycleCohorts(
+        quiescenceBaselineSurvivors = lifecycle.presenceHistogram.indices.sumOf { mask ->
+            if (mask and APP_E2E_THREAD_START != 0 && mask and APP_E2E_THREAD_QUIESCENCE != 0) {
+                lifecycle.presenceHistogram[mask]
+            } else {
+                0
+            }
+        },
+        warmupCreatedSurvivors = lifecycle.presenceHistogram.indices.sumOf { mask ->
+            if (mask and APP_E2E_THREAD_START == 0 && mask and APP_E2E_THREAD_VISITOR_READY != 0 &&
+                mask and APP_E2E_THREAD_QUIESCENCE != 0
+            ) {
+                lifecycle.presenceHistogram[mask]
+            } else {
+                0
+            }
+        },
+        postWarmupCreatedSurvivors = lifecycle.presenceHistogram.indices.sumOf { mask ->
+            if (mask and APP_E2E_THREAD_START == 0 && mask and APP_E2E_THREAD_VISITOR_READY == 0 &&
+                mask and APP_E2E_THREAD_QUIESCENCE != 0
+            ) {
+                lifecycle.presenceHistogram[mask]
+            } else {
+                0
+            }
+        },
+    )
 
 internal fun expectedReconnectCount(workload: AppE2eWorkload, completedIterations: Int): Int =
     if (workload.reconnectEveryIterations == 0) 0
@@ -215,6 +293,14 @@ internal const val APP_E2E_RESOURCE_TAIL_SAMPLES =
     MAXIMUM_APP_E2E_RESOURCE_SAMPLES - APP_E2E_RESOURCE_HEAD_SAMPLES
 internal const val APP_E2E_RESOURCE_SAMPLE_RETENTION_STRATEGY = "head-tail-v1"
 internal const val APP_E2E_RESOURCE_QUIESCENCE_MILLIS = 90_000L
+internal const val APP_E2E_THREAD_LIFECYCLE_SCHEMA_VERSION = 1
+internal const val APP_E2E_THREAD_LIFECYCLE_CLASSIFIER = "proc-task-lifecycle-v1"
+internal const val APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT = 16_384
+internal const val APP_E2E_THREAD_LIFECYCLE_BUCKET_COUNT = 16
+internal const val APP_E2E_THREAD_START = 1
+internal const val APP_E2E_THREAD_VISITOR_READY = 2
+internal const val APP_E2E_THREAD_POST_CLEANUP = 4
+internal const val APP_E2E_THREAD_QUIESCENCE = 8
 internal const val MAXIMUM_APP_E2E_WORKLOAD_ITERATIONS = 100_000
 internal const val MAXIMUM_APP_E2E_WORKLOAD_CONCURRENCY = 32
 internal const val MINIMUM_APP_E2E_SOAK_MILLIS = 60_000L

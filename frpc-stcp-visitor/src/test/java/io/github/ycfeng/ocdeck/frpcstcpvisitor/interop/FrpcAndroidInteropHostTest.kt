@@ -249,6 +249,7 @@ class FrpcAndroidInteropHostTest {
         val end = resourceSnapshot(elapsed = 200, cpu = 40)
         val evidence = AppE2eResourceEvidence(
             start = start,
+            visitorReady = start.copy(elapsedRealtimeMillis = 120, processCpuMillis = 25),
             end = end,
             wallDurationMillis = 100,
             cpuDurationMillis = 20,
@@ -256,6 +257,7 @@ class FrpcAndroidInteropHostTest {
             droppedSampleCount = 0,
             sampleRetention = resourceRetention(1),
             quiescence = resourceQuiescence(end),
+            threadLifecycle = threadLifecycle(bucket = 15, count = 1),
         )
         val workload = AppE2eWorkload("baseline", 1, 1, 0, 0, 1)
         val workloadResult = AppE2eWorkloadResult("baseline", 1, 0)
@@ -272,6 +274,13 @@ class FrpcAndroidInteropHostTest {
             ),
         )
         assertFalse(isValidAppE2eResourceEvidence(evidence.copy(quiescence = null), workload, workloadResult))
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                evidence.copy(start = start.copy(threadCount = 2)),
+                workload,
+                workloadResult,
+            ),
+        )
         assertFalse(
             isValidAppE2eResourceEvidence(
                 evidence,
@@ -333,12 +342,40 @@ class FrpcAndroidInteropHostTest {
                     samples = emptyList(),
                     sampleRetention = resourceRetention(0),
                     quiescence = null,
+                    visitorReady = null,
+                    threadLifecycle = null,
                 ),
                 functionalWorkload,
                 null,
             ),
         )
         assertFalse(isValidAppE2eResourceEvidence(evidence, functionalWorkload, null))
+    }
+
+    @Test
+    fun appE2eThreadLifecycleRequiresBoundedHistogramAndMatchingCheckpointCounts() {
+        val valid = threadLifecycle(bucket = 15, count = 1)
+
+        assertTrue(isValidThreadLifecycle(valid))
+        assertFalse(isValidThreadLifecycle(valid.copy(presenceHistogram = List(15) { 0 })))
+        assertFalse(isValidThreadLifecycle(valid.copy(presenceHistogram = valid.presenceHistogram.toMutableList().also { it[0] = 1 })))
+        assertFalse(isValidThreadLifecycle(valid.copy(presenceHistogram = valid.presenceHistogram.toMutableList().also {
+            it[15] = APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT + 1
+        })))
+        assertFalse(isValidThreadLifecycle(valid.copy(presenceHistogram = MutableList(16) { 0 }.also {
+            it[1] = 9_000
+            it[2] = 9_000
+        })))
+
+        val histogram = MutableList(16) { 0 }.also {
+            it[9] = 2
+            it[10] = 3
+            it[8] = 5
+        }
+        assertEquals(
+            AppE2eThreadLifecycleCohorts(2, 3, 5),
+            threadLifecycleCohorts(valid.copy(presenceHistogram = histogram)),
+        )
     }
 
     @Test
@@ -656,7 +693,7 @@ class FrpcAndroidInteropHostTest {
             threadCount = 16_384,
         )
         val result = AppE2eResult(
-            schemaVersion = 8,
+            schemaVersion = 9,
             runId = RUN_ID,
             status = "passed",
             checks = List(19) { "bounded_check_$it" },
@@ -671,6 +708,7 @@ class FrpcAndroidInteropHostTest {
             phase = "single",
             resources = AppE2eResourceEvidence(
                 start = snapshot,
+                visitorReady = snapshot,
                 end = snapshot,
                 wallDurationMillis = 0,
                 cpuDurationMillis = 0,
@@ -688,6 +726,7 @@ class FrpcAndroidInteropHostTest {
                     requestedDelayMillis = APP_E2E_RESOURCE_QUIESCENCE_MILLIS,
                     snapshot = snapshot,
                 ),
+                threadLifecycle = threadLifecycle(bucket = 15, count = 16_384),
             ),
             workload = AppE2eWorkloadResult(
                 profile = "soak",
@@ -770,6 +809,13 @@ class FrpcAndroidInteropHostTest {
             requestedDelayMillis = APP_E2E_RESOURCE_QUIESCENCE_MILLIS,
             snapshot = end.copy(elapsedRealtimeMillis = end.elapsedRealtimeMillis + APP_E2E_RESOURCE_QUIESCENCE_MILLIS),
         )
+
+    private fun threadLifecycle(bucket: Int, count: Int): AppE2eThreadLifecycle = AppE2eThreadLifecycle(
+        schemaVersion = APP_E2E_THREAD_LIFECYCLE_SCHEMA_VERSION,
+        classifier = APP_E2E_THREAD_LIFECYCLE_CLASSIFIER,
+        captureLimit = APP_E2E_THREAD_LIFECYCLE_CAPTURE_LIMIT,
+        presenceHistogram = MutableList(APP_E2E_THREAD_LIFECYCLE_BUCKET_COUNT) { 0 }.also { it[bucket] = count },
+    )
 
     private companion object {
         const val RUN_ID = "00000000-0000-0000-0000-000000000001"

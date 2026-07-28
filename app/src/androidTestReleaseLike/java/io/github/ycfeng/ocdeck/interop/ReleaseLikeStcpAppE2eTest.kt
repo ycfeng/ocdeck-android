@@ -27,6 +27,7 @@ import io.github.ycfeng.ocdeck.data.server.ServerConfig
 import io.github.ycfeng.ocdeck.data.server.ServerConnection
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -58,6 +59,57 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 @LargeTest
 class ReleaseLikeStcpAppE2eTest {
+    @Test
+    fun threadLifecycleClassifierUsesStartTimeToDistinguishReusedTid() {
+        val reusedBefore = ProcTaskIdentity(7, 100)
+        val reusedAfter = ProcTaskIdentity(7, 200)
+        val lifecycle = buildThreadLifecycleEvidence(
+            start = setOf(reusedBefore),
+            visitorReady = setOf(reusedBefore),
+            postCleanup = setOf(reusedAfter),
+            quiescence = setOf(reusedAfter),
+        )
+
+        assertEquals(1, lifecycle.presenceHistogram[3])
+        assertEquals(1, lifecycle.presenceHistogram[12])
+        assertEquals(2, lifecycle.presenceHistogram.sum())
+    }
+
+    @Test
+    fun threadLifecycleCaptureFailsClosedAboveLimit() {
+        val taskIds = (1..THREAD_LIFECYCLE_CAPTURE_LIMIT + 1).map(Int::toString)
+
+        expectAssertion {
+            captureThreadIdentities(
+                listTaskIds = { taskIds },
+                readStat = { validProcTaskStat(1) },
+            )
+        }
+    }
+
+    @Test
+    fun procTaskStatParserUsesLastCommandDelimiterAndEnforcesBounds() {
+        assertEquals(123L, parseProcTaskStartTime(validProcTaskStat(123, "worker ) name")))
+        val exactLimit = validProcTaskStat(456).let { it + ByteArray(MAXIMUM_PROC_STAT_BYTES - it.size) { ' '.code.toByte() } }
+        assertEquals(456L, parseProcTaskStartTime(exactLimit))
+        expectAssertion { parseProcTaskStartTime(ByteArray(513)) }
+        expectAssertion {
+            parseProcTaskStartTime("7 (worker) S 1 2".toByteArray())
+        }
+    }
+
+    private fun validProcTaskStat(startTime: Long, command: String = "worker"): ByteArray =
+        ("7 ($command) " +
+            (listOf("S") + (1..18).map(Int::toString) + startTime.toString()).joinToString(" ")).toByteArray()
+
+    private fun expectAssertion(block: () -> Unit) {
+        try {
+            block()
+            fail("expected bounded classifier failure")
+        } catch (_: AppE2eAssertionException) {
+        }
+    }
+
     @Test
     fun resourceSampleCollectorRetainsTrueHeadAndTailWindows() {
         val collector = ResourceSampleCollector()
@@ -101,7 +153,10 @@ class ReleaseLikeStcpAppE2eTest {
         val configFile = requireSafeFileName(arguments.getString(ARG_CONFIG_FILE))
         var stage = STAGE_CONFIGURATION
         val checks = linkedSetOf<String>()
-        val resourceStart = captureResourceSnapshot()
+        val startThreads = captureThreadIdentities()
+        val resourceStart = captureResourceSnapshot(threadIdentities = startThreads)
+        var visitorReadyThreads: Set<ProcTaskIdentity>? = null
+        var resourceVisitorReady: AppE2eResourceSnapshot? = null
         val resourceSamples = ResourceSampleCollector()
 
         val scenarioResult = try {
@@ -110,7 +165,19 @@ class ReleaseLikeStcpAppE2eTest {
             }
             runBlocking {
                 withTimeout(scenarioTimeoutMillis(configured.workload)) {
-                    runScenario(configured, checks, resourceSamples) { stage = it }
+                    runScenario(
+                        invocation = configured,
+                        checks = checks,
+                        resourceSamples = resourceSamples,
+                        updateStage = { stage = it },
+                        onVisitorReady = {
+                            if (configured.workload.profile != PROFILE_FUNCTIONAL) {
+                                val identities = captureThreadIdentities()
+                                visitorReadyThreads = identities
+                                resourceVisitorReady = captureResourceSnapshot(threadIdentities = identities)
+                            }
+                        },
+                    )
                 }
             }
         } catch (timeout: TimeoutCancellationException) {
@@ -124,18 +191,38 @@ class ReleaseLikeStcpAppE2eTest {
         } catch (_: Exception) {
             failedResult(runId, stage, checks, FAILURE_UNEXPECTED)
         }
-        val resourceEnd = captureResourceSnapshot()
+        val postCleanupThreads = captureThreadIdentities()
+        val resourceEnd = captureResourceSnapshot(threadIdentities = postCleanupThreads)
+        var quiescenceThreads: Set<ProcTaskIdentity>? = null
         val quiescence = if (scenarioResult.status == STATUS_PASSED && scenarioResult.workload != null) {
             runBlocking { delay(RESOURCE_QUIESCENCE_MILLIS) }
+            val identities = captureThreadIdentities()
+            quiescenceThreads = identities
             AppE2eResourceQuiescence(
                 requestedDelayMillis = RESOURCE_QUIESCENCE_MILLIS,
-                snapshot = captureResourceSnapshot(),
+                snapshot = captureResourceSnapshot(threadIdentities = identities),
             )
         } else {
             null
         }
         val result = scenarioResult.copy(
-            resources = buildResourceEvidence(resourceStart, resourceEnd, resourceSamples, quiescence),
+            resources = buildResourceEvidence(
+                start = resourceStart,
+                visitorReady = resourceVisitorReady,
+                end = resourceEnd,
+                samples = resourceSamples,
+                quiescence = quiescence,
+                threadLifecycle = if (scenarioResult.status == STATUS_PASSED && scenarioResult.workload != null) {
+                    buildThreadLifecycleEvidence(
+                        startThreads,
+                        visitorReadyThreads ?: throw AppE2eAssertionException(),
+                        postCleanupThreads,
+                        quiescenceThreads ?: throw AppE2eAssertionException(),
+                    )
+                } else {
+                    null
+                },
+            ),
         )
 
         try {
@@ -155,6 +242,7 @@ class ReleaseLikeStcpAppE2eTest {
         checks: MutableSet<String>,
         resourceSamples: ResourceSampleCollector,
         updateStage: (String) -> Unit,
+        onVisitorReady: () -> Unit,
     ): AppE2eResult {
         if (invocation.suite == SUITE_PROCESS) {
             return runProcessScenario(invocation, checks, updateStage)
@@ -219,6 +307,7 @@ class ReleaseLikeStcpAppE2eTest {
                 throw AppE2eAssertionException()
             }
             checks += CHECK_STCP_READY
+            onVisitorReady()
 
             updateStage(STAGE_SNAPSHOT)
             val loaded = container.openCodeRepository.loadProjectSnapshot(
@@ -1308,13 +1397,16 @@ class ReleaseLikeStcpAppE2eTest {
         failureCode = failureCode,
     )
 
-    private fun captureResourceSnapshot(updateStage: ((String) -> Unit)? = null): AppE2eResourceSnapshot {
+    private fun captureResourceSnapshot(
+        updateStage: ((String) -> Unit)? = null,
+        threadIdentities: Set<ProcTaskIdentity>? = null,
+    ): AppE2eResourceSnapshot {
         val runtime = Runtime.getRuntime()
         val javaHeapBytes = runtime.totalMemory() - runtime.freeMemory()
         updateStage?.invoke(STAGE_RESOURCE_SAMPLE_FD)
         val openFdCount = countResourceEntries(File("/proc/self/fd"))
         updateStage?.invoke(STAGE_RESOURCE_SAMPLE_THREAD)
-        val threadCount = countResourceEntries(File("/proc/self/task"))
+        val threadCount = threadIdentities?.size ?: countResourceEntries(File("/proc/self/task"))
         updateStage?.invoke(STAGE_RESOURCE_SAMPLE_PSS)
         val pssKiB = Debug.getPss()
         updateStage?.invoke(STAGE_RESOURCE_SAMPLE_VALIDATE)
@@ -1353,9 +1445,11 @@ class ReleaseLikeStcpAppE2eTest {
 
     private fun buildResourceEvidence(
         start: AppE2eResourceSnapshot,
+        visitorReady: AppE2eResourceSnapshot?,
         end: AppE2eResourceSnapshot,
         samples: ResourceSampleCollector,
         quiescence: AppE2eResourceQuiescence?,
+        threadLifecycle: AppE2eThreadLifecycle?,
     ): AppE2eResourceEvidence {
         validateResourceSnapshot(start)
         validateResourceSnapshot(end)
@@ -1366,6 +1460,7 @@ class ReleaseLikeStcpAppE2eTest {
         }
         return AppE2eResourceEvidence(
             start = start,
+            visitorReady = visitorReady,
             end = end,
             wallDurationMillis = wallDurationMillis,
             cpuDurationMillis = cpuDurationMillis,
@@ -1373,6 +1468,100 @@ class ReleaseLikeStcpAppE2eTest {
             droppedSampleCount = samples.droppedCount,
             sampleRetention = samples.retention(),
             quiescence = quiescence,
+            threadLifecycle = threadLifecycle,
+        )
+    }
+
+    private fun captureThreadIdentities(): Set<ProcTaskIdentity> = captureThreadIdentities(
+        listTaskIds = {
+            buildList {
+                Files.newDirectoryStream(File("/proc/self/task").toPath()).use { entries ->
+                    entries.forEach { entry ->
+                        if (size >= THREAD_LIFECYCLE_CAPTURE_LIMIT) throw AppE2eAssertionException()
+                        add(entry.fileName.toString())
+                    }
+                }
+            }
+        },
+        readStat = { tid ->
+            Files.newInputStream(File("/proc/self/task/$tid/stat").toPath()).use { input ->
+                input.readAtMost(MAXIMUM_PROC_STAT_BYTES + 1)
+            }
+        },
+    )
+
+    private fun InputStream.readAtMost(maximumBytes: Int): ByteArray {
+        val output = ByteArrayOutputStream(maximumBytes)
+        val buffer = ByteArray(minOf(256, maximumBytes))
+        while (output.size() < maximumBytes) {
+            val count = read(buffer, 0, minOf(buffer.size, maximumBytes - output.size()))
+            if (count < 0) break
+            if (count == 0) continue
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+
+    private fun captureThreadIdentities(
+        listTaskIds: () -> List<String>,
+        readStat: (String) -> ByteArray,
+    ): Set<ProcTaskIdentity> {
+        repeat(THREAD_LIFECYCLE_CAPTURE_ATTEMPTS) { attempt ->
+            try {
+                val taskIds = listTaskIds()
+                if (taskIds.isEmpty() || taskIds.size > THREAD_LIFECYCLE_CAPTURE_LIMIT) {
+                    throw AppE2eAssertionException()
+                }
+                return taskIds.mapTo(linkedSetOf()) { value ->
+                    val tid = value.toIntOrNull()?.takeIf { it > 0 } ?: throw AppE2eAssertionException()
+                    ProcTaskIdentity(tid, parseProcTaskStartTime(readStat(value)))
+                }.also { identities ->
+                    if (identities.size != taskIds.size) throw AppE2eAssertionException()
+                }
+            } catch (failure: Error) {
+                throw failure
+            } catch (_: Exception) {
+                if (attempt == THREAD_LIFECYCLE_CAPTURE_ATTEMPTS - 1) throw AppE2eAssertionException()
+                Thread.yield()
+            }
+        }
+        throw AppE2eAssertionException()
+    }
+
+    private fun parseProcTaskStartTime(statBytes: ByteArray): Long {
+        if (statBytes.isEmpty() || statBytes.size > MAXIMUM_PROC_STAT_BYTES) throw AppE2eAssertionException()
+        val stat = statBytes.toString(Charsets.UTF_8)
+        val commandEnd = stat.lastIndexOf(')')
+        if (commandEnd < 0 || commandEnd + 1 >= stat.length) throw AppE2eAssertionException()
+        val fieldsFromThree = stat.substring(commandEnd + 1).trim().split(Regex("\\s+"))
+        return fieldsFromThree.getOrNull(PROC_STAT_STARTTIME_INDEX_FROM_FIELD_THREE)
+            ?.toLongOrNull()
+            ?.takeIf { it >= 0L }
+            ?: throw AppE2eAssertionException()
+    }
+
+    private fun buildThreadLifecycleEvidence(
+        start: Set<ProcTaskIdentity>,
+        visitorReady: Set<ProcTaskIdentity>,
+        postCleanup: Set<ProcTaskIdentity>,
+        quiescence: Set<ProcTaskIdentity>,
+    ): AppE2eThreadLifecycle {
+        val histogram = MutableList(THREAD_LIFECYCLE_BUCKET_COUNT) { 0 }
+        val union = start + visitorReady + postCleanup + quiescence
+        if (union.size > THREAD_LIFECYCLE_CAPTURE_LIMIT) throw AppE2eAssertionException()
+        union.forEach { identity ->
+            var mask = 0
+            if (identity in start) mask = mask or THREAD_PRESENCE_START
+            if (identity in visitorReady) mask = mask or THREAD_PRESENCE_VISITOR_READY
+            if (identity in postCleanup) mask = mask or THREAD_PRESENCE_POST_CLEANUP
+            if (identity in quiescence) mask = mask or THREAD_PRESENCE_QUIESCENCE
+            histogram[mask] += 1
+        }
+        return AppE2eThreadLifecycle(
+            schemaVersion = THREAD_LIFECYCLE_SCHEMA_VERSION,
+            classifier = THREAD_LIFECYCLE_CLASSIFIER,
+            captureLimit = THREAD_LIFECYCLE_CAPTURE_LIMIT,
+            presenceHistogram = histogram,
         )
     }
 
@@ -1486,7 +1675,7 @@ class ReleaseLikeStcpAppE2eTest {
         val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val SAFE_RUN_ID = Regex("[a-z0-9][a-z0-9-]{0,63}")
         val SAFE_FILE_NAME = Regex("[a-z0-9][a-z0-9._-]{0,127}")
-        const val SCHEMA_VERSION = 8
+        const val SCHEMA_VERSION = 9
         const val ARG_ENABLED = "ocdeck.appE2e.enabled"
         const val ARG_RUN_ID = "ocdeck.appE2e.runId"
         const val ARG_CONFIG_FILE = "ocdeck.appE2e.configFile"
@@ -1755,6 +1944,17 @@ class ReleaseLikeStcpAppE2eTest {
         const val MAXIMUM_OUTAGE_MILLIS = 300_000L
         const val NETWORK_TRANSPORT_TIMEOUT_MILLIS = 90_000L
         const val MAXIMUM_RESOURCE_COUNT = 16_384
+        const val THREAD_LIFECYCLE_SCHEMA_VERSION = 1
+        const val THREAD_LIFECYCLE_CLASSIFIER = "proc-task-lifecycle-v1"
+        const val THREAD_LIFECYCLE_CAPTURE_LIMIT = 16_384
+        const val THREAD_LIFECYCLE_BUCKET_COUNT = 16
+        const val THREAD_LIFECYCLE_CAPTURE_ATTEMPTS = 3
+        const val MAXIMUM_PROC_STAT_BYTES = 512
+        const val PROC_STAT_STARTTIME_INDEX_FROM_FIELD_THREE = 19
+        const val THREAD_PRESENCE_START = 1
+        const val THREAD_PRESENCE_VISITOR_READY = 2
+        const val THREAD_PRESENCE_POST_CLEANUP = 4
+        const val THREAD_PRESENCE_QUIESCENCE = 8
         const val MAXIMUM_RESOURCE_SAMPLES = 254
         const val RESOURCE_HEAD_SAMPLES = MAXIMUM_RESOURCE_SAMPLES / 2
         const val RESOURCE_TAIL_SAMPLES = MAXIMUM_RESOURCE_SAMPLES - RESOURCE_HEAD_SAMPLES
@@ -1917,6 +2117,7 @@ private data class AppE2eResourceQuiescence(
 @Serializable
 private data class AppE2eResourceEvidence(
     val start: AppE2eResourceSnapshot,
+    val visitorReady: AppE2eResourceSnapshot? = null,
     val end: AppE2eResourceSnapshot,
     val wallDurationMillis: Long,
     val cpuDurationMillis: Long,
@@ -1924,4 +2125,18 @@ private data class AppE2eResourceEvidence(
     val droppedSampleCount: Int,
     val sampleRetention: AppE2eResourceSampleRetention,
     val quiescence: AppE2eResourceQuiescence? = null,
+    val threadLifecycle: AppE2eThreadLifecycle? = null,
+)
+
+@Serializable
+private data class AppE2eThreadLifecycle(
+    val schemaVersion: Int,
+    val classifier: String,
+    val captureLimit: Int,
+    val presenceHistogram: List<Int>,
+)
+
+private data class ProcTaskIdentity(
+    val tid: Int,
+    val startTime: Long,
 )
