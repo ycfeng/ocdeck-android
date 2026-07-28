@@ -160,12 +160,34 @@ internal object YamuxFrameCodec {
 
     fun encodeHeader(header: YamuxFrameHeader): ByteArray {
         validateHeader(header)
-        return ByteArray(YamuxProtocol.HEADER_SIZE).also { output ->
-            output[0] = YamuxProtocol.VERSION.toByte()
-            output[1] = header.type.wireValue.toByte()
-            putUInt16(output, 2, header.flags)
-            putUInt32(output, 4, header.streamId)
-            putUInt32(output, 8, header.length)
+        return ByteArray(YamuxProtocol.HEADER_SIZE).also { output -> encodeHeaderInto(header, output) }
+    }
+
+    fun encodeFrame(
+        header: YamuxFrameHeader,
+        body: ByteArray?,
+        bodyOffset: Int,
+        bodyLength: Int,
+    ): ByteArray {
+        validateHeader(header)
+        if (header.type == YamuxFrameType.DATA) {
+            require(body != null || bodyLength == 0)
+            requireRange(body?.size ?: 0, bodyOffset, bodyLength)
+            require(header.length == bodyLength.toLong())
+        } else {
+            require(body == null)
+            require(bodyOffset == 0 && bodyLength == 0)
+        }
+        return ByteArray(YamuxProtocol.HEADER_SIZE + bodyLength).also { output ->
+            encodeHeaderInto(header, output)
+            if (bodyLength > 0) {
+                checkNotNull(body).copyInto(
+                    destination = output,
+                    destinationOffset = YamuxProtocol.HEADER_SIZE,
+                    startIndex = bodyOffset,
+                    endIndex = bodyOffset + bodyLength,
+                )
+            }
         }
     }
 
@@ -185,6 +207,14 @@ internal object YamuxFrameCodec {
         )
         validateHeader(header)
         return header
+    }
+
+    private fun encodeHeaderInto(header: YamuxFrameHeader, output: ByteArray) {
+        output[0] = YamuxProtocol.VERSION.toByte()
+        output[1] = header.type.wireValue.toByte()
+        putUInt16(output, 2, header.flags)
+        putUInt32(output, 4, header.streamId)
+        putUInt32(output, 8, header.length)
     }
 
     suspend fun readHeaderOrNull(transport: YamuxPhysicalTransport): YamuxFrameHeader? {

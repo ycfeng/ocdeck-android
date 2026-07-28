@@ -110,6 +110,26 @@ class YamuxFrameCodecTest {
     }
 
     @Test
+    fun encodedFrameCombinesHeaderAndSelectedDataWithoutChangingControlLengthSemantics() {
+        val source = byteArrayOf(9, 1, 2, 3, 8)
+        val dataHeader = YamuxFrameHeader(YamuxFrameType.DATA, flags = 0, streamId = 3L, length = 3L)
+        val encodedData = YamuxFrameCodec.encodeFrame(dataHeader, source, bodyOffset = 1, bodyLength = 3)
+
+        assertEquals(dataHeader, YamuxFrameCodec.decodeHeader(encodedData))
+        assertArrayEquals(byteArrayOf(1, 2, 3), encodedData.copyOfRange(YamuxProtocol.HEADER_SIZE, encodedData.size))
+
+        val pingHeader = YamuxFrameHeader(YamuxFrameType.PING, YamuxFlags.SYN, streamId = 0L, length = 7L)
+        val encodedPing = YamuxFrameCodec.encodeFrame(pingHeader, body = null, bodyOffset = 0, bodyLength = 0)
+        assertEquals(pingHeader, YamuxFrameCodec.decodeHeader(encodedPing))
+        assertEquals(YamuxProtocol.HEADER_SIZE, encodedPing.size)
+        assertTrue(
+            failureOf {
+                YamuxFrameCodec.encodeFrame(pingHeader, byteArrayOf(1), bodyOffset = 0, bodyLength = 1)
+            } is IllegalArgumentException,
+        )
+    }
+
+    @Test
     fun oversizedDataIsRejectedBeforeAnyTransportRead() = runTest {
         val transport = YamuxTestTransport()
 

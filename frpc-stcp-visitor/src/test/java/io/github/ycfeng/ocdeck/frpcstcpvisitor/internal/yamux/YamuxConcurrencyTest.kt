@@ -63,6 +63,68 @@ class YamuxConcurrencyTest {
     }
 
     @Test
+    fun dataFrameUsesOnePhysicalWriteAndOwnsEncodedBytesDuringTransportWrite() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val transport = YamuxTestTransport(writeGate = gate)
+        val writer = YamuxFrameWriter(
+            transport = transport,
+            config = testConfig(),
+            scope = backgroundScope,
+            onFatalFailure = { throw it },
+        )
+        val body = byteArrayOf(1, 2, 3, 4)
+        val writing = async {
+            writer.write(
+                YamuxFrameHeader(YamuxFrameType.DATA, 0, 1L, body.size.toLong()),
+                body,
+            )
+        }
+        transport.awaitWriteStarts(1)
+
+        body.fill(9)
+        gate.complete(Unit)
+        writing.await()
+
+        assertEquals(1, transport.writeStartCount)
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), parseYamuxTrace(transport.writtenBytes()).single().body)
+        writer.shutdownAndJoin(YamuxSessionClosedFailure())
+    }
+
+    @Test
+    fun cancelledPhysicalDataWriteRetainsBudgetUntilTheSingleWriteCompletes() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val transport = YamuxTestTransport(writeGate = gate)
+        val body = ByteArray(16 * 1024) { it.toByte() }
+        val wireBytes = YamuxProtocol.HEADER_SIZE.toLong() + body.size
+        val writer = YamuxFrameWriter(
+            transport = transport,
+            config = testConfig(writerQueuedByteCapacity = wireBytes),
+            scope = backgroundScope,
+            onFatalFailure = { throw it },
+        )
+        val writing = backgroundScope.async {
+            writer.write(
+                YamuxFrameHeader(YamuxFrameType.DATA, 0, 1L, body.size.toLong()),
+                body,
+            )
+        }
+        transport.awaitWriteStarts(1)
+
+        writing.cancel(CancellationException("physical-data-cancelled"))
+        runCurrent()
+        assertEquals(wireBytes, writer.pendingByteCount)
+        assertEquals(1, transport.activeWriteCount)
+
+        gate.complete(Unit)
+        assertTrue(suspendFailureOf { writing.await() } is CancellationException)
+        assertEquals(0L, writer.pendingByteCount)
+        assertEquals(0, transport.activeWriteCount)
+        assertEquals(1, transport.writeStartCount)
+        assertArrayEquals(body, parseYamuxTrace(transport.writtenBytes()).single().body)
+        writer.shutdownAndJoin(YamuxSessionClosedFailure())
+    }
+
+    @Test
     fun writerQueueWaiterCanBeCancelledWithoutStoppingTheWriter() = runTest {
         val gate = CompletableDeferred<Unit>()
         val transport = YamuxTestTransport(writeGate = gate)

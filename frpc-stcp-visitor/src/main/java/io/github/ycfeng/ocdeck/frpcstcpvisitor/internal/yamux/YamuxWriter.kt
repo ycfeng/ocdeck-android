@@ -251,7 +251,7 @@ internal class YamuxFrameWriter(
         return try {
             Request(
                 header = header,
-                body = copyBody(body, bodyOffset, bodyLength),
+                frame = YamuxFrameCodec.encodeFrame(header, body, bodyOffset, bodyLength),
                 wireBytes = specification.wireBytes,
                 priority = priority,
                 onWriteStarted = onWriteStarted,
@@ -363,13 +363,6 @@ internal class YamuxFrameWriter(
             request.releaseQueueCount(::decrementQueuedCount)
             if (!request.isNew()) continue
 
-            val encodedHeader = try {
-                YamuxFrameCodec.encodeHeader(request.header)
-            } catch (failure: Throwable) {
-                val resolution = request.cancelBeforeStart(failure)
-                failWriter(resolution?.failure ?: failure)
-                return
-            }
             var claimFailure: Throwable? = null
             val claimed = synchronized(ownershipLock) {
                 claimFailure = terminationFailure.get()
@@ -386,7 +379,7 @@ internal class YamuxFrameWriter(
 
             activeRequest.set(request)
             val ownershipFailure = request.commitPhysicalWriteOwnership()
-            val physicalFailure = ownershipFailure ?: writeRequest(request, encodedHeader)
+            val physicalFailure = ownershipFailure ?: writeRequest(request)
             activeRequest.compareAndSet(request, null)
             val resolution = request.finish(physicalFailure)
             if (resolution.failure != null) {
@@ -449,10 +442,9 @@ internal class YamuxFrameWriter(
         return request
     }
 
-    private suspend fun writeRequest(request: Request, encodedHeader: ByteArray): Throwable? = try {
+    private suspend fun writeRequest(request: Request): Throwable? = try {
         val completed = withTimeoutOrNull(config.writeTimeoutMillis) {
-            transport.writeFully(encodedHeader)
-            request.body()?.let { body -> transport.writeFully(body) }
+            transport.writeFully(request.frame())
             true
         }
         if (completed == null) YamuxTimeoutFailure(YamuxTimeoutKind.WRITE) else null
@@ -642,9 +634,6 @@ internal class YamuxFrameWriter(
         return RequestSpecification(YamuxProtocol.HEADER_SIZE.toLong() + bodyLength.toLong())
     }
 
-    private fun copyBody(body: ByteArray?, offset: Int, length: Int): ByteArray? =
-        if (length == 0) null else checkNotNull(body).copyOfRange(offset, offset + length)
-
     private fun decrementQueuedCount() {
         queuedCount.updateAndGet { current -> (current - 1).coerceAtLeast(0) }
     }
@@ -675,7 +664,7 @@ internal class YamuxFrameWriter(
 
     private class Request(
         val header: YamuxFrameHeader,
-        body: ByteArray?,
+        frame: ByteArray,
         private val wireBytes: Long,
         val priority: RequestPriority,
         private val onWriteStarted: () -> Unit,
@@ -685,7 +674,7 @@ internal class YamuxFrameWriter(
     ) {
         private val state = AtomicInteger(NEW)
         private val failureRef = AtomicReference<Throwable?>()
-        private val bodyRef = AtomicReference(body)
+        private val frameRef = AtomicReference(frame)
         private val queueCounted = AtomicBoolean(false)
         private val released = AtomicBoolean(false)
         private val abortHandle = AtomicReference<DisposableHandle?>()
@@ -715,7 +704,7 @@ internal class YamuxFrameWriter(
             }
         }
 
-        fun body(): ByteArray? = bodyRef.get()
+        fun frame(): ByteArray = checkNotNull(frameRef.get())
 
         fun isNew(): Boolean = state.get() == NEW
 
@@ -767,7 +756,7 @@ internal class YamuxFrameWriter(
                 } catch (failure: Throwable) {
                     cleanupFailure = preferYamuxFailure(cleanupFailure, failure)
                 }
-                bodyRef.set(null)
+                frameRef.set(null)
                 if (released.compareAndSet(false, true)) {
                     try {
                         releaseBytes(priority, wireBytes)
