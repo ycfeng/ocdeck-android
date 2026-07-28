@@ -28,6 +28,21 @@ internal data class AppE2eResourceSnapshot(
     val nativeHeapBytes: Long,
     val openFdCount: Int,
     val threadCount: Int,
+    val sampleOrdinal: Int? = null,
+)
+
+@Serializable
+internal data class AppE2eResourceSampleRetention(
+    val strategy: String,
+    val observedSampleCount: Int,
+    val retainedHeadSampleCount: Int,
+    val retainedTailSampleCount: Int,
+)
+
+@Serializable
+internal data class AppE2eResourceQuiescence(
+    val requestedDelayMillis: Long,
+    val snapshot: AppE2eResourceSnapshot,
 )
 
 @Serializable
@@ -38,6 +53,8 @@ internal data class AppE2eResourceEvidence(
     val cpuDurationMillis: Long,
     val samples: List<AppE2eResourceSnapshot>,
     val droppedSampleCount: Int,
+    val sampleRetention: AppE2eResourceSampleRetention,
+    val quiescence: AppE2eResourceQuiescence? = null,
 )
 
 internal fun parseAppE2eWorkload(
@@ -55,7 +72,7 @@ internal fun parseAppE2eWorkload(
         APP_E2E_PROFILE_BASELINE -> AppE2eWorkload(profile, 5, 1, 0L, 0, 1)
         APP_E2E_PROFILE_STRESS -> AppE2eWorkload(profile, 100, 8, 0L, 10, 5)
         APP_E2E_PROFILE_LEAK -> AppE2eWorkload(profile, 200, 1, 0L, 1, 5)
-        APP_E2E_PROFILE_SOAK -> AppE2eWorkload(profile, 100_000, 4, 21_600_000L, 25, 25)
+        APP_E2E_PROFILE_SOAK -> AppE2eWorkload(profile, 100_000, 4, 28_800_000L, 25, 25)
         else -> throw InteropFailure("configured App E2E resource profile was invalid")
     }
     fun integer(value: String?, default: Int): Int {
@@ -106,14 +123,34 @@ internal fun isValidAppE2eResourceEvidence(
         workload.profile == APP_E2E_PROFILE_FUNCTIONAL && workloadResult == null -> 0
         workload.profile == APP_E2E_PROFILE_FUNCTIONAL || workloadResult == null -> return false
         workloadResult.profile != workload.profile ||
-            workloadResult.completedIterations !in 1..workload.iterations -> return false
+            workloadResult.completedIterations !in 1..workload.iterations ||
+            (workload.profile != APP_E2E_PROFILE_SOAK &&
+                workloadResult.completedIterations != workload.iterations) ||
+            workloadResult.reconnectCount != expectedReconnectCount(workload, workloadResult.completedIterations) ->
+            return false
         else -> workloadResult.completedIterations / workload.sampleEveryIterations
     }
     if (workload.profile != APP_E2E_PROFILE_FUNCTIONAL && scheduledSampleCount == 0) return false
     val expectedStoredSampleCount = minOf(scheduledSampleCount, MAXIMUM_APP_E2E_RESOURCE_SAMPLES)
     val expectedDroppedSampleCount = maxOf(scheduledSampleCount - MAXIMUM_APP_E2E_RESOURCE_SAMPLES, 0)
+    val expectedHeadSampleCount = minOf(scheduledSampleCount, APP_E2E_RESOURCE_HEAD_SAMPLES)
+    val expectedTailSampleCount = minOf(
+        maxOf(scheduledSampleCount - expectedHeadSampleCount, 0),
+        APP_E2E_RESOURCE_TAIL_SAMPLES,
+    )
+    val expectedOrdinals = expectedSampleOrdinals(
+        scheduledSampleCount,
+        expectedHeadSampleCount,
+        expectedTailSampleCount,
+    )
     val samplesValid = evidence.samples.size == expectedStoredSampleCount &&
         evidence.droppedSampleCount == expectedDroppedSampleCount && evidence.samples.all(::valid) &&
+        evidence.sampleRetention == AppE2eResourceSampleRetention(
+            strategy = APP_E2E_RESOURCE_SAMPLE_RETENTION_STRATEGY,
+            observedSampleCount = scheduledSampleCount,
+            retainedHeadSampleCount = expectedHeadSampleCount,
+            retainedTailSampleCount = expectedTailSampleCount,
+        ) && evidence.samples.map(AppE2eResourceSnapshot::sampleOrdinal) == expectedOrdinals &&
         evidence.samples.zipWithNext().all { (first, second) ->
             second.elapsedRealtimeMillis >= first.elapsedRealtimeMillis &&
                 second.processCpuMillis >= first.processCpuMillis
@@ -121,11 +158,39 @@ internal fun isValidAppE2eResourceEvidence(
             it.elapsedRealtimeMillis in evidence.start.elapsedRealtimeMillis..evidence.end.elapsedRealtimeMillis &&
                 it.processCpuMillis in evidence.start.processCpuMillis..evidence.end.processCpuMillis
         }
-    return valid(evidence.start) && valid(evidence.end) && samplesValid &&
+    val quiescenceValid = if (workload.profile == APP_E2E_PROFILE_FUNCTIONAL) {
+        evidence.quiescence == null
+    } else {
+        evidence.quiescence?.let { quiescence ->
+            quiescence.requestedDelayMillis == APP_E2E_RESOURCE_QUIESCENCE_MILLIS &&
+                valid(quiescence.snapshot) &&
+                quiescence.snapshot.sampleOrdinal == null &&
+                quiescence.snapshot.elapsedRealtimeMillis - evidence.end.elapsedRealtimeMillis >=
+                quiescence.requestedDelayMillis &&
+                quiescence.snapshot.processCpuMillis >= evidence.end.processCpuMillis
+        } == true
+    }
+    return valid(evidence.start) && evidence.start.sampleOrdinal == null &&
+        valid(evidence.end) && evidence.end.sampleOrdinal == null && samplesValid && quiescenceValid &&
         evidence.wallDurationMillis == evidence.end.elapsedRealtimeMillis - evidence.start.elapsedRealtimeMillis &&
         evidence.cpuDurationMillis == evidence.end.processCpuMillis - evidence.start.processCpuMillis &&
         evidence.wallDurationMillis >= 0L && evidence.cpuDurationMillis >= 0L &&
         evidence.cpuDurationMillis <= evidence.wallDurationMillis * 64L
+}
+
+internal fun expectedReconnectCount(workload: AppE2eWorkload, completedIterations: Int): Int =
+    if (workload.reconnectEveryIterations == 0) 0
+    else completedIterations / workload.reconnectEveryIterations
+
+internal fun expectedSampleOrdinals(
+    observedSampleCount: Int,
+    retainedHeadSampleCount: Int,
+    retainedTailSampleCount: Int,
+): List<Int> = buildList {
+    if (retainedHeadSampleCount > 0) addAll(1..retainedHeadSampleCount)
+    if (retainedTailSampleCount > 0) {
+        addAll(observedSampleCount - retainedTailSampleCount + 1..observedSampleCount)
+    }
 }
 
 internal fun appE2eInstrumentationTimeoutMillis(workload: AppE2eWorkload): Long {
@@ -145,12 +210,18 @@ internal const val APP_E2E_PROFILE_LEAK = "leak"
 internal const val APP_E2E_PROFILE_SOAK = "soak"
 internal const val MAXIMUM_APP_E2E_RESOURCE_COUNT = 16_384
 internal const val MAXIMUM_APP_E2E_RESOURCE_SAMPLES = 254
+internal const val APP_E2E_RESOURCE_HEAD_SAMPLES = MAXIMUM_APP_E2E_RESOURCE_SAMPLES / 2
+internal const val APP_E2E_RESOURCE_TAIL_SAMPLES =
+    MAXIMUM_APP_E2E_RESOURCE_SAMPLES - APP_E2E_RESOURCE_HEAD_SAMPLES
+internal const val APP_E2E_RESOURCE_SAMPLE_RETENTION_STRATEGY = "head-tail-v1"
+internal const val APP_E2E_RESOURCE_QUIESCENCE_MILLIS = 90_000L
 internal const val MAXIMUM_APP_E2E_WORKLOAD_ITERATIONS = 100_000
 internal const val MAXIMUM_APP_E2E_WORKLOAD_CONCURRENCY = 32
 internal const val MINIMUM_APP_E2E_SOAK_MILLIS = 60_000L
 internal const val MAXIMUM_APP_E2E_SOAK_MILLIS = 86_400_000L
 private const val APP_E2E_WORKLOAD_SUITE_CORE = "core"
 private const val APP_E2E_ITERATION_TIMEOUT_BUDGET_MILLIS = 30_000L
-private const val APP_E2E_INSTRUMENTATION_BASE_TIMEOUT_MILLIS = 660_000L
+private const val APP_E2E_INSTRUMENTATION_BASE_TIMEOUT_MILLIS =
+    660_000L + APP_E2E_RESOURCE_QUIESCENCE_MILLIS
 private const val MAXIMUM_APP_E2E_INSTRUMENTATION_TIMEOUT_MILLIS =
     MAXIMUM_APP_E2E_SOAK_MILLIS + APP_E2E_INSTRUMENTATION_BASE_TIMEOUT_MILLIS
