@@ -245,9 +245,18 @@ class FrpcAndroidInteropHostTest {
     @Test
     fun appE2eResourceEvidenceRequiresBoundedMonotonicSamples() {
         val start = resourceSnapshot(elapsed = 100, cpu = 20)
-        val sample = resourceSnapshot(elapsed = 150, cpu = 30)
+        val sample = resourceSnapshot(elapsed = 150, cpu = 30, sampleOrdinal = 1)
         val end = resourceSnapshot(elapsed = 200, cpu = 40)
-        val evidence = AppE2eResourceEvidence(start, end, 100, 20, listOf(sample), 0)
+        val evidence = AppE2eResourceEvidence(
+            start = start,
+            end = end,
+            wallDurationMillis = 100,
+            cpuDurationMillis = 20,
+            samples = listOf(sample),
+            droppedSampleCount = 0,
+            sampleRetention = resourceRetention(1),
+            quiescence = resourceQuiescence(end),
+        )
         val workload = AppE2eWorkload("baseline", 1, 1, 0, 0, 1)
         val workloadResult = AppE2eWorkloadResult("baseline", 1, 0)
 
@@ -255,6 +264,28 @@ class FrpcAndroidInteropHostTest {
         assertFalse(isValidAppE2eResourceEvidence(evidence.copy(wallDurationMillis = 99), workload, workloadResult))
         assertFalse(isValidAppE2eResourceEvidence(evidence.copy(samples = emptyList()), workload, workloadResult))
         assertFalse(isValidAppE2eResourceEvidence(evidence.copy(droppedSampleCount = 1), workload, workloadResult))
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                evidence.copy(sampleRetention = evidence.sampleRetention.copy(strategy = "legacy")),
+                workload,
+                workloadResult,
+            ),
+        )
+        assertFalse(isValidAppE2eResourceEvidence(evidence.copy(quiescence = null), workload, workloadResult))
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                evidence,
+                workload.copy(iterations = 2),
+                workloadResult,
+            ),
+        )
+        assertFalse(
+            isValidAppE2eResourceEvidence(
+                evidence,
+                workload.copy(reconnectEveryIterations = 1),
+                workloadResult,
+            ),
+        )
         assertFalse(
             isValidAppE2eResourceEvidence(
                 evidence.copy(samples = listOf(sample, resourceSnapshot(elapsed = 140, cpu = 31))),
@@ -273,8 +304,11 @@ class FrpcAndroidInteropHostTest {
         val overflowWorkload = AppE2eWorkload("stress", 1_000, 1, 0, 0, 2)
         val overflowResult = AppE2eWorkloadResult("stress", 1_000, 0)
         val overflowEvidence = evidence.copy(
-            samples = List(MAXIMUM_APP_E2E_RESOURCE_SAMPLES) { sample },
+            samples = expectedSampleOrdinals(500, 127, 127).map { ordinal ->
+                sample.copy(sampleOrdinal = ordinal)
+            },
             droppedSampleCount = 246,
+            sampleRetention = resourceRetention(500),
         )
         assertTrue(isValidAppE2eResourceEvidence(overflowEvidence, overflowWorkload, overflowResult))
         assertFalse(
@@ -295,7 +329,11 @@ class FrpcAndroidInteropHostTest {
         val functionalWorkload = AppE2eWorkload("functional", 0, 1, 0, 0, 1)
         assertTrue(
             isValidAppE2eResourceEvidence(
-                evidence.copy(samples = emptyList()),
+                evidence.copy(
+                    samples = emptyList(),
+                    sampleRetention = resourceRetention(0),
+                    quiescence = null,
+                ),
                 functionalWorkload,
                 null,
             ),
@@ -306,15 +344,15 @@ class FrpcAndroidInteropHostTest {
     @Test
     fun appE2eInstrumentationTimeoutCoversWorkloadAndRemainsBounded() {
         assertEquals(
-            810_000L,
+            900_000L,
             appE2eInstrumentationTimeoutMillis(AppE2eWorkload("baseline", 5, 1, 0L, 0, 1)),
         )
         assertEquals(
-            22_260_000L,
-            appE2eInstrumentationTimeoutMillis(AppE2eWorkload("soak", 100_000, 4, 21_600_000L, 25, 25)),
+            29_550_000L,
+            appE2eInstrumentationTimeoutMillis(AppE2eWorkload("soak", 100_000, 4, 28_800_000L, 25, 25)),
         )
         assertEquals(
-            87_060_000L,
+            87_150_000L,
             appE2eInstrumentationTimeoutMillis(AppE2eWorkload("stress", 100_000, 1, 0L, 0, 1)),
         )
     }
@@ -618,7 +656,7 @@ class FrpcAndroidInteropHostTest {
             threadCount = 16_384,
         )
         val result = AppE2eResult(
-            schemaVersion = 7,
+            schemaVersion = 8,
             runId = RUN_ID,
             status = "passed",
             checks = List(19) { "bounded_check_$it" },
@@ -636,8 +674,20 @@ class FrpcAndroidInteropHostTest {
                 end = snapshot,
                 wallDurationMillis = 0,
                 cpuDurationMillis = 0,
-                samples = List(254) { snapshot },
+                samples = expectedSampleOrdinals(4_000, 127, 127).map { ordinal ->
+                    snapshot.copy(sampleOrdinal = ordinal)
+                },
                 droppedSampleCount = Int.MAX_VALUE,
+                sampleRetention = AppE2eResourceSampleRetention(
+                    strategy = APP_E2E_RESOURCE_SAMPLE_RETENTION_STRATEGY,
+                    observedSampleCount = Int.MAX_VALUE,
+                    retainedHeadSampleCount = APP_E2E_RESOURCE_HEAD_SAMPLES,
+                    retainedTailSampleCount = APP_E2E_RESOURCE_TAIL_SAMPLES,
+                ),
+                quiescence = AppE2eResourceQuiescence(
+                    requestedDelayMillis = APP_E2E_RESOURCE_QUIESCENCE_MILLIS,
+                    snapshot = snapshot,
+                ),
             ),
             workload = AppE2eWorkloadResult(
                 profile = "soak",
@@ -687,7 +737,11 @@ class FrpcAndroidInteropHostTest {
         step = "device_ready",
     )
 
-    private fun resourceSnapshot(elapsed: Long, cpu: Long): AppE2eResourceSnapshot = AppE2eResourceSnapshot(
+    private fun resourceSnapshot(
+        elapsed: Long,
+        cpu: Long,
+        sampleOrdinal: Int? = null,
+    ): AppE2eResourceSnapshot = AppE2eResourceSnapshot(
         elapsedRealtimeMillis = elapsed,
         processCpuMillis = cpu,
         pssKiB = 1,
@@ -695,7 +749,27 @@ class FrpcAndroidInteropHostTest {
         nativeHeapBytes = 1,
         openFdCount = 1,
         threadCount = 1,
+        sampleOrdinal = sampleOrdinal,
     )
+
+    private fun resourceRetention(observedCount: Int): AppE2eResourceSampleRetention {
+        val headCount = minOf(observedCount, APP_E2E_RESOURCE_HEAD_SAMPLES)
+        return AppE2eResourceSampleRetention(
+            strategy = APP_E2E_RESOURCE_SAMPLE_RETENTION_STRATEGY,
+            observedSampleCount = observedCount,
+            retainedHeadSampleCount = headCount,
+            retainedTailSampleCount = minOf(
+                maxOf(observedCount - headCount, 0),
+                APP_E2E_RESOURCE_TAIL_SAMPLES,
+            ),
+        )
+    }
+
+    private fun resourceQuiescence(end: AppE2eResourceSnapshot): AppE2eResourceQuiescence =
+        AppE2eResourceQuiescence(
+            requestedDelayMillis = APP_E2E_RESOURCE_QUIESCENCE_MILLIS,
+            snapshot = end.copy(elapsedRealtimeMillis = end.elapsedRealtimeMillis + APP_E2E_RESOURCE_QUIESCENCE_MILLIS),
+        )
 
     private companion object {
         const val RUN_ID = "00000000-0000-0000-0000-000000000001"

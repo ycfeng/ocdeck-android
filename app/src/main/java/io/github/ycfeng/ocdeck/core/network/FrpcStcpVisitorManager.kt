@@ -600,17 +600,19 @@ class FrpcStcpVisitorManager(
         refresh: RefreshHealthContext? = null,
     ): ServerHealthDto {
         val probe = healthProbeFactory.create(server, password, effectiveBaseUrl)
-        return try {
-            withTimeout(readinessPolicy.totalTimeoutMillis) {
-                probeUntilReady(state, probe, refresh)
-            }
-        } catch (timeout: TimeoutCancellationException) {
-            refresh?.let {
-                withContext(NonCancellable) {
-                    markHealthFailed(state, it.flight, it.controlEpoch, HealthFailure.TOTAL_TIMEOUT)
+        return probe.use { activeProbe ->
+            try {
+                withTimeout(readinessPolicy.totalTimeoutMillis) {
+                    probeUntilReady(state, activeProbe, refresh)
                 }
+            } catch (timeout: TimeoutCancellationException) {
+                refresh?.let {
+                    withContext(NonCancellable) {
+                        markHealthFailed(state, it.flight, it.controlEpoch, HealthFailure.TOTAL_TIMEOUT)
+                    }
+                }
+                throw FrpcStcpReadinessTimeoutException(server.id, timeout)
             }
-            throw FrpcStcpReadinessTimeoutException(server.id, timeout)
         }
     }
 

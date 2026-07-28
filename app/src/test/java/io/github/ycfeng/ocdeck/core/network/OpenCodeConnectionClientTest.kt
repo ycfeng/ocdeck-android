@@ -24,4 +24,19 @@ class OpenCodeConnectionClientTest {
 
         assertEquals(1, closeCalls)
     }
+
+    @Test
+    fun singleApiClientCloseReleasesItsOwnedClientOnlyOnce() {
+        var closeCalls = 0
+        val api = Proxy.newProxyInstance(
+            OpenCodeApi::class.java.classLoader,
+            arrayOf(OpenCodeApi::class.java),
+        ) { _, _, _ -> error("API must not be invoked") } as OpenCodeApi
+        val client = OpenCodeSingleApiClient(api, closeAction = { closeCalls += 1 })
+
+        client.close()
+        client.close()
+
+        assertEquals(1, closeCalls)
+    }
 }

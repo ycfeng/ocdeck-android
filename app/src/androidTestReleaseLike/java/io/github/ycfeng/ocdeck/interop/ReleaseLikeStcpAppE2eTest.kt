@@ -49,6 +49,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.junit.Assert.assertEquals
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -57,6 +58,39 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 @LargeTest
 class ReleaseLikeStcpAppE2eTest {
+    @Test
+    fun resourceSampleCollectorRetainsTrueHeadAndTailWindows() {
+        val collector = ResourceSampleCollector()
+
+        repeat(1_000) { index ->
+            collector.add(
+                AppE2eResourceSnapshot(
+                    elapsedRealtimeMillis = index.toLong(),
+                    processCpuMillis = index.toLong(),
+                    pssKiB = 1,
+                    javaHeapBytes = 1,
+                    nativeHeapBytes = 1,
+                    openFdCount = 1,
+                    threadCount = 1,
+                ),
+            )
+        }
+
+        val values = collector.values().map(AppE2eResourceSnapshot::elapsedRealtimeMillis)
+        assertEquals((0L..126L).toList() + (873L..999L).toList(), values)
+        assertEquals((1..127).toList() + (874..1_000).toList(), collector.values().map { it.sampleOrdinal })
+        assertEquals(746, collector.droppedCount)
+        assertEquals(
+            AppE2eResourceSampleRetention(
+                strategy = RESOURCE_SAMPLE_RETENTION_STRATEGY,
+                observedSampleCount = 1_000,
+                retainedHeadSampleCount = RESOURCE_HEAD_SAMPLES,
+                retainedTailSampleCount = RESOURCE_TAIL_SAMPLES,
+            ),
+            collector.retention(),
+        )
+    }
+
     @Test
     fun runConfiguredAppFlow() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -90,8 +124,18 @@ class ReleaseLikeStcpAppE2eTest {
         } catch (_: Exception) {
             failedResult(runId, stage, checks, FAILURE_UNEXPECTED)
         }
+        val resourceEnd = captureResourceSnapshot()
+        val quiescence = if (scenarioResult.status == STATUS_PASSED && scenarioResult.workload != null) {
+            runBlocking { delay(RESOURCE_QUIESCENCE_MILLIS) }
+            AppE2eResourceQuiescence(
+                requestedDelayMillis = RESOURCE_QUIESCENCE_MILLIS,
+                snapshot = captureResourceSnapshot(),
+            )
+        } else {
+            null
+        }
         val result = scenarioResult.copy(
-            resources = buildResourceEvidence(resourceStart, captureResourceSnapshot(), resourceSamples),
+            resources = buildResourceEvidence(resourceStart, resourceEnd, resourceSamples, quiescence),
         )
 
         try {
@@ -1311,6 +1355,7 @@ class ReleaseLikeStcpAppE2eTest {
         start: AppE2eResourceSnapshot,
         end: AppE2eResourceSnapshot,
         samples: ResourceSampleCollector,
+        quiescence: AppE2eResourceQuiescence?,
     ): AppE2eResourceEvidence {
         validateResourceSnapshot(start)
         validateResourceSnapshot(end)
@@ -1326,6 +1371,8 @@ class ReleaseLikeStcpAppE2eTest {
             cpuDurationMillis = cpuDurationMillis,
             samples = samples.values(),
             droppedSampleCount = samples.droppedCount,
+            sampleRetention = samples.retention(),
+            quiescence = quiescence,
         )
     }
 
@@ -1402,20 +1449,34 @@ class ReleaseLikeStcpAppE2eTest {
     }
 
     private class ResourceSampleCollector {
-        private val samples = mutableListOf<AppE2eResourceSnapshot>()
+        private val head = mutableListOf<AppE2eResourceSnapshot>()
+        private val tail = mutableListOf<AppE2eResourceSnapshot>()
+        private var observedCount = 0
         var droppedCount: Int = 0
             private set
 
         fun add(snapshot: AppE2eResourceSnapshot) {
-            if (samples.size < MAXIMUM_RESOURCE_SAMPLES) {
-                samples += snapshot
+            observedCount += 1
+            val retainedSnapshot = snapshot.copy(sampleOrdinal = observedCount)
+            if (head.size < RESOURCE_HEAD_SAMPLES) {
+                head += retainedSnapshot
             } else {
-                samples[samples.lastIndex] = snapshot
-                droppedCount += 1
+                if (tail.size == RESOURCE_TAIL_SAMPLES) {
+                    tail.removeAt(0)
+                    droppedCount += 1
+                }
+                tail += retainedSnapshot
             }
         }
 
-        fun values(): List<AppE2eResourceSnapshot> = samples.toList()
+        fun values(): List<AppE2eResourceSnapshot> = head + tail
+
+        fun retention(): AppE2eResourceSampleRetention = AppE2eResourceSampleRetention(
+            strategy = RESOURCE_SAMPLE_RETENTION_STRATEGY,
+            observedSampleCount = observedCount,
+            retainedHeadSampleCount = head.size,
+            retainedTailSampleCount = tail.size,
+        )
     }
 
     private class AppE2eAssertionException : Exception()
@@ -1425,7 +1486,7 @@ class ReleaseLikeStcpAppE2eTest {
         val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val SAFE_RUN_ID = Regex("[a-z0-9][a-z0-9-]{0,63}")
         val SAFE_FILE_NAME = Regex("[a-z0-9][a-z0-9._-]{0,127}")
-        const val SCHEMA_VERSION = 7
+        const val SCHEMA_VERSION = 8
         const val ARG_ENABLED = "ocdeck.appE2e.enabled"
         const val ARG_RUN_ID = "ocdeck.appE2e.runId"
         const val ARG_CONFIG_FILE = "ocdeck.appE2e.configFile"
@@ -1695,6 +1756,10 @@ class ReleaseLikeStcpAppE2eTest {
         const val NETWORK_TRANSPORT_TIMEOUT_MILLIS = 90_000L
         const val MAXIMUM_RESOURCE_COUNT = 16_384
         const val MAXIMUM_RESOURCE_SAMPLES = 254
+        const val RESOURCE_HEAD_SAMPLES = MAXIMUM_RESOURCE_SAMPLES / 2
+        const val RESOURCE_TAIL_SAMPLES = MAXIMUM_RESOURCE_SAMPLES - RESOURCE_HEAD_SAMPLES
+        const val RESOURCE_SAMPLE_RETENTION_STRATEGY = "head-tail-v1"
+        const val RESOURCE_QUIESCENCE_MILLIS = 90_000L
         const val RESOURCE_COUNT_ATTEMPTS = 3
         const val MAXIMUM_WORKLOAD_ITERATIONS = 100_000
         const val MAXIMUM_WORKLOAD_CONCURRENCY = 32
@@ -1832,6 +1897,21 @@ private data class AppE2eResourceSnapshot(
     val nativeHeapBytes: Long,
     val openFdCount: Int,
     val threadCount: Int,
+    val sampleOrdinal: Int? = null,
+)
+
+@Serializable
+private data class AppE2eResourceSampleRetention(
+    val strategy: String,
+    val observedSampleCount: Int,
+    val retainedHeadSampleCount: Int,
+    val retainedTailSampleCount: Int,
+)
+
+@Serializable
+private data class AppE2eResourceQuiescence(
+    val requestedDelayMillis: Long,
+    val snapshot: AppE2eResourceSnapshot,
 )
 
 @Serializable
@@ -1842,4 +1922,6 @@ private data class AppE2eResourceEvidence(
     val cpuDurationMillis: Long,
     val samples: List<AppE2eResourceSnapshot>,
     val droppedSampleCount: Int,
+    val sampleRetention: AppE2eResourceSampleRetention,
+    val quiescence: AppE2eResourceQuiescence? = null,
 )

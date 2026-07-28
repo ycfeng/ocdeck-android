@@ -11,8 +11,10 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLException
 
-fun interface OpenCodeHealthProbe {
+fun interface OpenCodeHealthProbe : AutoCloseable {
     suspend fun probe(): ServerHealthDto
+
+    override fun close() = Unit
 }
 
 fun interface OpenCodeHealthProbeFactory {
@@ -31,13 +33,17 @@ class DefaultOpenCodeHealthProbeFactory(
         password: String?,
         effectiveBaseUrl: String,
     ): OpenCodeHealthProbe {
-        val api = apiFactory.create(
+        val client = apiFactory.createSingleApiClient(
             server = server,
             password = password,
             baseUrl = effectiveBaseUrl,
             timeouts = OpenCodeHttpTimeouts.Readiness,
         )
-        return OpenCodeHealthProbe(api::getGlobalHealth)
+        return object : OpenCodeHealthProbe {
+            override suspend fun probe(): ServerHealthDto = client.api.getGlobalHealth()
+
+            override fun close() = client.close()
+        }
     }
 }
 

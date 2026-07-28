@@ -173,6 +173,7 @@ class FrpcStcpVisitorManagerContractTest {
         assertEquals("timeout must retain the established session", 1, client.startCount)
         assertEquals("timeout must not reconfigure the visitor", 1, client.ensureCount)
         assertTrue("timeout must not clean the recoverable session", client.stopAttempts.isEmpty())
+        assertEquals("native timeout must not create another probe owner", 1, probes.closeCount)
         assertEquals("timeout must not run application health", 1, probes.probeCount)
 
         val recovered = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
@@ -181,6 +182,7 @@ class FrpcStcpVisitorManagerContractTest {
         assertEquals(initial.tunnel.sessionId, recovered.tunnel.sessionId)
         assertEquals(2L, recovered.tunnel.controlEpoch)
         assertEquals(1, client.startCount)
+        assertEquals("replacement readiness probe owner must close", 2, probes.closeCount)
         assertEquals(1, client.ensureCount)
         assertEquals(3, client.waitReadyCount)
         assertEquals(2, probes.probeCount)
@@ -264,6 +266,7 @@ class FrpcStcpVisitorManagerContractTest {
         assertEquals("timeout must retain the established session", 1, client.startCount)
         assertEquals("timeout must not reconfigure the visitor", 1, client.ensureCount)
         assertTrue("timeout must not clean the recoverable session", client.stopAttempts.isEmpty())
+        assertEquals("timed out readiness probe owner must close", 2, probes.closeCount)
 
         blockRecovery = false
         val recovered = manager.ensureReadyVisitor(server, contractCredentials(), null, lease)
@@ -275,6 +278,7 @@ class FrpcStcpVisitorManagerContractTest {
         assertEquals(1, client.ensureCount)
         assertEquals(3, client.waitReadyCount)
         assertTrue(probes.probeCount > 2)
+        assertEquals("replacement readiness probe owner must close", 3, probes.closeCount)
         assertTrue(client.stopAttempts.isEmpty())
     }
 
@@ -792,6 +796,8 @@ private class ContractHealthProbeFactory(
         private set
     var probeCount = 0
         private set
+    var closeCount = 0
+        private set
     val effectiveBaseUrls = mutableListOf<String>()
 
     override fun create(
@@ -801,14 +807,20 @@ private class ContractHealthProbeFactory(
     ): OpenCodeHealthProbe {
         createCount += 1
         effectiveBaseUrls += effectiveBaseUrl
-        return OpenCodeHealthProbe {
-            probeCount += 1
-            onProbe(probeCount)
+        return object : OpenCodeHealthProbe {
+            override suspend fun probe(): ServerHealthDto {
+                probeCount += 1
+                return onProbe(probeCount)
+            }
+
+            override fun close() {
+                closeCount += 1
+            }
         }
     }
 
     override fun toString(): String =
-        "ContractHealthProbeFactory(createCount=$createCount, probeCount=$probeCount)"
+        "ContractHealthProbeFactory(createCount=$createCount, probeCount=$probeCount, closeCount=$closeCount)"
 }
 
 private class ContractCleanupJvmError : Error()

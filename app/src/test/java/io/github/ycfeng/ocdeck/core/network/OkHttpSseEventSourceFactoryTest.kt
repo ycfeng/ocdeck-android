@@ -3,6 +3,7 @@ package io.github.ycfeng.ocdeck.core.network
 import io.github.ycfeng.ocdeck.core.security.Redactor
 import io.github.ycfeng.ocdeck.core.store.SseFailureReason
 import java.io.IOException
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -12,6 +13,7 @@ import okhttp3.Callback
 import okhttp3.EventListener
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
@@ -24,12 +26,212 @@ import okio.Timeout
 import okio.buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import kotlin.reflect.KClass
 
 class OkHttpSseEventSourceFactoryTest {
+    @Test
+    fun connectionsUseDistinctAuthenticatedClientsWithSharedTransportResources() {
+        val clients = mutableListOf<OkHttpClient>()
+        val handles = mutableListOf<SseEventSource>()
+        val factory = OkHttpSseEventSourceFactory(
+            redactor = Redactor(),
+            callFactory = { client, request ->
+                clients += client
+                FakeCall(request) { call, callback -> call.callback = callback }
+            },
+        )
+
+        repeat(2) { index ->
+            handles += factory.open(
+                connection = testSseConnection().copy(password = "password-$index"),
+                request = SseRequest("http://127.0.0.1/event/$index"),
+                listener = RecordingListener(),
+            )
+        }
+
+        assertEquals(2, clients.size)
+        assertFalse(clients[0] === clients[1])
+        assertSame(clients[0].dispatcher, clients[1].dispatcher)
+        assertSame(clients[0].connectionPool, clients[1].connectionPool)
+        assertEquals(64, clients[0].dispatcher.maxRequests)
+        assertEquals(64, clients[0].dispatcher.maxRequestsPerHost)
+        assertEquals(2, clients[0].interceptors.size)
+        assertEquals(2, clients[1].interceptors.size)
+        handles.forEach(SseEventSource::cancel)
+    }
+
+    @Test
+    fun capacityRejectsImmediatelyAndWaitsForCancelledCallTermination() {
+        val calls = mutableListOf<FakeCall>()
+        val factory = factory { request ->
+            FakeCall(
+                requestValue = request,
+                enqueueAction = { call, callback -> call.callback = callback },
+                notifyFailureOnCancel = false,
+            ).also(calls::add)
+        }
+        val handles = List(64) { index ->
+            factory.open(
+                testSseConnection(),
+                SseRequest("http://127.0.0.1/event/$index"),
+                RecordingListener(),
+            )
+        }
+        val rejected = RecordingListener()
+
+        factory.open(
+            testSseConnection(),
+            SseRequest("http://127.0.0.1/event/rejected"),
+            rejected,
+        )
+
+        assertEquals(64, calls.size)
+        assertEquals(
+            SseFailureReason.OperationRejected(),
+            rejected.failures.single().reason,
+        )
+
+        handles.first().cancel()
+        val stillRejected = RecordingListener()
+        factory.open(
+            testSseConnection(),
+            SseRequest("http://127.0.0.1/event/cancel-pending"),
+            stillRejected,
+        )
+
+        assertEquals(64, calls.size)
+        assertEquals(
+            SseFailureReason.OperationRejected(),
+            stillRejected.failures.single().reason,
+        )
+
+        calls.first().callback?.onFailure(calls.first(), IOException("Canceled"))
+        val admitted = RecordingListener()
+        val replacement = factory.open(
+            testSseConnection(),
+            SseRequest("http://127.0.0.1/event/replacement"),
+            admitted,
+        )
+
+        assertEquals(65, calls.size)
+        assertTrue(admitted.failures.isEmpty())
+        handles.drop(1).forEach(SseEventSource::cancel)
+        replacement.cancel()
+    }
+
+    @Test
+    fun terminalCallbacksReleaseCapacity() {
+        val calls = mutableListOf<FakeCall>()
+        val factory = factory { request ->
+            FakeCall(request) { call, callback -> call.callback = callback }.also(calls::add)
+        }
+        val handles = List(64) { index ->
+            factory.open(
+                testSseConnection(),
+                SseRequest("http://127.0.0.1/event/$index"),
+                RecordingListener(),
+            )
+        }
+
+        calls.first().callback?.onFailure(calls.first(), IOException("network unavailable"))
+        val afterFailure = factory.open(
+            testSseConnection(),
+            SseRequest("http://127.0.0.1/event/after-failure"),
+            RecordingListener(),
+        )
+        calls[1].callback?.onResponse(
+            calls[1],
+            response(calls[1].request(), 200, "OK", TrackingResponseBody("")),
+        )
+        val afterCleanClose = factory.open(
+            testSseConnection(),
+            SseRequest("http://127.0.0.1/event/after-close"),
+            RecordingListener(),
+        )
+
+        assertEquals(66, calls.size)
+        handles.drop(2).forEach(SseEventSource::cancel)
+        afterFailure.cancel()
+        afterCleanClose.cancel()
+    }
+
+    @Test
+    fun concurrentAdmissionNeverCreatesMoreThanTheBound() {
+        val calls = Collections.synchronizedList(mutableListOf<FakeCall>())
+        val handles = Collections.synchronizedList(mutableListOf<SseEventSource>())
+        val rejectionCount = AtomicInteger()
+        val start = CountDownLatch(1)
+        val factory = factory { request ->
+            FakeCall(request) { call, callback -> call.callback = callback }.also(calls::add)
+        }
+        val threads = List(128) { index ->
+            Thread {
+                start.await()
+                handles += factory.open(
+                    testSseConnection(),
+                    SseRequest("http://127.0.0.1/event/concurrent-$index"),
+                    object : RecordingListener() {
+                        override fun onFailure(failure: SseFailure) {
+                            super.onFailure(failure)
+                            if (failure.reason == SseFailureReason.OperationRejected()) {
+                                rejectionCount.incrementAndGet()
+                            }
+                        }
+                    },
+                )
+            }.apply(Thread::start)
+        }
+
+        start.countDown()
+        threads.forEach(Thread::join)
+
+        assertEquals(64, calls.size)
+        assertEquals(64, rejectionCount.get())
+        handles.forEach(SseEventSource::cancel)
+    }
+
+    @Test
+    fun synchronousEnqueueErrorReleasesCapacityAndPropagates() {
+        val attempts = AtomicInteger()
+        val calls = mutableListOf<FakeCall>()
+        val factory = factory { request ->
+            FakeCall(request) { call, callback ->
+                call.callback = callback
+                if (attempts.getAndIncrement() == 0) throw AssertionError("enqueue failed")
+            }.also(calls::add)
+        }
+
+        assertThrows(AssertionError::class.java) {
+            factory.open(
+                testSseConnection(),
+                SseRequest("http://127.0.0.1/event/failing-enqueue"),
+                RecordingListener(),
+            )
+        }
+        val handles = List(64) { index ->
+            factory.open(
+                testSseConnection(),
+                SseRequest("http://127.0.0.1/event/after-enqueue-error-$index"),
+                RecordingListener(),
+            )
+        }
+        val rejected = RecordingListener()
+        factory.open(
+            testSseConnection(),
+            SseRequest("http://127.0.0.1/event/after-capacity"),
+            rejected,
+        )
+
+        assertEquals(65, calls.size)
+        assertEquals(SseFailureReason.OperationRejected(), rejected.failures.single().reason)
+        handles.forEach(SseEventSource::cancel)
+    }
+
     @Test
     fun transportValueSummariesDoNotExposeUrlsCredentialsOrCauses() {
         val secret = "sse-summary-secret"
@@ -348,7 +550,7 @@ class OkHttpSseEventSourceFactoryTest {
         }
         .build()
 
-    private class RecordingListener : SseEventListener {
+    private open class RecordingListener : SseEventListener {
         var openCount = 0
             private set
         val failures = mutableListOf<SseFailure>()
@@ -372,6 +574,7 @@ class OkHttpSseEventSourceFactoryTest {
 
     private class FakeCall(
         private val requestValue: Request,
+        private val notifyFailureOnCancel: Boolean = true,
         private val enqueueAction: (FakeCall, Callback) -> Unit,
     ) : Call {
         val cancelCount = AtomicInteger()
@@ -391,7 +594,7 @@ class OkHttpSseEventSourceFactoryTest {
 
         override fun cancel() {
             cancelCount.incrementAndGet()
-            if (cancelled.compareAndSet(false, true)) {
+            if (cancelled.compareAndSet(false, true) && notifyFailureOnCancel) {
                 callback?.onFailure(this, IOException("Canceled"))
             }
         }
@@ -412,7 +615,7 @@ class OkHttpSseEventSourceFactoryTest {
 
         override fun <T : Any> tag(type: Class<T>, computeIfAbsent: () -> T): T = computeIfAbsent()
 
-        override fun clone(): Call = FakeCall(requestValue, enqueueAction)
+        override fun clone(): Call = FakeCall(requestValue, notifyFailureOnCancel, enqueueAction)
     }
 
     private class TrackingResponseBody(

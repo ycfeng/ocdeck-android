@@ -301,55 +301,48 @@ val frpcKotlinAppResourceTest = registerAppE2eTask(
     testApkDirectory = appKotlinReleaseTestApkDirectory,
     resourceMode = true,
 )
-frpcKotlinAppResourceTest.configure { mustRunAfter(frpcGoMobileAppResourceTest) }
-tasks.register("frpcAppResourceTest") {
+val appResourceBackendOrder = providers.gradleProperty("ocdeck.frp.appResource.backendOrder").orNull
+    ?.split(',')
+    ?.map(String::trim)
+    ?: listOf("gomobile", "kotlin")
+check(appResourceBackendOrder == listOf("gomobile", "kotlin") ||
+    appResourceBackendOrder == listOf("kotlin", "gomobile")
+) {
+    "ocdeck.frp.appResource.backendOrder must be gomobile,kotlin or kotlin,gomobile."
+}
+if (appResourceBackendOrder.first() == "gomobile") {
+    frpcKotlinAppResourceTest.configure { mustRunAfter(frpcGoMobileAppResourceTest) }
+} else {
+    frpcGoMobileAppResourceTest.configure { mustRunAfter(frpcKotlinAppResourceTest) }
+}
+val frpcValidateAppResourceEvidence = tasks.register<JavaExec>("frpcValidateAppResourceEvidence") {
     group = "verification"
-    description = "Runs symmetric GoMobile and Kotlin Release-Like App resource evidence gates."
-    dependsOn(frpcGoMobileAppResourceTest, frpcKotlinAppResourceTest)
-    doLast {
+    description = "Validates paired App resource evidence against the versioned K7 policy."
+    dependsOn(
+        "compileDebugUnitTestKotlin",
+        "compileDebugUnitTestJavaWithJavac",
+        "processDebugUnitTestJavaRes",
+    )
+    mainClass.set("io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.AppResourceEvidencePolicyKt")
+    classpath = tasks.named<Test>("testDebugUnitTest").get().classpath
+    workingDir(rootProject.projectDir)
+    jvmArgs("-Dfile.encoding=UTF-8")
+    maxHeapSize = "256m"
+    doFirst {
         val configuredDirectory = providers.gradleProperty("ocdeck.frp.appResource.evidenceDirectory").orNull
             ?: throw GradleException(
-                "ocdeck.frp.appResource.evidenceDirectory is required for symmetric resource evidence.",
+                "ocdeck.frp.appResource.evidenceDirectory is required for resource evidence validation.",
             )
-        val evidenceDirectory = rootProject.file(configuredDirectory)
-        fun readSummary(backend: String): Map<*, *> {
-            val evidenceFile = evidenceDirectory.resolve("$backend-app-resource.json")
-            check(evidenceFile.isFile && evidenceFile.length() in 1..(64 * 1024)) {
-                "App resource evidence output was missing or exceeded its bounded size."
-            }
-            return evidenceFile.inputStream().buffered().use { input ->
-                JsonSlurper().parse(input) as? Map<*, *>
-                    ?: throw GradleException("App resource evidence did not contain a JSON object.")
-            }
-        }
-        fun requireValidSummary(summary: Map<*, *>, backend: String) {
-            val targetApk = summary["targetApk"] as? Map<*, *>
-            val testApk = summary["testApk"] as? Map<*, *>
-            val workload = summary["workload"] as? Map<*, *>
-            val workloadResults = summary["workloads"] as? List<*>
-            val resources = summary["resources"] as? List<*>
-            check(
-                summary["schemaVersion"] == 8 && summary["backend"] == backend &&
-                    summary["suite"] == "core" && summary["status"] == "passed" &&
-                    summary["cleanupVerified"] == true && summary["authorizesKotlinDefault"] == false &&
-                    targetApk?.get("byteIdentical") == true && testApk?.get("byteIdentical") == true &&
-                    workload != null && workloadResults?.size == 1 && resources?.size == 1 &&
-                    (workloadResults.single() as? Map<*, *>)?.get("profile") == workload["profile"],
-            ) {
-                "App resource evidence did not satisfy its bounded acceptance contract."
-            }
-        }
-
-        val goMobile = readSummary("gomobile")
-        val kotlin = readSummary("kotlin")
-        requireValidSummary(goMobile, "gomobile")
-        requireValidSummary(kotlin, "kotlin")
-        check(goMobile["repository"] == kotlin["repository"] && goMobile["device"] == kotlin["device"] &&
-            goMobile["workload"] == kotlin["workload"]
-        ) {
-            "GoMobile and Kotlin resource evidence did not use the same candidate, device, and workload."
-        }
+        args(rootProject.file(configuredDirectory).absolutePath)
     }
+}
+frpcValidateAppResourceEvidence.configure {
+    mustRunAfter(frpcGoMobileAppResourceTest, frpcKotlinAppResourceTest)
+}
+tasks.register("frpcAppResourceTest") {
+    group = "verification"
+    description = "Runs paired App resource evidence and validates it against the versioned K7 policy."
+    dependsOn(frpcGoMobileAppResourceTest, frpcKotlinAppResourceTest, frpcValidateAppResourceEvidence)
 }
 
 tasks.register("checkGoMobileBridgeAar") {

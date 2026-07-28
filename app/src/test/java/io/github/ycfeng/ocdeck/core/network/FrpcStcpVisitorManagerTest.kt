@@ -64,6 +64,7 @@ class FrpcStcpVisitorManagerTest {
         assertEquals("127.0.0.1", client.visitorConfigs.single().bindAddr)
         assertEquals(4096, client.visitorConfigs.single().bindPort)
         assertEquals("opencode-password", probes.passwords.single())
+        assertEquals(1, probes.closeCount)
     }
 
     @Test
@@ -1079,6 +1080,8 @@ private class ScriptedHealthProbeFactory(
 ) : OpenCodeHealthProbeFactory {
     var probeCount = 0
         private set
+    var closeCount = 0
+        private set
     val passwords = mutableListOf<String?>()
 
     override fun create(
@@ -1087,9 +1090,15 @@ private class ScriptedHealthProbeFactory(
         effectiveBaseUrl: String,
     ): OpenCodeHealthProbe {
         passwords += password
-        return OpenCodeHealthProbe {
-            probeCount += 1
-            onProbe(probeCount, server)
+        return object : OpenCodeHealthProbe {
+            override suspend fun probe(): ServerHealthDto {
+                probeCount += 1
+                return onProbe(probeCount, server)
+            }
+
+            override fun close() {
+                closeCount += 1
+            }
         }
     }
 }

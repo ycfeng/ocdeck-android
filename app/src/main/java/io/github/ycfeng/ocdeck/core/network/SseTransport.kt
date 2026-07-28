@@ -7,11 +7,13 @@ import io.github.ycfeng.ocdeck.data.server.ServerTransportIdentity
 import kotlinx.coroutines.CancellationException
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 
 data class SseConnection(
@@ -61,33 +63,62 @@ fun interface SseEventSourceFactory {
 
 internal class OkHttpSseEventSourceFactory(
     private val redactor: Redactor,
+    private val baseClient: OkHttpClient = OkHttpClient.Builder()
+        .dispatcher(Dispatcher().apply {
+            maxRequests = MAXIMUM_CONCURRENT_SSE_CALLS
+            maxRequestsPerHost = MAXIMUM_CONCURRENT_SSE_CALLS
+        })
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build(),
     private val callFactory: (OkHttpClient, Request) -> Call = { client, request -> client.newCall(request) },
     private val reader: BoundedSseReader = BoundedSseReader(),
 ) : SseEventSourceFactory {
+    private val activeCalls = AtomicInteger()
+
     override fun open(
         connection: SseConnection,
         request: SseRequest,
         listener: SseEventListener,
     ): SseEventSource {
-        val client = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(0, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .addInterceptor(AuthInterceptor(connection.server.username, connection.password))
-            .addInterceptor(RedactingInterceptor(redactor))
-            .build()
-        val okHttpRequest = Request.Builder()
-            .url(request.url)
-            .header("Accept", "text/event-stream")
-            .header("Accept-Encoding", "identity")
-            .build()
-        val source = OkHttpCallSseEventSource(
-            call = callFactory(client, okHttpRequest),
-            listener = listener,
-            reader = reader,
-        )
-        source.start()
-        return source
+        if (!tryAcquireCall()) {
+            listener.onFailure(SseFailure(SseFailureReason.OperationRejected()))
+            return SseEventSource {}
+        }
+        val releaseCall = AdmissionRelease(activeCalls)
+        return try {
+            val client = baseClient.newBuilder()
+                .addInterceptor(AuthInterceptor(connection.server.username, connection.password))
+                .addInterceptor(RedactingInterceptor(redactor))
+                .build()
+            val okHttpRequest = Request.Builder()
+                .url(request.url)
+                .header("Accept", "text/event-stream")
+                .header("Accept-Encoding", "identity")
+                .build()
+            OkHttpCallSseEventSource(
+                call = callFactory(client, okHttpRequest),
+                listener = listener,
+                reader = reader,
+                releaseAdmission = releaseCall::release,
+            ).also(OkHttpCallSseEventSource::start)
+        } catch (failure: Throwable) {
+            releaseCall.release()
+            throw failure
+        }
+    }
+
+    private fun tryAcquireCall(): Boolean {
+        while (true) {
+            val current = activeCalls.get()
+            if (current >= MAXIMUM_CONCURRENT_SSE_CALLS) return false
+            if (activeCalls.compareAndSet(current, current + 1)) return true
+        }
+    }
+
+    private companion object {
+        const val MAXIMUM_CONCURRENT_SSE_CALLS = 64
     }
 }
 
@@ -95,6 +126,7 @@ private class OkHttpCallSseEventSource(
     private val call: Call,
     private val listener: SseEventListener,
     private val reader: BoundedSseReader,
+    private val releaseAdmission: () -> Unit,
 ) : SseEventSource, Callback {
     private val cancelledByOwner = AtomicBoolean()
     private val cancellingForReportedFailure = AtomicBoolean()
@@ -105,69 +137,79 @@ private class OkHttpCallSseEventSource(
     }
 
     override fun cancel() {
-        if (cancelledByOwner.compareAndSet(false, true)) call.cancel()
+        if (cancelledByOwner.compareAndSet(false, true)) {
+            call.cancel()
+        }
     }
 
     override fun onFailure(call: Call, e: IOException) {
-        if (cancelledByOwner.get() || cancellingForReportedFailure.get()) return
-        deliverFailure(SseFailure.from(e))
+        try {
+            if (cancelledByOwner.get() || cancellingForReportedFailure.get()) return
+            deliverFailure(SseFailure.from(e))
+        } finally {
+            releaseAdmission()
+        }
     }
 
     override fun onResponse(call: Call, response: Response) {
-        if (cancelledByOwner.get()) {
-            response.close()
-            return
-        }
-        if (response.code != HTTP_OK) {
-            val responseCode = response.code
-            response.close()
-            deliverFailure(
-                SseFailure(SseFailureReason.HttpStatus(responseCode)),
-            )
-            return
-        }
-        if (response.hasNonIdentityContentEncoding()) {
-            response.close()
-            deliverFailure(SseFailure.from(SseContentEncodingException()))
-            return
-        }
-        val contentType = response.body.contentType()
-        if (contentType?.type != "text" || contentType.subtype != "event-stream") {
-            response.close()
-            deliverFailure(
-                SseFailure(SseFailureReason.InvalidResponse),
-            )
-            return
-        }
-
-        var cleanEof = false
-        var streamFailure: SseFailure? = null
         try {
-            response.use { currentResponse ->
-                if (!deliverOpen()) return
-                reader.read(currentResponse.body.source()) { event ->
-                    if (cancelledByOwner.get()) throw ExplicitSseCancellationException()
-                    listener.onEvent(event.id, event.type, event.data)
-                }
-                cleanEof = !cancelledByOwner.get()
+            if (cancelledByOwner.get()) {
+                response.close()
+                return
             }
-        } catch (_: ExplicitSseCancellationException) {
-            // Owner cancellation is terminal for this transport but is not a retryable stream failure.
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (tooLarge: SseInboundPayloadTooLargeException) {
-            cancellingForReportedFailure.set(true)
-            call.cancel()
-            streamFailure = SseFailure(SseFailureReason.ResponseTooLarge)
-        } catch (exception: Exception) {
-            if (!cancelledByOwner.get()) {
-                streamFailure = SseFailure.from(exception)
+            if (response.code != HTTP_OK) {
+                val responseCode = response.code
+                response.close()
+                deliverFailure(
+                    SseFailure(SseFailureReason.HttpStatus(responseCode)),
+                )
+                return
             }
-        }
+            if (response.hasNonIdentityContentEncoding()) {
+                response.close()
+                deliverFailure(SseFailure.from(SseContentEncodingException()))
+                return
+            }
+            val contentType = response.body.contentType()
+            if (contentType?.type != "text" || contentType.subtype != "event-stream") {
+                response.close()
+                deliverFailure(
+                    SseFailure(SseFailureReason.InvalidResponse),
+                )
+                return
+            }
 
-        when {
-            streamFailure != null -> deliverFailure(streamFailure)
-            cleanEof -> deliverClosed()
+            var cleanEof = false
+            var streamFailure: SseFailure? = null
+            try {
+                response.use { currentResponse ->
+                    if (!deliverOpen()) return
+                    reader.read(currentResponse.body.source()) { event ->
+                        if (cancelledByOwner.get()) throw ExplicitSseCancellationException()
+                        listener.onEvent(event.id, event.type, event.data)
+                    }
+                    cleanEof = !cancelledByOwner.get()
+                }
+            } catch (_: ExplicitSseCancellationException) {
+                // Owner cancellation is terminal for this transport but is not a retryable stream failure.
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (tooLarge: SseInboundPayloadTooLargeException) {
+                cancellingForReportedFailure.set(true)
+                call.cancel()
+                streamFailure = SseFailure(SseFailureReason.ResponseTooLarge)
+            } catch (exception: Exception) {
+                if (!cancelledByOwner.get()) {
+                    streamFailure = SseFailure.from(exception)
+                }
+            }
+
+            when {
+                streamFailure != null -> deliverFailure(streamFailure)
+                cleanEof -> deliverClosed()
+            }
+        } finally {
+            releaseAdmission()
         }
     }
 
@@ -189,6 +231,18 @@ private class OkHttpCallSseEventSource(
 
     private companion object {
         const val HTTP_OK = 200
+    }
+}
+
+private class AdmissionRelease(
+    private val activeCalls: AtomicInteger,
+) {
+    private val released = AtomicBoolean()
+
+    fun release() {
+        if (released.compareAndSet(false, true)) {
+            check(activeCalls.decrementAndGet() >= 0)
+        }
     }
 }
 

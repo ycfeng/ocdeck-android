@@ -24,6 +24,24 @@ class OpenCodeApiFactory(
         client = createHttpClient(server, password, timeouts),
     )
 
+    internal fun createSingleApiClient(
+        server: ServerConfig,
+        password: String?,
+        baseUrl: String = server.baseUrl,
+        timeouts: OpenCodeHttpTimeouts = OpenCodeHttpTimeouts.Default,
+    ): OpenCodeSingleApiClient {
+        val client = createHttpClient(server, password, timeouts)
+        return try {
+            OpenCodeSingleApiClient(
+                api = createApi(baseUrl, client),
+                closeAction = { closeHttpClients(client) },
+            )
+        } catch (exception: Exception) {
+            closeHttpClientsAfterFailure(exception, client)
+            throw exception
+        }
+    }
+
     internal fun createConnectionClient(
         server: ServerConfig,
         password: String?,
@@ -96,6 +114,19 @@ internal class OpenCodeConnectionClient(
     override fun toString(): String =
         "OpenCodeConnectionClient(apiPresent=true, providerOAuthApiPresent=true, " +
             "sessionMessagesTransportPresent=true)"
+}
+
+internal class OpenCodeSingleApiClient(
+    val api: OpenCodeApi,
+    private val closeAction: () -> Unit,
+) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) closeAction()
+    }
+
+    override fun toString(): String = "OpenCodeSingleApiClient(apiPresent=true)"
 }
 
 private fun closeHttpClients(vararg clients: OkHttpClient) {

@@ -37,8 +37,20 @@
 - [ ] 已审查 K6V 报告限制：模拟器证据不能替代分离的目标 ABI 真机与 16KB runtime lane、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。两个设备 lane 可以使用不同设备；无法获得物理 ARM 16KB 硬件记录为残余风险，而不是 K7 开发阻塞项。
 - [ ] Canary 与 Kotlin Release-Like APK 只作为无 bridge 验证输出，GoMobile Release-Like 只作为带 suffix、使用 Debug 证书的对比输出；三者均未暂存或发布。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，exact-candidate App E2E artifact 已绑定干净的小写 commit/tree、本地与已安装 target/test APK SHA-256 身份、清理成功和 `authorizesKotlinDefault=false`。External 证据精确包含 17 个有序 instrumentation checks，以及 Host 断言 `configured_pinned_public_server` 与 `network_restored`。否则本项明确记录为不适用。
-- [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已在批准的设备矩阵上运行对称 GoMobile/Kotlin `baseline`、重连/并发 `stress`、`leak` 与长期 `soak` profile，并使用经评审阈值和有界证据。否则本项明确记录为不适用。
+- [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已在批准的设备矩阵上运行对称 GoMobile/Kotlin `baseline`、重连/并发 `stress`、`leak` 与长期 `soak` profile，并使用 schema-9 有界证据通过 `k7-resource-v1`；旧 schema-8 证据不作为最终趋势/quiescence 契约。否则本项明确记录为不适用。
 - [ ] 所选 allowlist profile 的签名制品校验已通过。公共检查覆盖 output metadata 与实际 APK manifest 的 application ID/版本、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、全部 native library、法律资产、文件名和 `SHA256SUMS`；GoMobile 还要求 bridge class 与 sidecar 绑定的 `libgojni.so`，Kotlin-default 则拒绝二者。
+
+## K7 资源验收
+
+`k7-resource-v1` 是第一版有版本号的 K7 资源策略。`:frpc-stcp-visitor:frpcValidateAppResourceEvidence` 可对已经生成的证据对执行该策略；`frpcAppResourceTest` 会先生成证据对，再应用同一策略。它只接受 summary schema 9（内嵌 App result schema 8）；schema 8 summary 仅保留为历史输入，当前验收会 fail closed。策略通过仍只属于证据，绝不会把 `authorizesKotlinDefault` 设为 `true`。
+
+- [ ] 每条物理性能 lane 都完整保留三组成对 `baseline`、`stress` 和 `leak`，不得只挑选有利结果。通过 `ocdeck.frp.appResource.backendOrder` 交替使用 `gomobile,kotlin`、`kotlin,gomobile`、`gomobile,kotlin` 顺序；记录并保持充电状态、thermal 状态、电源模式、无线网络、后台负载和测试服务器位置可比。受 thermal throttling 或无关负载影响的运行必须在查看结果前记录拒绝原因，并完整重跑。
+- [ ] 批准的矩阵包含既有 API 31、4 KiB 物理 `arm64-v8a` 基准设备，以及维护者可获得的最新 Android API 物理 `arm64-v8a` 设备。官方 API 36 16KB x86_64 lane 负责 page-size/runtime 安全，但 emulator CPU 数值不能替代真机性能。公开 ABI 加载和 external-network 覆盖继续由各自独立门禁约束，并披露残余风险。
+- [ ] 对任一 backend 持续至少 60 秒的 `stress`、`leak` 和 `soak` 证据对，Kotlin 进程 CPU 不超过 GoMobile 的 1.50 倍，wall duration 不超过 1.25 倍，最后四分之一窗口平均 PSS 不超过 GoMobile 的 1.25 倍再加 16 MiB。`baseline` 仍是短时结构/安全 profile，不能单独用于比较授权。
+- [ ] 每份证据都使用 `head-tail-v1` 和计划 sample 的 1-based ordinal，证明精确保留最多最初 127 个与最新 127 个 sample；样本数量足够时两个窗口各精确包含 127 个，并带匹配的 observed/head/tail/dropped metadata。非 soak 运行完成全部配置 iterations，soak 完成正数且有界的前缀，reconnect 数精确，且成对 backend 的 workload result 完全一致。两个 backend 的最后四分之一窗口平均 FD 和线程数都不超过 256。对 `leak` 与 `soak`，最后四分之一减去最初四分之一的平均增长：PSS 不超过 8 MiB 或 15%，Java/native heap 各不超过 8 MiB 或 25%，FD 不超过 4，线程不超过 8。每个非 functional workload 还必须在清理后静默 90 秒并记录 snapshot；相对 workload 前 start，该 snapshot 的 FD 增量不超过 4、线程增量不超过 8。每份保留证据对都必须通过，不能用 median 或平均值掩盖失败运行。
+- [ ] 每条必需物理 lane 都完成一组 8 小时成对 soak，主基准设备再完成一组 24 小时成对 soak。默认 `soak` profile 为 8 小时；24 小时运行显式设置 `ocdeck.frp.appResource.durationMillis=86400000`。
+- [ ] K7 授权前，Kotlin 候选必须完成至少连续 14 天内部/Canary 观察，期间不触发资源、连接、安全或数据一致性回滚条件。Kotlin 成为正式默认后，K10 仍要求再完成一个完整稳定公开发布周期。
+- [ ] 已构建更高 `versionCode` 的 GoMobile emergency build 并覆盖安装 Kotlin 候选，确认 DataStore、Keystore 支持的 credential reference、服务器配置和更新身份保持兼容。维护者已记录回滚触发条件、负责人、响应目标与构建/签名/发布流程；回滚不依赖 Android downgrade 安装。
 
 ## 设备与连接门禁
 
