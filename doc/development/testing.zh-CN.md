@@ -226,7 +226,9 @@ Harness、Host 校验和两个 backend instrumentation variant 已实现并通�
 
 之后，clean exact 候选 `88bd868316ace2ad9b569db8324ec5c2ed3e11c5`（tree `a3833a372ff8d1cd7743b7d5073c94a189fa2e36`）在同一设备上生成首组成对保留的 schema-9 `stress` 与 `leak` 证据。两个 backend 都完成精确配置的 workload，本地/已安装 APK 字节一致、清理成功，并保持 `authorizesKotlinDefault=false`。`stress` 因 Kotlin/GoMobile CPU 2.987 倍失败，而 wall 与 PSS ratio 分别为 1.180 和 0.713，仍在策略范围内；`leak` 因 CPU 2.289 倍失败，wall 为 1.000，PSS 为 0.711。Kotlin 在两次运行的清理后线程数都回到允许的 8 线程增量内；GoMobile 则在 90 秒 quiescence 后仍比 workload 前 start 多 17 个线程。CPU 结果继续构成明确的 K7 资源 No-Go；GoMobile 残留是另一个必须诊断的资源生命周期失败，不能通过放宽策略隐藏。
 
-历史 schema-9 summary（包括上述 ratio）仍是有效 CPU No-Go 输入，但不满足 `k7-resource-v2`。当前验收要求新的 exact summary-schema-10 证据对，并携带 App-schema-9 四检查点生命周期证据。
+历史 schema-9 summary（包括上述 ratio）仍是有效 CPU No-Go 输入，但不满足 `k7-resource-v2`。通过当前验收仍要求新的 exact summary-schema-10 证据对，携带 App-schema-9 四检查点生命周期证据并通过策略。
+
+随后，clean exact 候选 `fe278cfa72fac09b4e32bc4f1ef3eb36ae9ce19c`（tree `b0cd3d44d2963e0c2de3f9297ca5a02db72d7760`）在同一台 API 31 物理 ARM 设备上生成 schema-10 `stress` 与 `leak` 证据对。`stress` 因 Kotlin/GoMobile CPU 2.632 倍失败，wall 为 1.110 倍、PSS 为 0.722 倍；GoMobile quiescence survivor 为 `baseline=17`、`warmup=10`、`postWarmup=17`，Kotlin 为 `15/4/6`。`leak` 因 CPU 2.071 倍失败，wall 为 0.992 倍、PSS 为 0.694 倍；GoMobile 为 `17/12/12`，Kotlin 再次为 `15/4/6`。Kotlin 在 `stress` 后回到起始总线程数，在 `leak` 后仅比 start 多 1 个线程；GoMobile 则分别比 start 多 19 和 16 个线程。GoMobile 的 post-warmup cohort 非零，证明残留不全是首次 readiness 时的一次性 runtime warmup；但 200 次重连的 `leak` 没有让该 cohort 超过 `stress`，因此当前证据只能识别 workload 后创建的常驻/残留候选，不能证明逐连接泄漏。Kotlin CPU ratio 与未改变的 +8 线程策略使 K7 继续保持 No-Go；当前没有理由运行长 soak。
 
 连接 emulator 或设备后，运行 instrumentation 测试集：
 
