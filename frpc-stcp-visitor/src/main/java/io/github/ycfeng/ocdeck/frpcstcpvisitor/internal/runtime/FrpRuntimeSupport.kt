@@ -830,12 +830,12 @@ internal class FrpVisitorRelay(
         }
     }
 
-    private suspend fun copyLocalToRemoteDirect(lease: FrpClientStreamLease) {
+    private suspend fun copyLocalToRemoteDirect(lease: FrpClientStreamLease) = withContext(ioDispatcher) {
         val buffer = ByteArray(RELAY_BUFFER_SIZE)
         var selectedFailure: Throwable? = null
         try {
             while (true) {
-                val count = runInterruptible(ioDispatcher) { local.input.read(buffer) }
+                val count = local.input.read(buffer)
                 if (count < 0) break
                 if (count == 0) throw KotlinFrpcStcpVisitorException(
                     KotlinFrpcStcpVisitorFailure.RELAY_FAILED,
@@ -915,7 +915,7 @@ internal class FrpVisitorRelay(
         }
     }
 
-    private suspend fun copyRemoteToLocalDirect(lease: FrpClientStreamLease) {
+    private suspend fun copyRemoteToLocalDirect(lease: FrpClientStreamLease) = withContext(ioDispatcher) {
         val buffer = ByteArray(RELAY_BUFFER_SIZE)
         var selectedFailure: Throwable? = null
         try {
@@ -925,7 +925,7 @@ internal class FrpVisitorRelay(
                 if (count == 0) throw KotlinFrpcStcpVisitorException(
                     KotlinFrpcStcpVisitorFailure.RELAY_FAILED,
                 )
-                runInterruptible(ioDispatcher) { local.output.write(buffer, 0, count) }
+                local.output.write(buffer, 0, count)
             }
         } catch (failure: CancellationException) {
             selectedFailure = preferRelayFatal(selectedFailure, failure)
@@ -940,7 +940,7 @@ internal class FrpVisitorRelay(
         }
         selectedFailure?.let { throw it }
         try {
-            runInterruptible(ioDispatcher) { local.shutdownOutput() }
+            local.shutdownOutput()
         } catch (failure: CancellationException) {
             throw failure
         } catch (failure: Error) {

@@ -1931,6 +1931,62 @@ class KotlinFrpcStcpVisitorClientTest {
     }
 
     @Test
+    fun plainRelayAvoidsPerChunkLocalIoDispatchForImmediateStreams() = runBlocking {
+        val parentScope = newParentScope()
+        val control = FakeSessionControl(
+            generation = 1L,
+            protocol = FrpWireProtocol.V1,
+            parentScope = parentScope,
+            stopRelease = null,
+        )
+        val identity = control.open(epoch = 1L, transport = 1L)
+        val localPayload = ByteArray(40 * 1024) { index -> index.toByte() }
+        val remotePayload = ByteArray(40 * 1024) { index -> (index xor 0x5a).toByte() }
+        val stream = ScriptedMuxStream(
+            FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored")) + remotePayload,
+        )
+        control.enqueueStream(stream)
+        val local = FakeLocalConnection(localPayload)
+        val dispatcher = CountingDispatcher(Dispatchers.IO)
+        val relay = FrpVisitorRelay(
+            visitorRevision = 1L,
+            listenerAttempt = 1L,
+            control = control,
+            identity = identity,
+            visitor = FrpRelayVisitorConfig(
+                serverName = "remote-service",
+                serverUser = "",
+                sessionUser = "",
+                secretKey = SYNTHETIC_SECRET,
+            ),
+            local = local,
+            parentScope = parentScope,
+            unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+            ioDispatcher = dispatcher,
+        )
+        try {
+            relay.start()
+            relay.awaitStopped()
+
+            assertTrue(localPayload.contentEquals(stream.writtenBytes().copyOfRange(
+                stream.writtenBytes().size - localPayload.size,
+                stream.writtenBytes().size,
+            )))
+            assertTrue(remotePayload.contentEquals(local.writtenBytes()))
+            assertEquals(1, stream.closeWriteCount.get())
+            assertEquals(1, local.shutdownOutputCount.get())
+            // Each pump enters once; the three chunks in each direction add no local-I/O dispatches.
+            assertEquals(2, dispatcher.dispatchCount.get())
+        } finally {
+            relay.close()
+            control.close()
+            control.releaseStop()
+            control.awaitStopped()
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun relayFailureClosesUninterruptibleSiblingBeforeJoiningPumps() = runBlocking {
         val releaseRemoteFailure = CompletableDeferred<Unit>()
         val parentScope = newParentScope()
@@ -2778,5 +2834,16 @@ private class QueueingDispatcher : CoroutineDispatcher() {
         while (runNextLifo()) {
             // Drain tasks added by cleanup continuations before returning.
         }
+    }
+}
+
+private class CountingDispatcher(
+    private val delegate: CoroutineDispatcher,
+) : CoroutineDispatcher() {
+    val dispatchCount = AtomicInteger(0)
+
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        dispatchCount.incrementAndGet()
+        delegate.dispatch(context, block)
     }
 }
