@@ -193,9 +193,10 @@ internal suspend fun parseYamuxTrace(
     val transport = YamuxTestTransport()
     transport.feed(bytes, chunkSizes)
     transport.finishInput()
+    val headerScratch = ByteArray(YamuxProtocol.HEADER_SIZE)
     return buildList {
         while (true) {
-            val header = YamuxFrameCodec.readHeaderOrNull(transport) ?: break
+            val header = YamuxFrameCodec.readHeaderOrNull(transport, headerScratch) ?: break
             val body = if (header.type == YamuxFrameType.DATA) {
                 val payload = YamuxFrameCodec.readDataSegments(
                     transport = transport,

@@ -749,8 +749,9 @@ internal class YamuxClientSession(
     }
 
     private suspend fun runReader() {
+        val headerScratch = ByteArray(YamuxProtocol.HEADER_SIZE)
         while (!ending) {
-            val header = YamuxFrameCodec.readHeaderOrNull(transport)
+            val header = YamuxFrameCodec.readHeaderOrNull(transport, headerScratch)
                 ?: throw YamuxTransportFailure(YamuxTransportOperation.READ)
             handleFrame(header)
         }

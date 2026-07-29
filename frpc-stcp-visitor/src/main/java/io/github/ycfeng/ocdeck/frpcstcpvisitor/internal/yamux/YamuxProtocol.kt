@@ -220,12 +220,23 @@ internal object YamuxFrameCodec {
         putUInt32(output, 8, header.length)
     }
 
-    suspend fun readHeaderOrNull(transport: YamuxPhysicalTransport): YamuxFrameHeader? {
-        val header = ByteArray(YamuxProtocol.HEADER_SIZE)
-        if (!readFully(transport, header, YamuxFrameSection.HEADER, allowInitialEof = true)) {
+    suspend fun readHeaderOrNull(
+        transport: YamuxPhysicalTransport,
+        scratch: ByteArray,
+    ): YamuxFrameHeader? {
+        require(scratch.size >= YamuxProtocol.HEADER_SIZE)
+        if (
+            !readFully(
+                transport = transport,
+                destination = scratch,
+                section = YamuxFrameSection.HEADER,
+                allowInitialEof = true,
+                length = YamuxProtocol.HEADER_SIZE,
+            )
+        ) {
             return null
         }
-        return decodeHeader(header)
+        return decodeHeader(scratch)
     }
 
     suspend fun readDataSegments(

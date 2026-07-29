@@ -4,6 +4,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -61,7 +62,9 @@ class YamuxFrameCodecTest {
             it.finishInput()
         }
 
-        val failure = suspendFailureOf { YamuxFrameCodec.readHeaderOrNull(transport) }
+        val failure = suspendFailureOf {
+            YamuxFrameCodec.readHeaderOrNull(transport, ByteArray(YamuxProtocol.HEADER_SIZE))
+        }
 
         assertTrue(failure is YamuxProtocolFailure)
         assertEquals(YamuxProtocolError.UNKNOWN_TYPE, (failure as YamuxProtocolFailure).reason)
@@ -86,7 +89,9 @@ class YamuxFrameCodecTest {
             it.feed(ByteArray(YamuxProtocol.HEADER_SIZE - 1))
             it.finishInput()
         }
-        val headerFailure = suspendFailureOf { YamuxFrameCodec.readHeaderOrNull(headerTransport) }
+        val headerFailure = suspendFailureOf {
+            YamuxFrameCodec.readHeaderOrNull(headerTransport, ByteArray(YamuxProtocol.HEADER_SIZE))
+        }
         assertTrue(headerFailure is YamuxTruncatedFrameFailure)
         assertEquals(YamuxFrameSection.HEADER, (headerFailure as YamuxTruncatedFrameFailure).section)
 
@@ -156,10 +161,71 @@ class YamuxFrameCodecTest {
             override fun close() = Unit
         }
 
-        val failure = suspendFailureOf { YamuxFrameCodec.readHeaderOrNull(transport) }
+        val failure = suspendFailureOf {
+            YamuxFrameCodec.readHeaderOrNull(transport, ByteArray(YamuxProtocol.HEADER_SIZE))
+        }
 
         assertTrue(failure is YamuxTransportFailure)
         assertEquals(YamuxTransportOperation.READ_CONTRACT, (failure as YamuxTransportFailure).operation)
+    }
+
+    @Test
+    fun headerScratchIsReusedAcrossSequentialChunkedReads() = runTest {
+        val first = YamuxFrameHeader(YamuxFrameType.PING, YamuxFlags.SYN, streamId = 0L, length = 7L)
+        val second = YamuxFrameHeader(YamuxFrameType.WINDOW_UPDATE, YamuxFlags.ACK, streamId = 3L, length = 9L)
+        val destinations = mutableListOf<ByteArray>()
+        val delegate = YamuxTestTransport().also {
+            it.feed(YamuxFrameCodec.encodeHeader(first) + YamuxFrameCodec.encodeHeader(second), listOf(1, 2, 3))
+            it.finishInput()
+        }
+        val transport = object : YamuxPhysicalTransport {
+            override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
+                destinations += destination
+                return delegate.read(destination, offset, length)
+            }
+
+            override suspend fun writeFully(source: ByteArray, offset: Int, length: Int) = Unit
+
+            override fun close() = delegate.close()
+        }
+        val scratch = ByteArray(YamuxProtocol.HEADER_SIZE)
+
+        assertEquals(first, YamuxFrameCodec.readHeaderOrNull(transport, scratch))
+        assertEquals(second, YamuxFrameCodec.readHeaderOrNull(transport, scratch))
+        assertEquals(null, YamuxFrameCodec.readHeaderOrNull(transport, scratch))
+        assertTrue(destinations.isNotEmpty())
+        destinations.forEach { assertSame(scratch, it) }
+    }
+
+    @Test
+    fun headerScratchUsesOnlyTheRequiredPrefixAndRejectsShortBuffersBeforeReading() = runTest {
+        val expected = YamuxFrameHeader(YamuxFrameType.PING, YamuxFlags.ACK, streamId = 0L, length = 11L)
+        val oversized = ByteArray(YamuxProtocol.HEADER_SIZE + 5) { 0x5a }
+        val transport = YamuxTestTransport().also {
+            it.feed(YamuxFrameCodec.encodeHeader(expected), listOf(2, 1, 4))
+            it.finishInput()
+        }
+
+        assertEquals(expected, YamuxFrameCodec.readHeaderOrNull(transport, oversized))
+        assertArrayEquals(ByteArray(5) { 0x5a }, oversized.copyOfRange(YamuxProtocol.HEADER_SIZE, oversized.size))
+
+        var readCalled = false
+        val unreadTransport = object : YamuxPhysicalTransport {
+            override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
+                readCalled = true
+                return -1
+            }
+
+            override suspend fun writeFully(source: ByteArray, offset: Int, length: Int) = Unit
+
+            override fun close() = Unit
+        }
+        val failure = suspendFailureOf {
+            YamuxFrameCodec.readHeaderOrNull(unreadTransport, ByteArray(YamuxProtocol.HEADER_SIZE - 1))
+        }
+
+        assertTrue(failure is IllegalArgumentException)
+        assertFalse(readCalled)
     }
 
     @Test
