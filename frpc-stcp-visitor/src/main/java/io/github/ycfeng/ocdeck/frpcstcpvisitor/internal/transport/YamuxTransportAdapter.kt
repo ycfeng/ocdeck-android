@@ -222,6 +222,10 @@ internal class SharedCloseYamuxPhysicalTransport(
     private var closeState = SharedPhysicalCloseState.OPEN
     private var closeFailure: Throwable? = null
 
+    override suspend fun runReaderLoop(block: suspend () -> Unit) {
+        delegate.runReaderLoop(block)
+    }
+
     override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int =
         delegate.read(destination, offset, length)
 

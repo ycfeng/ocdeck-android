@@ -130,7 +130,7 @@ internal class YamuxClientSession(
         repeat(config.maxStreams) {
             check(streamPermits.trySend(Unit).isSuccess)
         }
-        readerJob = scope.launch { runReader() }
+        readerJob = scope.launch { runReaderJob() }
         receiveUpdateJob = scope.launch { runReceiveUpdateDispatcher() }
         resetDispatcherJob = scope.launch { runResetDispatcher() }
         keepAliveJob = if (config.keepAliveEnabled && !ending) {
@@ -728,13 +728,9 @@ internal class YamuxClientSession(
         request.completion.complete(failure)
     }
 
-    private suspend fun runReader() {
+    private suspend fun runReaderJob() {
         try {
-            while (!ending) {
-                val header = YamuxFrameCodec.readHeaderOrNull(transport)
-                    ?: throw YamuxTransportFailure(YamuxTransportOperation.READ)
-                handleFrame(header)
-            }
+            transport.runReaderLoop(::runReader)
         } catch (failure: CancellationException) {
             if (!ending) terminateNow(failure)
         } catch (failure: Error) {
@@ -749,6 +745,14 @@ internal class YamuxClientSession(
             if (!ending) terminateNow(failure)
         } catch (failure: Exception) {
             if (!ending) terminateNow(safeFailure(failure, YamuxTransportOperation.READ))
+        }
+    }
+
+    private suspend fun runReader() {
+        while (!ending) {
+            val header = YamuxFrameCodec.readHeaderOrNull(transport)
+                ?: throw YamuxTransportFailure(YamuxTransportOperation.READ)
+            handleFrame(header)
         }
     }
 

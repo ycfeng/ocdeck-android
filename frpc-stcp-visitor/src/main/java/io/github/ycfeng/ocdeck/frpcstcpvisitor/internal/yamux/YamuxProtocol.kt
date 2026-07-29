@@ -49,6 +49,9 @@ internal data class YamuxFrameHeader(
 )
 
 internal interface YamuxPhysicalTransport {
+    /** Runs the single session reader in any transport-owned blocking context. */
+    suspend fun runReaderLoop(block: suspend () -> Unit) = block()
+
     /** Returns 1..length or -1. Returning zero is a transport contract failure. */
     suspend fun read(destination: ByteArray, offset: Int, length: Int): Int
 

@@ -19,6 +19,8 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509TrustManager
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
@@ -32,6 +34,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 
 internal class TcpTlsTransportDialer(
     private val config: TcpTlsTransportConfig,
@@ -335,10 +338,43 @@ internal class TcpTlsYamuxTransport internal constructor(
 ) : YamuxPhysicalTransport {
     private val activeReads = AtomicInteger(0)
     private val activeWrites = AtomicInteger(0)
+    private val readerToken = Any()
+
+    @OptIn(InternalCoroutinesApi::class)
+    override suspend fun runReaderLoop(block: suspend () -> Unit) {
+        val readerJob = checkNotNull(currentCoroutineContext()[Job])
+        val readerContext = DirectReaderContext(readerToken)
+        val cancellationHandle = readerJob.invokeOnCompletion(
+            onCancelling = true,
+            invokeImmediately = true,
+        ) { cause ->
+            if (cause != null) closeAfterCancellation(closeController, cause)
+        }
+        try {
+            withContext(dispatcher + readerContext) {
+                val ownerJob = checkNotNull(currentCoroutineContext()[Job])
+                readerContext.ownerJob = ownerJob
+                ownerJob.ensureActive()
+                block()
+            }
+        } finally {
+            cancellationHandle.dispose()
+        }
+    }
 
     override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
         requireRange(destination.size, offset, length)
         if (length == 0) return 0
+        val context = currentCoroutineContext()
+        val directReader = context[DirectReaderContext]
+        val ownerJob = context[Job]
+        if (
+            directReader?.token === readerToken &&
+            directReader.ownerJob === ownerJob &&
+            ownerJob != null
+        ) {
+            return readDirect(destination, offset, length, ownerJob)
+        }
         if (closeController.isClosed) throw FrpTransportException(FrpTransportFailure.CLOSED)
         val count = runTransportIo(FrpTransportFailure.READ_FAILED, activeReads) {
             input.read(destination, offset, length)
@@ -347,6 +383,39 @@ internal class TcpTlsYamuxTransport internal constructor(
             throw FrpTransportException(FrpTransportFailure.READ_FAILED)
         }
         return count
+    }
+
+    private fun readDirect(destination: ByteArray, offset: Int, length: Int, ownerJob: Job): Int {
+        ownerJob.ensureActive()
+        if (closeController.isClosed) {
+            ownerJob.ensureActive()
+            throw FrpTransportException(FrpTransportFailure.CLOSED)
+        }
+        activeReads.incrementAndGet()
+        return try {
+            val count = try {
+                input.read(destination, offset, length)
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Error) {
+                throw failure
+            } catch (failure: FrpTransportException) {
+                ownerJob.ensureActive()
+                throw failure
+            } catch (_: Exception) {
+                ownerJob.ensureActive()
+                throw FrpTransportException(
+                    if (closeController.isClosed) FrpTransportFailure.CLOSED else FrpTransportFailure.READ_FAILED,
+                )
+            }
+            ownerJob.ensureActive()
+            if (count == 0 || count < -1 || count > length) {
+                throw FrpTransportException(FrpTransportFailure.READ_FAILED)
+            }
+            count
+        } finally {
+            activeReads.decrementAndGet()
+        }
     }
 
     override suspend fun writeFully(source: ByteArray, offset: Int, length: Int) {
@@ -407,6 +476,14 @@ internal class TcpTlsYamuxTransport internal constructor(
 
     private fun requireRange(size: Int, offset: Int, length: Int) {
         require(offset >= 0 && length >= 0 && offset <= size - length)
+    }
+
+    private class DirectReaderContext(
+        val token: Any,
+    ) : AbstractCoroutineContextElement(DirectReaderContext) {
+        var ownerJob: Job? = null
+
+        companion object Key : CoroutineContext.Key<DirectReaderContext>
     }
 }
 

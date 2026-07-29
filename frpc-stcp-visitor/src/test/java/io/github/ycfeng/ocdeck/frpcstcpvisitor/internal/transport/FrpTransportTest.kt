@@ -2,8 +2,14 @@ package io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport
 
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.FrpControlConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxConfig
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxFrameCodec
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxFrameType
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxGoAwayCode
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxPhysicalTransport
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxProtocol
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxProtocolFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTermination
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxTransportFailure
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.createYamuxClientSession
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.interop.InteropTlsMaterial
 import java.io.ByteArrayInputStream
@@ -860,6 +866,150 @@ class FrpTransportTest {
     }
 
     @Test
+    fun readerLoopUsesOneDispatcherEntryForSequentialReadsThroughSharedClose() = runBlocking {
+        val dispatcher = QueueingDispatcher()
+        val transport = TcpTlsYamuxTransport(
+            input = ByteArrayInputStream(byteArrayOf(7, 9)),
+            output = ByteArrayOutputStream(),
+            closeController = TransportCloseController(),
+            dispatcher = dispatcher,
+        )
+        val shared = SharedCloseYamuxPhysicalTransport(transport)
+        val observed = AtomicReference<ByteArray?>()
+        val result = async(Dispatchers.Default) {
+            shared.runReaderLoop {
+                val destination = ByteArray(2)
+                assertEquals(1, shared.read(destination, 0, 1))
+                assertEquals(1, shared.read(destination, 1, 1))
+                observed.set(destination)
+            }
+        }
+        assertTrue(withContext(Dispatchers.IO) { dispatcher.queued.await(5, TimeUnit.SECONDS) })
+
+        dispatcher.take().run()
+
+        withTimeout(5_000L) { result.await() }
+        assertTrue(checkNotNull(observed.get()).contentEquals(byteArrayOf(7, 9)))
+        assertEquals(1, dispatcher.dispatchCount.get())
+        assertEquals(0, transport.diagnostics().activeReads)
+    }
+
+    @Test
+    fun cancellingDirectReaderClosesBlockedSocketAndPreservesCause() = runBlocking {
+        val socket = TestSocket(blockReadUntilClose = true)
+        val closeController = TransportCloseController().also { it.attachSocket(socket) }
+        val transport = TcpTlsYamuxTransport(
+            input = socket.getInputStream(),
+            output = socket.getOutputStream(),
+            closeController = closeController,
+            dispatcher = Dispatchers.IO,
+        )
+        val reader = async {
+            transport.runReaderLoop {
+                transport.read(ByteArray(1), 0, 1)
+            }
+        }
+        assertTrue(withContext(Dispatchers.IO) { socket.readStarted.await(5, TimeUnit.SECONDS) })
+        val cancellation = CancellationException("direct reader cancellation marker")
+
+        reader.cancel(cancellation)
+        val failure = withTimeout(5_000L) { suspendFailureOf { reader.await() } }
+
+        assertOriginalCancellation(cancellation, failure)
+        assertEquals(1, socket.closeCount.get())
+        assertEquals(0, transport.diagnostics().activeReads)
+        assertTrue(transport.diagnostics().closed)
+    }
+
+    @Test
+    fun readerLoopJvmErrorPreservesIdentityAndReleasesDiagnostics() = runBlocking {
+        val error = SyntheticTransportError()
+        val transport = TcpTlsYamuxTransport(
+            input = object : InputStream() {
+                override fun read(): Int = throw error
+
+                override fun read(destination: ByteArray, offset: Int, length: Int): Int = throw error
+            },
+            output = ByteArrayOutputStream(),
+            closeController = TransportCloseController(),
+            dispatcher = Dispatchers.IO,
+        )
+
+        val failure = suspendFailureOf {
+            transport.runReaderLoop {
+                transport.read(ByteArray(1), 0, 1)
+            }
+        }
+
+        assertSame(error, failure)
+        assertEquals(0, transport.diagnostics().activeReads)
+    }
+
+    @Test
+    fun readerLoopSetupFailureTerminatesSessionInsteadOfLeavingItOpen() = runBlocking {
+        val closeCount = AtomicInteger(0)
+        val transport = object : YamuxPhysicalTransport {
+            override suspend fun runReaderLoop(block: suspend () -> Unit) {
+                throw IOException("reader setup detail marker")
+            }
+
+            override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int =
+                throw AssertionError("read must not run")
+
+            override suspend fun writeFully(source: ByteArray, offset: Int, length: Int) = Unit
+
+            override fun close() {
+                closeCount.incrementAndGet()
+            }
+        }
+        val parentScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val session = createYamuxClientSession(
+            transport = transport,
+            parentScope = parentScope,
+            config = YamuxConfig(keepAliveEnabled = false),
+        )
+        try {
+            val failure = withTimeout(5_000L) { suspendFailureOf { session.awaitTermination() } }
+            assertTrue(failure is YamuxTransportFailure)
+            assertTrue(session.diagnostics().terminated)
+            assertEquals(1, closeCount.get())
+        } finally {
+            suspendFailureOf { session.close() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun productionReaderLoopKeepsTransportOpenLongEnoughToWriteProtocolGoAway() = runBlocking {
+        val invalidHeader = ByteArray(YamuxProtocol.HEADER_SIZE).also { it[0] = 1 }
+        val output = ByteArrayOutputStream()
+        val transport = TcpTlsYamuxTransport(
+            input = ByteArrayInputStream(invalidHeader),
+            output = output,
+            closeController = TransportCloseController(),
+            dispatcher = Dispatchers.IO,
+        )
+        val shared = SharedCloseYamuxPhysicalTransport(transport)
+        val parentScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val session = createYamuxClientSession(
+            transport = shared,
+            parentScope = parentScope,
+            config = YamuxConfig(keepAliveEnabled = false),
+        )
+        try {
+            val failure = withTimeout(5_000L) { suspendFailureOf { session.awaitTermination() } }
+            assertTrue(failure is YamuxProtocolFailure)
+            val goAway = YamuxFrameCodec.decodeHeader(output.toByteArray())
+            assertEquals(YamuxFrameType.GOAWAY, goAway.type)
+            assertEquals(YamuxGoAwayCode.PROTOCOL_ERROR.wireValue, goAway.length)
+            assertTrue(transport.diagnostics().closed)
+        } finally {
+            suspendFailureOf { session.close() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
     fun muxAwaitTerminationWaitsForSharedPhysicalCloseCompletion() = runBlocking {
         val parentScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val transport = BarrierClosingPhysicalTransport()
@@ -1245,11 +1395,13 @@ class FrpTransportTest {
     ) : Socket() {
         val closeCount = AtomicInteger(0)
         val connectStarted = CountDownLatch(1)
+        val readStarted = CountDownLatch(1)
         var connectedEndpoint: SocketAddress? = null
             private set
         private val closedSignal = CountDownLatch(1)
         private val input = object : InputStream() {
             override fun read(): Int {
+                readStarted.countDown()
                 if (blockReadUntilClose) closedSignal.await()
                 return -1
             }
@@ -1383,8 +1535,10 @@ class FrpTransportTest {
     private class QueueingDispatcher : CoroutineDispatcher() {
         private val tasks = LinkedBlockingQueue<Runnable>()
         val queued = CountDownLatch(1)
+        val dispatchCount = AtomicInteger(0)
 
         override fun dispatch(context: CoroutineContext, block: Runnable) {
+            dispatchCount.incrementAndGet()
             tasks.add(block)
             queued.countDown()
         }
