@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "component": "github.com/fatedier/frp",
-  "downstreamVersion": "v0.69.1-p5",
+  "downstreamVersion": "v0.69.1-p6",
   "upstreamVersion": "v0.69.1",
   "upstreamRepository": "https://github.com/fatedier/frp",
   "upstreamCommit": "8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb",
@@ -50,7 +50,7 @@
   },
   "patches": [
     {
-      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0001-transport-readiness.patch",
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0001-transport-readiness.patch",
       "sha256": "f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b",
       "modifiedFiles": [
         "client/control.go",
@@ -72,7 +72,7 @@
       ]
     },
     {
-      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0002-client-tls-config-customizer.patch",
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0002-client-tls-config-customizer.patch",
       "sha256": "3986ccb901d60923c4ac2f636a704d19a51b31427181a46ac5ed78eee42d1302",
       "modifiedFiles": [
         "client/connector.go"
@@ -86,7 +86,7 @@
       ]
     },
     {
-      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0003-join-stcp-visitor-shutdown.patch",
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0003-join-stcp-visitor-shutdown.patch",
       "sha256": "35d91b30dec18ffff97b81b476742bb4b9b429e84ddb23879637a0ebdee33b79",
       "modifiedFiles": [
         "client/visitor/stcp.go",
@@ -104,7 +104,7 @@
       ]
     },
     {
-      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0004-join-client-control-workers.patch",
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0004-join-client-control-workers.patch",
       "sha256": "cc7623ed58831f63c927e23089a6366468ccad5e269d1f1ba17db38e82949687",
       "modifiedFiles": [
         "client/control.go",
@@ -124,7 +124,7 @@
       ]
     },
     {
-      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0005-close-pending-visitor-and-work-conns.patch",
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0005-close-pending-visitor-and-work-conns.patch",
       "sha256": "2bf6450a346ea58aa4de0362fcb600815d5845ff9de2307dddabc67cc2f07494",
       "modifiedFiles": [
         "client/control.go",
@@ -143,6 +143,34 @@
         "client/visitor/sudp.go",
         "client/visitor/visitor.go",
         "client/visitor/visitor_outbound_shutdown_test.go"
+      ]
+    },
+    {
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0006-add-client-lifecycle-diagnostics.patch",
+      "sha256": "5343f776a4109c077ebebe2ee97de2dc19cfbbcac1db88f75a0134d90e9e9357",
+      "modifiedFiles": [
+        "client/connector.go",
+        "client/control.go",
+        "client/service.go",
+        "client/visitor/visitor.go",
+        "client/visitor/visitor_manager.go",
+        "pkg/msg/handler.go"
+      ],
+      "addedFiles": [
+        "client/lifecycle_diagnostics.go",
+        "client/visitor/lifecycle_diagnostics.go",
+        "pkg/msg/lifecycle_diagnostics.go"
+      ],
+      "patchedFiles": [
+        "client/connector.go",
+        "client/control.go",
+        "client/lifecycle_diagnostics.go",
+        "client/service.go",
+        "client/visitor/lifecycle_diagnostics.go",
+        "client/visitor/visitor.go",
+        "client/visitor/visitor_manager.go",
+        "pkg/msg/handler.go",
+        "pkg/msg/lifecycle_diagnostics.go"
       ]
     }
   ],

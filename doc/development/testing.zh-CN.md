@@ -211,7 +211,7 @@ Release-Like 资源任务会在同一个 App/instrumentation 进程中，针对�
   "-Pocdeck.frp.appResource.evidenceDirectory=<existing-directory>"
 ```
 
-仅在明确执行三阶段 runtime 初始化诊断时添加 `-Pocdeck.frp.appE2e.runtimeDiagnostic.enabled=true`。它只记录冷启动、初始化后和 session 后的聚合线程数，以及可选的 Go goroutine/session 计数；绝不记录线程身份、endpoint、路径或凭据。
+仅在明确执行三阶段 runtime 初始化诊断时添加 `-Pocdeck.frp.appE2e.runtimeDiagnostic.enabled=true`。它只记录冷启动、初始化后和 session 后的聚合线程数，以及可选的 Go goroutine/session 和不含身份的 owner lifecycle 计数；绝不记录线程身份、goroutine 名称或 stack、endpoint、路径或凭据。
 
 Allowlist profile 为 `baseline`、`stress`、`leak` 与 `soak`。可选有界属性包括 `ocdeck.frp.appResource.iterations`、`concurrency`、`durationMillis`、`reconnectEveryIterations` 与 `sampleEveryIterations`。iterations 上限为 100,000，concurrency 上限为 32，soak 时长范围为 60 秒到 24 小时；默认 soak 为 8 小时。soak 会把有界迭代预算按比例铺满请求时长，因此快速设备不会提前耗尽一个原本合法的配置。每个 workload 会执行有界并发 snapshot 和可选的显式 close/reconnect 循环，同时验证 transport identity 单调替换以及 global/project SSE 恢复。Summary schema 10 内嵌 App result schema 10。证据包含 wall time、进程 CPU、PSS、Java/native heap、文件描述符和线程计数，并通过 `head-tail-v1` retention metadata 及每个计划 sample 的 1-based ordinal 证明真实首尾窗口。Host 会根据已完成 iterations 与 `sampleEveryIterations` 推导 observed 数，再严格校验最初 127 个与最新 127 个 ordinal、retained-head、retained-tail 与 dropped count。非 soak profile 必须完成全部配置 iterations；soak 必须完成正数且有界的前缀，每个 profile 都必须报告精确 reconnect 数，两个 backend 的 workload result 必须完全相同。Scenario 清理完成后，每个非 functional workload 还会静默 90 秒并记录 quiescence snapshot；设备端与 Host 动态 timeout 包含这段额外的有界等待。输出文件为 `gomobile-app-resource.json` 与 `kotlin-app-resource.json`，保持 `authorizesKotlinDefault=false`，并采用与验收 summary 相同的 clean candidate/APK 字节身份及清理后发布规则。物理 ARM instrumentation 回归测试也已使用 1,000 个单调 sample 验证 producer 确实保留真实首尾窗口。
 
@@ -257,7 +257,7 @@ cd frpc-stcp-visitor-go
 go run ./cmd/preparefrp
 python3 ../.github/scripts/check-go-race-environment.py
 go test -race -modfile=build/frp-patched.mod ./...
-cd build/frp-v0.69.1-p5
+cd build/frp-v0.69.1-p6
 go test -race ./client/...
 ```
 
@@ -293,7 +293,7 @@ Push-Location .\frpc-stcp-visitor-go
 Invoke-NativeChecked { go run ./cmd/preparefrp }
 Invoke-NativeChecked { python ..\.github\scripts\check-go-race-environment.py }
 Invoke-NativeChecked { go test -race '-modfile=build/frp-patched.mod' ./... }
-Push-Location .\build\frp-v0.69.1-p5
+Push-Location .\build\frp-v0.69.1-p6
 Invoke-NativeChecked { go test -race ./client/... }
 Pop-Location
 Pop-Location

@@ -124,7 +124,7 @@ func TestContainsLocalBuildPathDoesNotMatchUnrelatedData(t *testing.T) {
 func validBuildInfo(t *testing.T) (reprobuild.Versions, []reprobuild.ModuleExpectation, *debug.BuildInfo) {
 	t.Helper()
 	versions := reprobuild.Versions{
-		BridgeVersion:  "0.3.15-frp0.69.1-p5",
+		BridgeVersion:  "0.3.16-frp0.69.1-p6",
 		GoVersion:      "go1.26.4",
 		XMobileVersion: "v0.0.0-20260611195102-4dd8f1dbf5d2",
 		AndroidAPI:     26,

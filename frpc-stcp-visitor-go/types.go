@@ -58,6 +58,7 @@ type stopSessionResult struct {
 }
 
 type runtimeDiagnostics struct {
-	GoroutineCount int `json:"goroutineCount"`
-	SessionCount   int `json:"sessionCount"`
+	GoroutineCount int              `json:"goroutineCount"`
+	SessionCount   int              `json:"sessionCount"`
+	OwnerCounts    map[string]int64 `json:"ownerCounts,omitempty"`
 }

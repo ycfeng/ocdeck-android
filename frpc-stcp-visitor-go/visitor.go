@@ -325,6 +325,7 @@ func GetRuntimeDiagnostics() (string, error) {
 	return marshalJSON(runtimeDiagnostics{
 		GoroutineCount: runtime.NumGoroutine(),
 		SessionCount:   sessionCount,
+		OwnerCounts:    client.RuntimeLifecycleDiagnosticsSnapshot(),
 	})
 }
 

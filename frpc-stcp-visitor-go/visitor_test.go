@@ -265,6 +265,9 @@ func TestRuntimeDiagnosticsReportOnlyAggregateCounts(t *testing.T) {
 	if after.SessionCount != before.SessionCount+1 || after.GoroutineCount <= 0 {
 		t.Fatalf("unexpected aggregate diagnostics: %+v", after)
 	}
+	if len(after.OwnerCounts) == 0 || after.OwnerCounts["client.controls"] < 0 {
+		t.Fatalf("unexpected owner diagnostics: %+v", after.OwnerCounts)
+	}
 }
 
 func installTestSession(t *testing.T, id string) *session {

@@ -707,7 +707,11 @@ class GoMobileFrpcStcpVisitorClientTest {
         val client = GoMobileFrpcStcpVisitorClient(json, FakeBridge(), Unit)
 
         assertEquals(
-            FrpcRuntimeDiagnostics(goroutineCount = 7, sessionCount = 2),
+            FrpcRuntimeDiagnostics(
+                goroutineCount = 7,
+                sessionCount = 2,
+                ownerCounts = mapOf("client.controls" to 1L, "visitor.handlers" to 0L),
+            ),
             client.captureRuntimeDiagnostics(),
         )
     }
@@ -768,7 +772,8 @@ class GoMobileFrpcStcpVisitorClientTest {
 
         override fun getState(sessionId: String): String = stateJson
 
-        override fun getRuntimeDiagnostics(): String = """{"goroutineCount":7,"sessionCount":2}"""
+        override fun getRuntimeDiagnostics(): String =
+            """{"goroutineCount":7,"sessionCount":2,"ownerCounts":{"client.controls":1,"visitor.handlers":0}}"""
     }
 
     private data class ReadyCall(

@@ -2,7 +2,7 @@ OC DECK THIRD-PARTY NOTICES
 
 Last reviewed: 2026-07-30
 OC Deck application version: 0.2.3
-GoMobile bridge version: 0.3.15-frp0.69.1-p5
+GoMobile bridge version: 0.3.16-frp0.69.1-p6
 
 This file identifies third-party software and assets used by OC Deck. It does
 not replace the applicable license texts. Copies of the relevant licenses are
@@ -147,12 +147,12 @@ License text: third_party/licenses/BSD-3-Clause.txt
 Sources: https://go.googlesource.com/go/ and
 https://go.googlesource.com/mobile/
 
-frp v0.69.1-p5
+frp v0.69.1-p6
 ----------------
 
 Upstream module: github.com/fatedier/frp v0.69.1
 Upstream commit: 8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
-Downstream identifier: v0.69.1-p5
+Downstream identifier: v0.69.1-p6
 License: Apache-2.0
 License text: third_party/licenses/Apache-2.0.txt
 Source: https://github.com/fatedier/frp/commit/8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
@@ -160,37 +160,42 @@ Source: https://github.com/fatedier/frp/commit/8dd26c6961f2f4ca657dcd7fbfb3a4e8c
 Modified by OC Deck contributors.
 
 Patches:
-- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0001-transport-readiness.patch
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0001-transport-readiness.patch
   SHA-256: f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b
-- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0002-client-tls-config-customizer.patch
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0002-client-tls-config-customizer.patch
   SHA-256: 3986ccb901d60923c4ac2f636a704d19a51b31427181a46ac5ed78eee42d1302
-- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0003-join-stcp-visitor-shutdown.patch
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0003-join-stcp-visitor-shutdown.patch
   SHA-256: 35d91b30dec18ffff97b81b476742bb4b9b429e84ddb23879637a0ebdee33b79
-- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0004-join-client-control-workers.patch
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0004-join-client-control-workers.patch
   SHA-256: cc7623ed58831f63c927e23089a6366468ccad5e269d1f1ba17db38e82949687
-- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p5/0005-close-pending-visitor-and-work-conns.patch
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0005-close-pending-visitor-and-work-conns.patch
   SHA-256: 2bf6450a346ea58aa4de0362fcb600815d5845ff9de2307dddabc67cc2f07494
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p6/0006-add-client-lifecycle-diagnostics.patch
+  SHA-256: 5343f776a4109c077ebebe2ee97de2dc19cfbbcac1db88f75a0134d90e9e9357
 
 Modified upstream files:
 - client/connector.go
 - client/control.go
-- pkg/msg/handler.go
 - client/service.go
 - client/visitor/stcp.go
 - client/visitor/sudp.go
 - client/visitor/visitor.go
 - client/visitor/visitor_manager.go
+- pkg/msg/handler.go
 
 Added downstream files:
 - client/connector_tls_config_customizer_test.go
 - client/control_pending_work_conn_test.go
 - client/control_shutdown_test.go
+- client/lifecycle_diagnostics.go
 - client/runtime_state.go
 - client/runtime_state_test.go
+- client/visitor/lifecycle_diagnostics.go
 - client/visitor/visitor_manager_runtime_test.go
 - client/visitor/visitor_outbound_shutdown_test.go
 - client/visitor/visitor_shutdown_test.go
 - pkg/msg/handler_test.go
+- pkg/msg/lifecycle_diagnostics.go
 
 Complete provenance: third_party/sources/frp.json
 

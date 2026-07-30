@@ -211,7 +211,7 @@ The Release-Like resource tasks run the shared `core` workload in one App/instru
   "-Pocdeck.frp.appResource.evidenceDirectory=<existing-directory>"
 ```
 
-Add `-Pocdeck.frp.appE2e.runtimeDiagnostic.enabled=true` only for an explicit three-stage runtime-initialization diagnostic. It records aggregate cold/initialized/post-session thread counts plus optional Go goroutine/session counts, and never records thread identity, endpoint, path, or credentials.
+Add `-Pocdeck.frp.appE2e.runtimeDiagnostic.enabled=true` only for an explicit three-stage runtime-initialization diagnostic. It records aggregate cold/initialized/post-session thread counts plus optional Go goroutine/session and no-identity owner-lifecycle counts, and never records thread identity, goroutine names or stacks, endpoint, path, or credentials.
 
 The allowlisted profiles are `baseline`, `stress`, `leak`, and `soak`. Optional bounded properties are `ocdeck.frp.appResource.iterations`, `concurrency`, `durationMillis`, `reconnectEveryIterations`, and `sampleEveryIterations`. Iterations are limited to 100,000, concurrency to 32, and soak duration to 60 seconds through 24 hours; the default soak is eight hours. A soak paces its bounded iteration budget across the requested duration so a fast device cannot exhaust an otherwise valid configuration early. Each workload performs bounded concurrent snapshots and optional explicit close/reconnect cycles while validating monotonic transport-identity replacement and global/project SSE recovery. Summary schema 10 embeds App result schema 10. Evidence contains wall and process-CPU time, PSS, Java/native heap, file-descriptor and thread counts, plus `head-tail-v1` retention metadata and a one-based ordinal on every scheduled sample. The Host derives the observed count from completed iterations and `sampleEveryIterations`, then requires the exact first 127 and latest 127 ordinals, retained-head, retained-tail, and dropped counts. Non-soak profiles must complete every configured iteration; soak must complete a positive bounded prefix, and every profile must report the exact reconnect count. The two backends must have identical workload results. After scenario cleanup, every non-functional workload remains idle for 90 seconds and records a quiescence snapshot; dynamic device and Host timeouts include this additional bounded delay. Output files are `gomobile-app-resource.json` and `kotlin-app-resource.json`, retain `authorizesKotlinDefault=false`, and use the same clean candidate/APK byte-identity and post-cleanup publication rules as acceptance summaries. A physical-ARM instrumentation regression test has also verified the producer retains the true first and last windows after 1,000 monotonic samples.
 
@@ -258,7 +258,7 @@ cd frpc-stcp-visitor-go
 go run ./cmd/preparefrp
 python3 ../.github/scripts/check-go-race-environment.py
 go test -race -modfile=build/frp-patched.mod ./...
-cd build/frp-v0.69.1-p5
+cd build/frp-v0.69.1-p6
 go test -race ./client/...
 ```
 
@@ -294,7 +294,7 @@ Push-Location .\frpc-stcp-visitor-go
 Invoke-NativeChecked { go run ./cmd/preparefrp }
 Invoke-NativeChecked { python ..\.github\scripts\check-go-race-environment.py }
 Invoke-NativeChecked { go test -race '-modfile=build/frp-patched.mod' ./... }
-Push-Location .\build\frp-v0.69.1-p5
+Push-Location .\build\frp-v0.69.1-p6
 Invoke-NativeChecked { go test -race ./client/... }
 Pop-Location
 Pop-Location

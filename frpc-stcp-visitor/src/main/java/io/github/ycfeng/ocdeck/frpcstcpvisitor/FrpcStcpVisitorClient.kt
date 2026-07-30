@@ -55,6 +55,7 @@ interface FrpcStcpVisitorRuntimeDiagnostics {
 data class FrpcRuntimeDiagnostics(
     val goroutineCount: Int,
     val sessionCount: Int,
+    val ownerCounts: Map<String, Long> = emptyMap(),
 )
 
 @Serializable

@@ -300,7 +300,13 @@ private class StatefulContractBridge(
     }
 
     override fun getRuntimeDiagnostics(): String = synchronized(lock) {
-        json.encodeToString(FrpcRuntimeDiagnostics(goroutineCount = 0, sessionCount = sessions.size))
+        json.encodeToString(
+            FrpcRuntimeDiagnostics(
+                goroutineCount = 0,
+                sessionCount = sessions.size,
+                ownerCounts = mapOf("contract.sessions" to sessions.size.toLong()),
+            ),
+        )
     }
 
     fun openControl(controlEpoch: Long) {

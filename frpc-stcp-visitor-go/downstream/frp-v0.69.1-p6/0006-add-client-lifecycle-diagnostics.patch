@@ -1,0 +1,751 @@
+diff --git a/client/connector.go b/client/connector.go
+index 4835914..760f7bc 100644
+--- a/client/connector.go
++++ b/client/connector.go
+@@ -86,8 +86,11 @@ type defaultConnectorImpl struct {
+ 
+ 	tlsConfigCustomizer TLSConfigCustomizer
+ 	muxSession          *fmux.Session
++	muxSessionDone      func()
+ 	quicConn            *quic.Conn
++	diagnosticStartOnce sync.Once
+ 	closeOnce           sync.Once
++	diagnosticDone      func()
+ }
+ 
+ func NewConnector(ctx context.Context, cfg *v1.ClientCommonConfig) Connector {
+@@ -154,10 +157,12 @@ func (c *defaultConnectorImpl) Open() error {
+ 			return err
+ 		}
+ 		c.quicConn = conn
++		c.startDiagnostics()
+ 		return nil
+ 	}
+ 
+ 	if !lo.FromPtr(c.cfg.Transport.TCPMux) {
++		c.startDiagnostics()
+ 		return nil
+ 	}
+ 
+@@ -177,6 +182,8 @@ func (c *defaultConnectorImpl) Open() error {
+ 		return err
+ 	}
+ 	c.muxSession = session
++	c.muxSessionDone = trackTcpMuxSessionLifecycle()
++	c.startDiagnostics()
+ 	return nil
+ }
+ 
+@@ -193,7 +200,10 @@ func (c *defaultConnectorImpl) Connect() (net.Conn, error) {
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		return stream, nil
++		return &diagnosticNetConn{
++			Conn: stream,
++			done: trackTcpMuxStreamLifecycle(),
++		}, nil
+ 	}
+ 
+ 	return c.realConnect()
+@@ -280,14 +290,39 @@ func (c *defaultConnectorImpl) customizeTLSConfig(config *tls.Config) error {
+ 	return c.tlsConfigCustomizer(config)
+ }
+ 
++func (c *defaultConnectorImpl) startDiagnostics() {
++	c.diagnosticStartOnce.Do(func() {
++		c.diagnosticDone = trackConnectorLifecycle()
++	})
++}
++
+ func (c *defaultConnectorImpl) Close() error {
+ 	c.closeOnce.Do(func() {
++		diagnosticConnectorCloseTotal.Add(1)
+ 		if c.quicConn != nil {
+ 			_ = c.quicConn.CloseWithError(0, "")
+ 		}
+ 		if c.muxSession != nil {
+ 			_ = c.muxSession.Close()
+ 		}
++		if c.muxSessionDone != nil {
++			c.muxSessionDone()
++		}
++		if c.diagnosticDone != nil {
++			c.diagnosticDone()
++		}
+ 	})
+ 	return nil
+ }
++
++type diagnosticNetConn struct {
++	net.Conn
++	done func()
++	once sync.Once
++}
++
++func (c *diagnosticNetConn) Close() error {
++	err := c.Conn.Close()
++	c.once.Do(c.done)
++	return err
++}
+diff --git a/client/control.go b/client/control.go
+index fba4d8b..cb1ca47 100644
+--- a/client/control.go
++++ b/client/control.go
+@@ -87,10 +87,12 @@ type Control struct {
+ 	stopCh   chan struct{}
+ 	stopOnce sync.Once
+ 
+-	handlerMu        sync.Mutex
+-	handlerClosing   bool
+-	handlerWG        sync.WaitGroup
+-	pendingWorkConns map[*msg.Conn]struct{}
++	handlerMu                  sync.Mutex
++	handlerClosing             bool
++	handlerWG                  sync.WaitGroup
++	pendingWorkConns           map[*msg.Conn]struct{}
++	pendingWorkConnDiagnostics map[*msg.Conn]func()
++	diagnosticDone             func()
+ }
+ 
+ func NewControl(
+@@ -100,11 +102,12 @@ func NewControl(
+ ) (*Control, error) {
+ 	// new xlog instance
+ 	ctl := &Control{
+-		ctx:        ctx,
+-		xl:         xlog.FromContextSafe(ctx),
+-		sessionCtx: sessionCtx,
+-		doneCh:     make(chan struct{}),
+-		stopCh:     make(chan struct{}),
++		ctx:            ctx,
++		xl:             xlog.FromContextSafe(ctx),
++		sessionCtx:     sessionCtx,
++		doneCh:         make(chan struct{}),
++		stopCh:         make(chan struct{}),
++		diagnosticDone: trackControlLifecycle(),
+ 	}
+ 	ctl.lastPong.Store(time.Now())
+ 
+@@ -196,6 +199,8 @@ func (ctl *Control) handleReqWorkConnAsync(m msg.Message) {
+ 	ctl.handlerMu.Unlock()
+ 
+ 	go func() {
++		done := trackReqWorkConnHandlerLifecycle()
++		defer done()
+ 		defer ctl.handlerWG.Done()
+ 		ctl.handleReqWorkConn(m)
+ 	}()
+@@ -208,7 +213,11 @@ func (ctl *Control) waitAsyncHandlers() {
+ 	for conn := range ctl.pendingWorkConns {
+ 		pendingWorkConns = append(pendingWorkConns, conn)
+ 	}
++	for _, release := range ctl.pendingWorkConnDiagnostics {
++		release()
++	}
+ 	ctl.pendingWorkConns = nil
++	ctl.pendingWorkConnDiagnostics = nil
+ 	ctl.handlerMu.Unlock()
+ 	for _, conn := range pendingWorkConns {
+ 		conn.Close()
+@@ -225,12 +234,20 @@ func (ctl *Control) trackPendingWorkConn(conn *msg.Conn) bool {
+ 	if ctl.pendingWorkConns == nil {
+ 		ctl.pendingWorkConns = make(map[*msg.Conn]struct{})
+ 	}
++	if ctl.pendingWorkConnDiagnostics == nil {
++		ctl.pendingWorkConnDiagnostics = make(map[*msg.Conn]func())
++	}
+ 	ctl.pendingWorkConns[conn] = struct{}{}
++	ctl.pendingWorkConnDiagnostics[conn] = trackPendingWorkConnLifecycle()
+ 	return true
+ }
+ 
+ func (ctl *Control) untrackPendingWorkConn(conn *msg.Conn) {
+ 	ctl.handlerMu.Lock()
++	if release, ok := ctl.pendingWorkConnDiagnostics[conn]; ok {
++		release()
++		delete(ctl.pendingWorkConnDiagnostics, conn)
++	}
+ 	delete(ctl.pendingWorkConns, conn)
+ 	ctl.handlerMu.Unlock()
+ }
+@@ -341,6 +358,8 @@ func (ctl *Control) heartbeatWorker() {
+ 
+ 		wg.Add(1)
+ 		go func() {
++			done := trackControlHeartbeatWorkerLifecycle()
++			defer done()
+ 			defer wg.Done()
+ 			wait.BackoffUntil(sendHeartBeat,
+ 				wait.NewFastBackoffManager(wait.FastBackoffOptions{
+@@ -359,6 +378,8 @@ func (ctl *Control) heartbeatWorker() {
+ 	if ctl.sessionCtx.Common.Transport.HeartbeatInterval > 0 && ctl.sessionCtx.Common.Transport.HeartbeatTimeout > 0 {
+ 		wg.Add(1)
+ 		go func() {
++			done := trackControlHeartbeatWorkerLifecycle()
++			defer done()
+ 			defer wg.Done()
+ 			wait.Until(func() {
+ 				if time.Since(ctl.lastPong.Load().(time.Time)) > time.Duration(ctl.sessionCtx.Common.Transport.HeartbeatTimeout)*time.Second {
+@@ -374,6 +395,9 @@ func (ctl *Control) heartbeatWorker() {
+ 
+ func (ctl *Control) worker() {
+ 	xl := ctl.xl
++	done := trackControlWorkerLifecycle()
++	defer done()
++	defer ctl.diagnosticDone()
+ 	var owners sync.WaitGroup
+ 	owners.Add(1)
+ 	go func() {
+@@ -382,6 +406,8 @@ func (ctl *Control) worker() {
+ 	}()
+ 	owners.Add(1)
+ 	go func() {
++		done := trackControlDispatcherOwnerLifecycle()
++		defer done()
+ 		defer owners.Done()
+ 		ctl.msgDispatcher.Run()
+ 		ctl.msgDispatcher.Wait()
+diff --git a/client/lifecycle_diagnostics.go b/client/lifecycle_diagnostics.go
+new file mode 100644
+index 0000000..c29b547
+--- /dev/null
++++ b/client/lifecycle_diagnostics.go
+@@ -0,0 +1,174 @@
++package client
++
++import (
++	"sync/atomic"
++
++	"github.com/fatedier/frp/client/visitor"
++	"github.com/fatedier/frp/pkg/msg"
++)
++
++var (
++	diagnosticServiceControllerWorkers          atomic.Int64
++	diagnosticServiceControllerWorkersStarted   atomic.Int64
++	diagnosticServiceControllerWorkersCompleted atomic.Int64
++	diagnosticControls                          atomic.Int64
++	diagnosticControlsStarted                   atomic.Int64
++	diagnosticControlsCompleted                 atomic.Int64
++	diagnosticControlWorkers                    atomic.Int64
++	diagnosticControlWorkersStarted             atomic.Int64
++	diagnosticControlWorkersCompleted           atomic.Int64
++	diagnosticControlHeartbeatWorkers           atomic.Int64
++	diagnosticControlHeartbeatWorkersStarted    atomic.Int64
++	diagnosticControlHeartbeatWorkersCompleted  atomic.Int64
++	diagnosticControlDispatcherOwners           atomic.Int64
++	diagnosticControlDispatcherOwnersStarted    atomic.Int64
++	diagnosticControlDispatcherOwnersCompleted  atomic.Int64
++	diagnosticReqWorkConnHandlers               atomic.Int64
++	diagnosticReqWorkConnHandlersStarted        atomic.Int64
++	diagnosticReqWorkConnHandlersCompleted      atomic.Int64
++	diagnosticPendingWorkConns                  atomic.Int64
++	diagnosticPendingWorkConnsStarted           atomic.Int64
++	diagnosticPendingWorkConnsCompleted         atomic.Int64
++	diagnosticConnectors                        atomic.Int64
++	diagnosticConnectorsStarted                 atomic.Int64
++	diagnosticConnectorsCompleted               atomic.Int64
++	diagnosticTcpMuxSessions                    atomic.Int64
++	diagnosticTcpMuxSessionsStarted             atomic.Int64
++	diagnosticTcpMuxSessionsCompleted           atomic.Int64
++	diagnosticTcpMuxStreams                     atomic.Int64
++	diagnosticTcpMuxStreamsStarted              atomic.Int64
++	diagnosticTcpMuxStreamsCompleted            atomic.Int64
++	diagnosticConnectorCloseTotal               atomic.Int64
++)
++
++func trackServiceControllerWorkerLifecycle() func() {
++	diagnosticServiceControllerWorkers.Add(1)
++	diagnosticServiceControllerWorkersStarted.Add(1)
++	return func() {
++		diagnosticServiceControllerWorkers.Add(-1)
++		diagnosticServiceControllerWorkersCompleted.Add(1)
++	}
++}
++
++func trackControlLifecycle() func() {
++	diagnosticControls.Add(1)
++	diagnosticControlsStarted.Add(1)
++	return func() {
++		diagnosticControls.Add(-1)
++		diagnosticControlsCompleted.Add(1)
++	}
++}
++
++func trackControlWorkerLifecycle() func() {
++	diagnosticControlWorkers.Add(1)
++	diagnosticControlWorkersStarted.Add(1)
++	return func() {
++		diagnosticControlWorkers.Add(-1)
++		diagnosticControlWorkersCompleted.Add(1)
++	}
++}
++
++func trackControlHeartbeatWorkerLifecycle() func() {
++	diagnosticControlHeartbeatWorkers.Add(1)
++	diagnosticControlHeartbeatWorkersStarted.Add(1)
++	return func() {
++		diagnosticControlHeartbeatWorkers.Add(-1)
++		diagnosticControlHeartbeatWorkersCompleted.Add(1)
++	}
++}
++
++func trackControlDispatcherOwnerLifecycle() func() {
++	diagnosticControlDispatcherOwners.Add(1)
++	diagnosticControlDispatcherOwnersStarted.Add(1)
++	return func() {
++		diagnosticControlDispatcherOwners.Add(-1)
++		diagnosticControlDispatcherOwnersCompleted.Add(1)
++	}
++}
++
++func trackReqWorkConnHandlerLifecycle() func() {
++	diagnosticReqWorkConnHandlers.Add(1)
++	diagnosticReqWorkConnHandlersStarted.Add(1)
++	return func() {
++		diagnosticReqWorkConnHandlers.Add(-1)
++		diagnosticReqWorkConnHandlersCompleted.Add(1)
++	}
++}
++
++func trackPendingWorkConnLifecycle() func() {
++	diagnosticPendingWorkConns.Add(1)
++	diagnosticPendingWorkConnsStarted.Add(1)
++	return func() {
++		diagnosticPendingWorkConns.Add(-1)
++		diagnosticPendingWorkConnsCompleted.Add(1)
++	}
++}
++
++func trackConnectorLifecycle() func() {
++	diagnosticConnectors.Add(1)
++	diagnosticConnectorsStarted.Add(1)
++	return func() {
++		diagnosticConnectors.Add(-1)
++		diagnosticConnectorsCompleted.Add(1)
++	}
++}
++
++func trackTcpMuxSessionLifecycle() func() {
++	diagnosticTcpMuxSessions.Add(1)
++	diagnosticTcpMuxSessionsStarted.Add(1)
++	return func() {
++		diagnosticTcpMuxSessions.Add(-1)
++		diagnosticTcpMuxSessionsCompleted.Add(1)
++	}
++}
++
++func trackTcpMuxStreamLifecycle() func() {
++	diagnosticTcpMuxStreams.Add(1)
++	diagnosticTcpMuxStreamsStarted.Add(1)
++	return func() {
++		diagnosticTcpMuxStreams.Add(-1)
++		diagnosticTcpMuxStreamsCompleted.Add(1)
++	}
++}
++
++// RuntimeLifecycleDiagnosticsSnapshot returns aggregate lifecycle counts only.
++// It does not expose goroutine names, stacks, endpoints, paths, visitor names,
++// server names, connection identities, or credentials.
++func RuntimeLifecycleDiagnosticsSnapshot() map[string]int64 {
++	out := map[string]int64{
++		"client.serviceControllerWorkers":               diagnosticServiceControllerWorkers.Load(),
++		"client.serviceControllerWorkersStartedTotal":   diagnosticServiceControllerWorkersStarted.Load(),
++		"client.serviceControllerWorkersCompletedTotal": diagnosticServiceControllerWorkersCompleted.Load(),
++		"client.controls":                               diagnosticControls.Load(),
++		"client.controlsStartedTotal":                   diagnosticControlsStarted.Load(),
++		"client.controlsCompletedTotal":                 diagnosticControlsCompleted.Load(),
++		"client.controlWorkers":                         diagnosticControlWorkers.Load(),
++		"client.controlWorkersStartedTotal":             diagnosticControlWorkersStarted.Load(),
++		"client.controlWorkersCompletedTotal":           diagnosticControlWorkersCompleted.Load(),
++		"client.controlHeartbeatWorkers":                diagnosticControlHeartbeatWorkers.Load(),
++		"client.controlHeartbeatWorkersStartedTotal":    diagnosticControlHeartbeatWorkersStarted.Load(),
++		"client.controlHeartbeatWorkersCompletedTotal":  diagnosticControlHeartbeatWorkersCompleted.Load(),
++		"client.controlDispatcherOwners":                diagnosticControlDispatcherOwners.Load(),
++		"client.controlDispatcherOwnersStartedTotal":    diagnosticControlDispatcherOwnersStarted.Load(),
++		"client.controlDispatcherOwnersCompletedTotal":  diagnosticControlDispatcherOwnersCompleted.Load(),
++		"client.reqWorkConnHandlers":                    diagnosticReqWorkConnHandlers.Load(),
++		"client.reqWorkConnHandlersStartedTotal":        diagnosticReqWorkConnHandlersStarted.Load(),
++		"client.reqWorkConnHandlersCompletedTotal":      diagnosticReqWorkConnHandlersCompleted.Load(),
++		"client.pendingWorkConns":                       diagnosticPendingWorkConns.Load(),
++		"client.pendingWorkConnsStartedTotal":           diagnosticPendingWorkConnsStarted.Load(),
++		"client.pendingWorkConnsCompletedTotal":         diagnosticPendingWorkConnsCompleted.Load(),
++		"client.connectors":                             diagnosticConnectors.Load(),
++		"client.connectorsStartedTotal":                 diagnosticConnectorsStarted.Load(),
++		"client.connectorsCompletedTotal":               diagnosticConnectorsCompleted.Load(),
++		"client.tcpMuxSessions":                         diagnosticTcpMuxSessions.Load(),
++		"client.tcpMuxSessionsStartedTotal":             diagnosticTcpMuxSessionsStarted.Load(),
++		"client.tcpMuxSessionsCompletedTotal":           diagnosticTcpMuxSessionsCompleted.Load(),
++		"client.tcpMuxStreams":                          diagnosticTcpMuxStreams.Load(),
++		"client.tcpMuxStreamsStartedTotal":              diagnosticTcpMuxStreamsStarted.Load(),
++		"client.tcpMuxStreamsCompletedTotal":            diagnosticTcpMuxStreamsCompleted.Load(),
++		"client.connectorCloseTotal":                    diagnosticConnectorCloseTotal.Load(),
++	}
++	msg.AppendLifecycleDiagnostics(out, "msg.")
++	visitor.AppendLifecycleDiagnostics(out, "visitor.")
++	return out
++}
+diff --git a/client/service.go b/client/service.go
+index cdc6371..afa3edc 100644
+--- a/client/service.go
++++ b/client/service.go
+@@ -276,6 +276,8 @@ func (svr *Service) Run(ctx context.Context) error {
+ 
+ 	svr.controllerWG.Add(1)
+ 	go func() {
++		done := trackServiceControllerWorkerLifecycle()
++		defer done()
+ 		defer svr.controllerWG.Done()
+ 		svr.keepControllerWorking()
+ 	}()
+diff --git a/client/visitor/lifecycle_diagnostics.go b/client/visitor/lifecycle_diagnostics.go
+new file mode 100644
+index 0000000..afeebfb
+--- /dev/null
++++ b/client/visitor/lifecycle_diagnostics.go
+@@ -0,0 +1,131 @@
++package visitor
++
++import "sync/atomic"
++
++var (
++	diagnosticManagers                  atomic.Int64
++	diagnosticManagersStarted           atomic.Int64
++	diagnosticManagersCompleted         atomic.Int64
++	diagnosticKeepers                   atomic.Int64
++	diagnosticKeepersStarted            atomic.Int64
++	diagnosticKeepersCompleted          atomic.Int64
++	diagnosticVisitorInstances          atomic.Int64
++	diagnosticVisitorInstancesStarted   atomic.Int64
++	diagnosticVisitorInstancesCompleted atomic.Int64
++	diagnosticAcceptLoops               atomic.Int64
++	diagnosticAcceptLoopsStarted        atomic.Int64
++	diagnosticAcceptLoopsCompleted      atomic.Int64
++	diagnosticHandlers                  atomic.Int64
++	diagnosticHandlersStarted           atomic.Int64
++	diagnosticHandlersCompleted         atomic.Int64
++	diagnosticUserConns                 atomic.Int64
++	diagnosticUserConnsStarted          atomic.Int64
++	diagnosticUserConnsCompleted        atomic.Int64
++	diagnosticOutboundDials             atomic.Int64
++	diagnosticOutboundDialsStarted      atomic.Int64
++	diagnosticOutboundDialsCompleted    atomic.Int64
++	diagnosticOutboundConns             atomic.Int64
++	diagnosticOutboundConnsStarted      atomic.Int64
++	diagnosticOutboundConnsCompleted    atomic.Int64
++)
++
++func trackManagerLifecycle() func() {
++	diagnosticManagers.Add(1)
++	diagnosticManagersStarted.Add(1)
++	return func() {
++		diagnosticManagers.Add(-1)
++		diagnosticManagersCompleted.Add(1)
++	}
++}
++
++func trackKeeperLifecycle() func() {
++	diagnosticKeepers.Add(1)
++	diagnosticKeepersStarted.Add(1)
++	return func() {
++		diagnosticKeepers.Add(-1)
++		diagnosticKeepersCompleted.Add(1)
++	}
++}
++
++func trackVisitorInstanceLifecycle() func() {
++	diagnosticVisitorInstances.Add(1)
++	diagnosticVisitorInstancesStarted.Add(1)
++	return func() {
++		diagnosticVisitorInstances.Add(-1)
++		diagnosticVisitorInstancesCompleted.Add(1)
++	}
++}
++
++func trackAcceptLoopLifecycle() func() {
++	diagnosticAcceptLoops.Add(1)
++	diagnosticAcceptLoopsStarted.Add(1)
++	return func() {
++		diagnosticAcceptLoops.Add(-1)
++		diagnosticAcceptLoopsCompleted.Add(1)
++	}
++}
++
++func trackHandlerLifecycle() func() {
++	diagnosticHandlers.Add(1)
++	diagnosticHandlersStarted.Add(1)
++	return func() {
++		diagnosticHandlers.Add(-1)
++		diagnosticHandlersCompleted.Add(1)
++	}
++}
++
++func trackUserConnLifecycle() func() {
++	diagnosticUserConns.Add(1)
++	diagnosticUserConnsStarted.Add(1)
++	return func() {
++		diagnosticUserConns.Add(-1)
++		diagnosticUserConnsCompleted.Add(1)
++	}
++}
++
++func trackOutboundDialLifecycle() func() {
++	diagnosticOutboundDials.Add(1)
++	diagnosticOutboundDialsStarted.Add(1)
++	return func() {
++		diagnosticOutboundDials.Add(-1)
++		diagnosticOutboundDialsCompleted.Add(1)
++	}
++}
++
++func trackOutboundConnLifecycle() func() {
++	diagnosticOutboundConns.Add(1)
++	diagnosticOutboundConnsStarted.Add(1)
++	return func() {
++		diagnosticOutboundConns.Add(-1)
++		diagnosticOutboundConnsCompleted.Add(1)
++	}
++}
++
++// AppendLifecycleDiagnostics adds aggregate visitor owner counts without
++// exposing visitor names, server names, endpoints, or connection identities.
++func AppendLifecycleDiagnostics(out map[string]int64, prefix string) {
++	out[prefix+"managers"] = diagnosticManagers.Load()
++	out[prefix+"managersStartedTotal"] = diagnosticManagersStarted.Load()
++	out[prefix+"managersCompletedTotal"] = diagnosticManagersCompleted.Load()
++	out[prefix+"keepers"] = diagnosticKeepers.Load()
++	out[prefix+"keepersStartedTotal"] = diagnosticKeepersStarted.Load()
++	out[prefix+"keepersCompletedTotal"] = diagnosticKeepersCompleted.Load()
++	out[prefix+"instances"] = diagnosticVisitorInstances.Load()
++	out[prefix+"instancesStartedTotal"] = diagnosticVisitorInstancesStarted.Load()
++	out[prefix+"instancesCompletedTotal"] = diagnosticVisitorInstancesCompleted.Load()
++	out[prefix+"acceptLoops"] = diagnosticAcceptLoops.Load()
++	out[prefix+"acceptLoopsStartedTotal"] = diagnosticAcceptLoopsStarted.Load()
++	out[prefix+"acceptLoopsCompletedTotal"] = diagnosticAcceptLoopsCompleted.Load()
++	out[prefix+"handlers"] = diagnosticHandlers.Load()
++	out[prefix+"handlersStartedTotal"] = diagnosticHandlersStarted.Load()
++	out[prefix+"handlersCompletedTotal"] = diagnosticHandlersCompleted.Load()
++	out[prefix+"userConns"] = diagnosticUserConns.Load()
++	out[prefix+"userConnsStartedTotal"] = diagnosticUserConnsStarted.Load()
++	out[prefix+"userConnsCompletedTotal"] = diagnosticUserConnsCompleted.Load()
++	out[prefix+"outboundDials"] = diagnosticOutboundDials.Load()
++	out[prefix+"outboundDialsStartedTotal"] = diagnosticOutboundDialsStarted.Load()
++	out[prefix+"outboundDialsCompletedTotal"] = diagnosticOutboundDialsCompleted.Load()
++	out[prefix+"outboundConns"] = diagnosticOutboundConns.Load()
++	out[prefix+"outboundConnsStartedTotal"] = diagnosticOutboundConnsStarted.Load()
++	out[prefix+"outboundConnsCompletedTotal"] = diagnosticOutboundConnsCompleted.Load()
++}
+diff --git a/client/visitor/visitor.go b/client/visitor/visitor.go
+index 4220cbb..47b8db0 100644
+--- a/client/visitor/visitor.go
++++ b/client/visitor/visitor.go
+@@ -67,12 +67,13 @@ func NewVisitor(
+ 	ctx = xlog.NewContext(ctx, xl)
+ 	var visitor Visitor
+ 	baseVisitor := BaseVisitor{
+-		clientCfg:  clientCfg,
+-		helper:     helper,
+-		ctx:        ctx,
+-		internalLn: netpkg.NewInternalListener(),
+-		activeConns: make(map[net.Conn]struct{}),
+-		outboundConns: make(map[net.Conn]struct{}),
++		clientCfg:  clientCfg,
++		helper:     helper,
++		ctx:        ctx,
++		internalLn: netpkg.NewInternalListener(),
++		activeConns: make(map[net.Conn]struct{}),
++		outboundConns: make(map[net.Conn]struct{}),
++		diagnosticDone: trackVisitorInstanceLifecycle(),
+ 	}
+ 	if cfg.GetBaseConfig().Plugin.Type != "" {
+ 		p, err := plugin.Create(
+@@ -124,12 +125,13 @@ type BaseVisitor struct {
+ 	mu  sync.RWMutex
+ 	ctx context.Context
+ 
+-	handlerMu    sync.Mutex
+-	handlerWG    sync.WaitGroup
+-	activeConns map[net.Conn]struct{}
+-	outboundConns map[net.Conn]struct{}
+-	closing     bool
+-	closeOnce   sync.Once
++	handlerMu    sync.Mutex
++	handlerWG    sync.WaitGroup
++	activeConns map[net.Conn]struct{}
++	outboundConns map[net.Conn]struct{}
++	closing     bool
++	closeOnce   sync.Once
++	diagnosticDone func()
+ }
+ 
+ func (v *BaseVisitor) AcceptConn(conn net.Conn) error {
+@@ -152,12 +154,16 @@ func (v *BaseVisitor) acceptLoop(l net.Listener, name string, handleConn func(ne
+ 		}
+ 		v.activeConns[conn] = struct{}{}
+ 		v.handlerWG.Add(1)
++		handlerDone := trackHandlerLifecycle()
++		userConnDone := trackUserConnLifecycle()
+ 		v.handlerMu.Unlock()
+ 		go func() {
+ 			defer func() {
+ 				v.handlerMu.Lock()
+ 				delete(v.activeConns, conn)
+ 				v.handlerMu.Unlock()
++				userConnDone()
++				handlerDone()
+ 				v.handlerWG.Done()
+ 			}()
+ 			handleConn(conn)
+@@ -168,6 +174,8 @@ func (v *BaseVisitor) acceptLoop(l net.Listener, name string, handleConn func(ne
+ func (v *BaseVisitor) startAcceptLoop(l net.Listener, name string, handleConn func(net.Conn)) {
+ 	v.handlerWG.Add(1)
+ 	go func() {
++		done := trackAcceptLoopLifecycle()
++		defer done()
+ 		defer v.handlerWG.Done()
+ 		v.acceptLoop(l, name, handleConn)
+ 	}()
+@@ -203,6 +211,9 @@ func (v *BaseVisitor) Close() {
+ 			conn.Close()
+ 		}
+ 		v.handlerWG.Wait()
++		if v.diagnosticDone != nil {
++			v.diagnosticDone()
++		}
+ 	})
+ }
+ 
+@@ -216,17 +227,21 @@ func (v *BaseVisitor) trackOutboundConn(conn net.Conn) (func(), bool) {
+ 		v.outboundConns = make(map[net.Conn]struct{})
+ 	}
+ 	v.outboundConns[conn] = struct{}{}
++	diagnosticDone := trackOutboundConnLifecycle()
+ 	var once sync.Once
+ 	return func() {
+ 		once.Do(func() {
+ 			v.handlerMu.Lock()
+ 			delete(v.outboundConns, conn)
+ 			v.handlerMu.Unlock()
++			diagnosticDone()
+ 		})
+ 	}, true
+ }
+ 
+ func (v *BaseVisitor) dialRawVisitorConn(cfg *v1.VisitorBaseConfig) (net.Conn, func(), error) {
++	dialDone := trackOutboundDialLifecycle()
++	defer dialDone()
+ 	visitorConn, err := v.helper.ConnectServer()
+ 	if err != nil {
+ 		return nil, func() {}, fmt.Errorf("connect to server error: %v", err)
+diff --git a/client/visitor/visitor_manager.go b/client/visitor/visitor_manager.go
+index edb205b..ed02138 100644
+--- a/client/visitor/visitor_manager.go
++++ b/client/visitor/visitor_manager.go
+@@ -60,6 +60,7 @@ type Manager struct {
+ 	keepVisitorsRunningOnce sync.Once
+ 	keeperWG                sync.WaitGroup
+ 	statusReporter          RuntimeStatusReporter
++	diagnosticDone          func()
+ 
+ 	mu     sync.RWMutex
+ 	ctx    context.Context
+@@ -81,12 +82,13 @@ func NewManager(
+ 	m := &Manager{
+ 		clientCfg:     clientCfg,
+ 		cfgs:          make(map[string]v1.VisitorConfigurer),
+ 		visitors:      make(map[string]Visitor),
+ 		checkInterval: 10 * time.Second,
+ 		ctx:           ctx,
+ 		stopCh:        make(chan struct{}),
+ 		closeDone:     make(chan struct{}),
+ 		statusReporter: statusReporter,
++		diagnosticDone: trackManagerLifecycle(),
+ 	}
+ 	m.helper = &visitorHelperImpl{
+ 		connectServerFn: connectServer,
+@@ -152,6 +154,9 @@ func (vm *Manager) Close() {
+ 	for name := range cfgs {
+ 		vm.reportStatus(name, RuntimeStatus{Phase: PhaseStopped})
+ 	}
++	if vm.diagnosticDone != nil {
++		vm.diagnosticDone()
++	}
+ 	close(vm.closeDone)
+ }
+ 
+@@ -194,6 +199,8 @@ func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) error {
+ 		vm.keepVisitorsRunningOnce.Do(func() {
+ 			vm.keeperWG.Add(1)
+ 			go func() {
++				done := trackKeeperLifecycle()
++				defer done()
+ 				defer vm.keeperWG.Done()
+ 				vm.keepVisitorsRunning()
+ 			}()
+diff --git a/pkg/msg/handler.go b/pkg/msg/handler.go
+index d8dfbb0..0164918 100644
+--- a/pkg/msg/handler.go
++++ b/pkg/msg/handler.go
+@@ -129,10 +129,14 @@ func NewDispatcher(rw ReadWriter) *Dispatcher {
+ func (d *Dispatcher) Run() {
+ 	d.wg.Add(2)
+ 	go func() {
++		done := trackDispatcherSendLoop()
++		defer done()
+ 		defer d.wg.Done()
+ 		d.sendLoop()
+ 	}()
+ 	go func() {
++		done := trackDispatcherReadLoop()
++		defer done()
+ 		defer d.wg.Done()
+ 		d.readLoop()
+ 	}()
+diff --git a/pkg/msg/lifecycle_diagnostics.go b/pkg/msg/lifecycle_diagnostics.go
+new file mode 100644
+index 0000000..4735914
+--- /dev/null
++++ b/pkg/msg/lifecycle_diagnostics.go
+@@ -0,0 +1,41 @@
++package msg
++
++import "sync/atomic"
++
++var (
++	diagnosticDispatcherSendLoops          atomic.Int64
++	diagnosticDispatcherReadLoops          atomic.Int64
++	diagnosticDispatcherSendLoopsStarted   atomic.Int64
++	diagnosticDispatcherSendLoopsCompleted atomic.Int64
++	diagnosticDispatcherReadLoopsStarted   atomic.Int64
++	diagnosticDispatcherReadLoopsCompleted atomic.Int64
++)
++
++func trackDispatcherSendLoop() func() {
++	diagnosticDispatcherSendLoops.Add(1)
++	diagnosticDispatcherSendLoopsStarted.Add(1)
++	return func() {
++		diagnosticDispatcherSendLoops.Add(-1)
++		diagnosticDispatcherSendLoopsCompleted.Add(1)
++	}
++}
++
++func trackDispatcherReadLoop() func() {
++	diagnosticDispatcherReadLoops.Add(1)
++	diagnosticDispatcherReadLoopsStarted.Add(1)
++	return func() {
++		diagnosticDispatcherReadLoops.Add(-1)
++		diagnosticDispatcherReadLoopsCompleted.Add(1)
++	}
++}
++
++// AppendLifecycleDiagnostics adds aggregate dispatcher owner counts without
++// exposing message payloads, connection identities, or goroutine identities.
++func AppendLifecycleDiagnostics(out map[string]int64, prefix string) {
++	out[prefix+"dispatcherSendLoops"] = diagnosticDispatcherSendLoops.Load()
++	out[prefix+"dispatcherReadLoops"] = diagnosticDispatcherReadLoops.Load()
++	out[prefix+"dispatcherSendLoopsStartedTotal"] = diagnosticDispatcherSendLoopsStarted.Load()
++	out[prefix+"dispatcherSendLoopsCompletedTotal"] = diagnosticDispatcherSendLoopsCompleted.Load()
++	out[prefix+"dispatcherReadLoopsStartedTotal"] = diagnosticDispatcherReadLoopsStarted.Load()
++	out[prefix+"dispatcherReadLoopsCompletedTotal"] = diagnosticDispatcherReadLoopsCompleted.Load()
++}

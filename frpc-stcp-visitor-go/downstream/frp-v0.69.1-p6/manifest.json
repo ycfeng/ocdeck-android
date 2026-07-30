@@ -20,9 +20,11 @@
     "0002-client-tls-config-customizer.patch",
     "0003-join-stcp-visitor-shutdown.patch",
     "0004-join-client-control-workers.patch",
-    "0005-close-pending-visitor-and-work-conns.patch"
+    "0005-close-pending-visitor-and-work-conns.patch",
+    "0006-add-client-lifecycle-diagnostics.patch"
   ],
   "gofmtFiles": [
+    "client/lifecycle_diagnostics.go",
     "client/connector.go",
     "client/connector_tls_config_customizer_test.go",
     "client/control.go",
@@ -32,12 +34,14 @@
     "client/service.go",
     "client/visitor/stcp.go",
     "client/visitor/sudp.go",
+    "client/visitor/lifecycle_diagnostics.go",
     "client/visitor/visitor.go",
     "client/visitor/visitor_manager.go",
     "client/visitor/visitor_manager_runtime_test.go",
     "client/visitor/visitor_shutdown_test.go",
     "client/control_pending_work_conn_test.go",
     "client/visitor/visitor_outbound_shutdown_test.go",
+    "pkg/msg/lifecycle_diagnostics.go",
     "pkg/msg/handler.go",
     "pkg/msg/handler_test.go"
   ]
