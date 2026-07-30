@@ -228,6 +228,9 @@ fun registerAppE2eTask(
         configuredDeviceSerial?.let { serial ->
             systemProperty("ocdeck.frp.appE2e.deviceSerial", serial)
         }
+        providers.gradleProperty("ocdeck.frp.appE2e.runtimeDiagnostic.enabled").orNull?.let { enabled ->
+            systemProperty("ocdeck.frp.appE2e.runtimeDiagnostic.enabled", enabled)
+        }
         if (resourceMode) {
             environment("OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE", "")
             systemProperty("ocdeck.frp.appE2e.suite", "core")

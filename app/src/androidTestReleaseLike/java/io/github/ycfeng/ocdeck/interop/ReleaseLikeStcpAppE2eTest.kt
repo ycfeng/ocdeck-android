@@ -1712,7 +1712,7 @@ class ReleaseLikeStcpAppE2eTest {
         val IPV4_LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
         val SAFE_RUN_ID = Regex("[a-z0-9][a-z0-9-]{0,63}")
         val SAFE_FILE_NAME = Regex("[a-z0-9][a-z0-9._-]{0,127}")
-        const val SCHEMA_VERSION = 9
+        const val SCHEMA_VERSION = 10
         const val ARG_ENABLED = "ocdeck.appE2e.enabled"
         const val ARG_RUN_ID = "ocdeck.appE2e.runId"
         const val ARG_CONFIG_FILE = "ocdeck.appE2e.configFile"

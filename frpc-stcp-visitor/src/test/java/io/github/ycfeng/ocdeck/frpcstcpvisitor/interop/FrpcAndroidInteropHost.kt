@@ -1523,31 +1523,43 @@ private class FrpcAndroidInteropRunner {
         adb: AdbCommandRunner,
         invocation: AppE2eInvocation,
         files: AppE2ePrivateFiles,
-    ): AdbCommandResult = adb.run(
-        label = "App E2E instrumentation",
-        arguments = listOf(
-            "shell",
-            "am",
-            "instrument",
-            "-w",
-            "-r",
-            "-e",
-            "class",
-            "$APP_E2E_TEST_CLASS#$APP_E2E_TEST_METHOD",
-            "-e",
-            "ocdeck.appE2e.enabled",
-            "true",
-            "-e",
-            "ocdeck.appE2e.runId",
-            invocation.runId,
-            "-e",
-            "ocdeck.appE2e.configFile",
-            files.configFile,
-            "${appE2eBackend.testPackage}/$TEST_RUNNER",
-        ),
-        timeoutMillis = appE2eInstrumentationTimeoutMillis(invocation.workload),
-        requireSuccess = false,
-    )
+    ): AdbCommandResult {
+        val runtimeDiagnosticArguments = if (configuredAppE2eRuntimeDiagnosticEnabled()) {
+            listOf(
+                "-e",
+                "ocdeck.appE2e.runtimeDiagnostic.enabled",
+                "true",
+            )
+        } else {
+            emptyList()
+        }
+        return adb.run(
+            label = "App E2E instrumentation",
+            arguments = listOf(
+                "shell",
+                "am",
+                "instrument",
+                "-w",
+                "-r",
+                "-e",
+                "class",
+                "$APP_E2E_TEST_CLASS#$APP_E2E_TEST_METHOD",
+                "-e",
+                "ocdeck.appE2e.enabled",
+                "true",
+                "-e",
+                "ocdeck.appE2e.runId",
+                invocation.runId,
+                "-e",
+                "ocdeck.appE2e.configFile",
+                files.configFile,
+            ) + runtimeDiagnosticArguments + listOf(
+                "${appE2eBackend.testPackage}/$TEST_RUNNER",
+            ),
+            timeoutMillis = appE2eInstrumentationTimeoutMillis(invocation.workload),
+            requireSuccess = false,
+        )
+    }
 
     private fun runAppE2eSuiteInstrumentation(
         resources: AndroidInteropResourceOwner,
@@ -2878,6 +2890,17 @@ private class FrpcAndroidInteropRunner {
         }
     }
 
+    private fun configuredAppE2eRuntimeDiagnosticEnabled(): Boolean {
+        val configured = System.getProperty(APP_E2E_RUNTIME_DIAGNOSTIC_ENABLED_PROPERTY)
+            ?.takeIf(String::isNotBlank)
+            ?: return false
+        return when (configured) {
+            "true" -> true
+            "false" -> false
+            else -> throw InteropFailure("configured App E2E runtime diagnostic flag was invalid")
+        }
+    }
+
     private fun configuredAppE2eExternalConfig(suite: String): AppE2eExternalConfig? {
         val path = configuredOptionalEnvironmentPath(
             APP_E2E_EXTERNAL_CONFIG_FILE_ENVIRONMENT,
@@ -3636,7 +3659,7 @@ private class FrpcAndroidInteropRunner {
         const val APP_E2E_TEST_CLASS = "io.github.ycfeng.ocdeck.interop.ReleaseLikeStcpAppE2eTest"
         const val APP_E2E_TEST_METHOD = "runConfiguredAppFlow"
         const val APP_E2E_RESULT_STATUS_KEY = "ocdeckAppE2eResult"
-        const val APP_E2E_SCHEMA_VERSION = 9
+        const val APP_E2E_SCHEMA_VERSION = 10
         const val APP_E2E_SUMMARY_SCHEMA_VERSION = 10
         const val BACKEND_GO_MOBILE = "gomobile"
         const val BACKEND_KOTLIN = "kotlin"
@@ -3690,6 +3713,7 @@ private class FrpcAndroidInteropRunner {
         const val APP_E2E_SUMMARY_FILE_PROPERTY = "ocdeck.frp.appE2e.summaryFile"
         const val APP_E2E_SUITE_PROPERTY = "ocdeck.frp.appE2e.suite"
         const val APP_E2E_OUTAGE_MILLIS_PROPERTY = "ocdeck.frp.appE2e.outageMillis"
+        const val APP_E2E_RUNTIME_DIAGNOSTIC_ENABLED_PROPERTY = "ocdeck.frp.appE2e.runtimeDiagnostic.enabled"
         const val APP_E2E_EXTERNAL_CONFIG_FILE_ENVIRONMENT = "OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE"
         const val FRP_CACHE_PROPERTY = "ocdeck.frp.interop.cacheDir"
         const val MARKER_DEVICE_READY = "device_ready"
