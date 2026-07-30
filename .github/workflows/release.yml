@@ -283,7 +283,7 @@ jobs:
         run: go test -race -modfile=build/frp-patched.mod ./...
 
       - name: Run patched frp client race tests
-        working-directory: frpc-stcp-visitor-go/build/frp-v0.69.1-p1
+        working-directory: frpc-stcp-visitor-go/build/frp-v0.69.1-p3
         shell: bash
         run: go test -race ./client/...
 

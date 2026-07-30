@@ -596,6 +596,43 @@ class FrpcStcpVisitorManagerTest {
     }
 
     @Test
+    fun closeVisitorWaitsForNativeSessionShutdown() = runTest {
+        val stopGate = CompletableDeferred<Unit>()
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096).apply {
+            onStopSession = { _, _ -> stopGate.await() }
+        }
+        val manager = manager(client, ScriptedHealthProbeFactory())
+        val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+
+        val close = async { manager.closeVisitor(server.id) }
+        runCurrent()
+
+        assertFalse(close.isCompleted)
+        assertEquals(listOf("session-1"), client.stoppedSessions)
+
+        stopGate.complete(Unit)
+        close.await()
+        assertTrue(close.isCompleted)
+    }
+
+    @Test
+    fun closeVisitorRetriesOneOrdinaryStopFailure() = runTest {
+        val client = ControllableFrpcStcpVisitorClient(localPort = 5096).apply {
+            onStopSession = { _, call ->
+                if (call == 1) throw IllegalStateException("synthetic stop failure")
+            }
+        }
+        val manager = manager(client, ScriptedHealthProbeFactory())
+        val server = stcpServer()
+        manager.ensureReadyVisitor(server, credentials(), null, manager.captureConfigLease(server.id))
+
+        manager.closeVisitor(server.id)
+
+        assertEquals(listOf("session-1", "session-1"), client.stoppedSessions)
+    }
+
+    @Test
     fun blockedServerDoesNotPreventAnotherServerFromBecomingReady() = runTest {
         val firstStartGate = CompletableDeferred<Unit>()
         val client = ControllableFrpcStcpVisitorClient(localPort = 5096).apply {

@@ -544,7 +544,7 @@ class FrpcStcpVisitorManagerContractTest {
         val replacementLease = manager.captureConfigLease(server.id)
         val replacement = manager.ensureReadyVisitor(server, contractCredentials(), null, replacementLease)
 
-        assertEquals(1, client.stopAttempts.size)
+        assertEquals(2, client.stopAttempts.size)
         assertNotEquals(initial.generation, replacement.generation)
         assertEquals(contractSessionId(2), replacement.tunnel.sessionId)
         assertTrue(manager.isReadyTransportCurrent(replacement.generation, replacement.tunnel.controlEpoch))

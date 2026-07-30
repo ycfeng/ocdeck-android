@@ -6,6 +6,8 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcSessionConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorClient
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorNetworkChangeAware
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorRuntimeDiagnostics
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcRuntimeDiagnostics
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcStcpVisitorState
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.FrpcVisitorReadyResult
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.KotlinFrpcStcpVisitorException
@@ -182,23 +184,41 @@ class FrpcStcpVisitorManager(
     }
 
     suspend fun invalidateConfiguration(serverId: String) {
-        val stateToClean = stateMutex.withLock {
-            val slot = slots.getOrPut(serverId, ::ServerSlot)
-            slot.configEpoch += 1
-            slot.current?.also { current ->
-                invalidateLocked(slot, current, FrpcStcpConfigLeaseExpiredException(serverId))
-            }
-        }
-        stateToClean?.let(::scheduleCleanup)
+        invalidateConfigurationAndScheduleCleanup(serverId)
     }
 
     suspend fun closeVisitor(serverId: String) {
-        invalidateConfiguration(serverId)
+        invalidateConfigurationAndScheduleCleanup(serverId)?.await()
+    }
+
+    private suspend fun invalidateConfigurationAndScheduleCleanup(serverId: String): CompletableDeferred<Unit>? {
+        val selection = stateMutex.withLock {
+            val slot = slots.getOrPut(serverId, ::ServerSlot)
+            slot.configEpoch += 1
+            val state = slot.current?.also { current ->
+                invalidateLocked(slot, current, FrpcStcpConfigLeaseExpiredException(serverId))
+            }
+            if (state != null) slot.pendingNativeClosed = state.nativeClosed
+            state to slot.pendingNativeClosed
+        }
+        selection.first?.let(::scheduleCleanup)
+        return selection.second
     }
 
     suspend fun reconnectAfterDefaultNetworkChange() {
         (client as? FrpcStcpVisitorNetworkChangeAware)?.reconnectAfterDefaultNetworkChange()
     }
+
+    internal suspend fun initializeBackendForRuntimeDiagnostics(): FrpcRuntimeDiagnostics? {
+        val state = client.getState(RUNTIME_DIAGNOSTIC_SESSION_ID)
+        check(state.sessionId == RUNTIME_DIAGNOSTIC_SESSION_ID && state.phase == CLOSED_SESSION_PHASE) {
+            "frpc STCP backend runtime diagnostic initialization failed"
+        }
+        return captureBackendRuntimeDiagnostics()
+    }
+
+    internal suspend fun captureBackendRuntimeDiagnostics(): FrpcRuntimeDiagnostics? =
+        (client as? FrpcStcpVisitorRuntimeDiagnostics)?.captureRuntimeDiagnostics()
 
     internal suspend fun captureRecoveryStage(
         generation: FrpcStcpVisitorGeneration,
@@ -790,7 +810,7 @@ class FrpcStcpVisitorManager(
             val slot = slots[state.generation.serverId]
             if (slot?.current === state) {
                 slot.current = null
-                slot.predecessorClosed = state.closed
+                slot.predecessorClosed = state.cleanupFinished
             }
             state.invalidated = true
             state.completion.completeExceptionally(throwable)
@@ -810,7 +830,7 @@ class FrpcStcpVisitorManager(
     ) {
         if (slot.current === state) {
             slot.current = null
-            slot.predecessorClosed = state.closed
+            slot.predecessorClosed = state.cleanupFinished
         }
         state.invalidated = true
         state.completion.completeExceptionally(throwable)
@@ -834,17 +854,40 @@ class FrpcStcpVisitorManager(
     private suspend fun cleanup(state: GenerationState) {
         try {
             state.sessionAssigned.await()?.let { sessionId ->
-                try {
-                    client.stopSession(sessionId)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled.fatalCauseOrNull() ?: cancelled
-                } catch (exception: Exception) {
-                    exception.fatalCauseOrNull()?.let { throw it }
-                    // A stale cleanup failure must not block the next generation.
-                }
+                stopSessionConfirmed(sessionId)
             }
+            state.nativeClosed.complete(Unit)
+        } catch (cancelled: CancellationException) {
+            val fatal = cancelled.fatalCauseOrNull() ?: cancelled
+            state.nativeClosed.completeExceptionally(fatal)
+            throw fatal
+        } catch (error: Error) {
+            state.nativeClosed.completeExceptionally(error)
+            throw error
+        } catch (exception: Exception) {
+            exception.fatalCauseOrNull()?.let { fatal ->
+                state.nativeClosed.completeExceptionally(fatal)
+                throw fatal
+            }
+            state.nativeClosed.completeExceptionally(FrpcStcpVisitorCloseException())
         } finally {
-            state.closed.complete(Unit)
+            state.cleanupFinished.complete(Unit)
+        }
+    }
+
+    private suspend fun stopSessionConfirmed(sessionId: String) {
+        repeat(STOP_SESSION_ATTEMPTS) { attempt ->
+            try {
+                val result = client.stopSession(sessionId)
+                if (result.phase == CLOSED_SESSION_PHASE) return
+            } catch (cancelled: CancellationException) {
+                throw cancelled.fatalCauseOrNull() ?: cancelled
+            } catch (error: Error) {
+                throw error
+            } catch (exception: Exception) {
+                exception.fatalCauseOrNull()?.let { throw it }
+            }
+            if (attempt + 1 == STOP_SESSION_ATTEMPTS) throw FrpcStcpVisitorCloseException()
         }
     }
 
@@ -869,6 +912,9 @@ class FrpcStcpVisitorManager(
 
     private companion object {
         const val LOCAL_BIND_ADDR = "127.0.0.1"
+        const val CLOSED_SESSION_PHASE = "closed"
+        const val STOP_SESSION_ATTEMPTS = 2
+        const val RUNTIME_DIAGNOSTIC_SESSION_ID = "runtime-diagnostic-missing-session"
         val TERMINAL_SESSION_PHASES = setOf("failed", "stopping", "closed")
         val TLS_SERVER_CERTIFICATE_SHA256 = Regex("[0-9a-f]{64}")
     }
@@ -1066,6 +1112,7 @@ private data class ServerSlot(
     var configEpoch: Long = 0,
     var current: GenerationState? = null,
     var predecessorClosed: CompletableDeferred<Unit>? = null,
+    var pendingNativeClosed: CompletableDeferred<Unit>? = null,
 )
 
 private class GenerationState(
@@ -1075,7 +1122,8 @@ private class GenerationState(
 ) {
     val completion = CompletableDeferred<ReadyPayload>()
     val sessionAssigned = CompletableDeferred<String?>()
-    val closed = CompletableDeferred<Unit>()
+    val cleanupFinished = CompletableDeferred<Unit>()
+    val nativeClosed = CompletableDeferred<Unit>()
     var sessionId: String? = null
     var ready: ReadyPayload? = null
     var epochRefresh: EpochRefreshFlight? = null
@@ -1083,6 +1131,8 @@ private class GenerationState(
     var invalidated = false
     var cleanupStarted = false
 }
+
+private class FrpcStcpVisitorCloseException : IllegalStateException("frpc STCP session did not close")
 
 private enum class RefreshPhase {
     NOT_STARTED,

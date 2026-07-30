@@ -393,7 +393,7 @@ SSH 转发启用后，`OpenCode 服务地址` 表示 SSH 远端机器可访问�
 
 frpc STCP visitor 首版只支持本地端口模式：App 启动 STCP visitor，绑定 `127.0.0.1:<本地绑定端口>`，再访问该本地地址。`:frpc-stcp-visitor` 模块暴露统一的 backend-neutral client contract，保留六个 suspend 操作：`startSession`、`ensureVisitor`、`waitVisitorReady`、`stopVisitor`、`stopSession` 和 `getState`。稳定的六操作 contract 保持不变；纯 Kotlin client 另行实现可选的默认网络变化能力，GoMobile adapter 不实现。构建期选择让正式 `debug`、`release` 固定使用 GoMobile backend，内部 `canary` 与不可发布的 `kotlinRelease` Release-Like 真机测试构建固定使用纯 Kotlin backend。`kotlinRelease` 继承正式 Release 配置，增加 application ID suffix `.kotlinrelease` 与 version name suffix `-kotlin-release`，并使用标准 Android Debug 测试证书；它仅用于 Release 模式真机验证，绝不接受 Release 签名、暂存或发布。不提供用户可见设置、持久化 selector，也不在活动 generation 内自动 fallback，切换 backend 必须完整停止旧 session。两个实现共享 listener ownership、readiness revision、generation、control epoch、取消、有界 I/O、类型化失败以及公共 `useEncryption`/`useCompression` 语义。活动 listener 对端口保持独占；完整停止后，Kotlin listener 只启用 address reuse、不启用 `SO_REUSEPORT`，因此已完成 relay 的连接处于 `TIME_WAIT` 时，下一 generation 仍能快速重绑同一端口，但 backend 或 generation 绝不能重叠运行。Kotlin `stopVisitor` 会等待本地 listener 与 relay endpoint 失效。完整 relay pump 收尾、延迟的 best-effort Yamux reset 和 stream permit 释放继续由 session watcher 持有，并由 `stopSession` 在进入终态前 join。Kotlin library 会在 visitor 握手后通过有界、兼容 frp 的 AES-CFB/Snappy 流支持四种 payload 组合；当前 App schema 与 UI 不暴露这两个字段，继续提交其默认 `false` 值。
 
-正式构建仍保留 GoMobile backend 期间，仓库继续保存 `frpc-stcp-visitor-go/` wrapper、固定版本和可审计 downstream patch。其不可变版本 AAR 由本地脚本或 CI 生成且不提交，并通过本地 Maven 仓库接入 Android 构建。Release 必须校验 AAR checksum、API signature、provenance、预期 ABI、stripped 状态和 16KB ELF 对齐。GoMobile 路径缺少生成的 bridge class 时抛出 `GoMobileBridgeUnavailableException`，bridge class、方法或 payload 不兼容时抛出 `GoMobileBridgeApiMismatchException`。这些失败与纯 Kotlin backend 失败都保持类型化且不含 payload；STCP readiness 与 SSE 将永久 setup failure 映射为本地化语义错误，不暴露反射、协议或敏感细节。所选 backend 不可用时，UI 可保存配置，但连接时必须返回明确不可用错误。
+正式构建仍保留 GoMobile backend 期间，仓库继续保存 `frpc-stcp-visitor-go/` wrapper、固定版本和可审计 downstream patch。其不可变版本 AAR 由本地脚本或 CI 生成且不提交，并通过本地 Maven 仓库接入 Android 构建。Release 必须校验 AAR checksum、API signature、provenance、预期 ABI、stripped 状态和 16KB ELF 对齐。两个 backend 对可选 frps TLS pin 执行相同的 fail-closed 身份语义：比较当前有效非 CA 叶证书 DER 的精确 SHA-256，校验配置的 DNS 名称或 IP、有效期与 ServerAuth，并在发送 frp 认证数据前拒绝失败连接。所有 backend build profile 都显示并允许编辑已配置 pin，因此 emergency GoMobile 构建可继续使用同一已保存服务器 profile，且不得静默移除身份校验。GoMobile 路径缺少生成的 bridge class 时抛出 `GoMobileBridgeUnavailableException`，bridge class、方法或 payload 不兼容时抛出 `GoMobileBridgeApiMismatchException`。这些失败与纯 Kotlin backend 失败都保持类型化且不含 payload；STCP readiness 与 SSE 将永久 setup failure 映射为本地化语义错误，不暴露反射、协议或敏感细节。所选 backend 不可用时，UI 可保存配置，但连接时必须返回明确不可用错误。
 
 Pre-K7 验证会扩展上方较短的 build-type 概述，新增两个明确不可发布的 Release-Like 身份：`goMobileRelease` 使用 suffix `.gomobilerelease` 并保持 GoMobile，`kotlinRelease` 使用 suffix `.kotlinrelease` 并保持纯 Kotlin；二者都使用 Debug 测试证书，用于对称 App E2E 与资源 workload。另有 `kotlinDefaultReleaseDryRun` 使用正式 application ID、稳定版本、Release 证书和纯 Kotlin 打包，但只能由手动 Release workflow dispatch 选择，绝无发布资格。稳定 tag 与 publish job 仍锁定 GoMobile release profile。
 
@@ -429,6 +429,7 @@ manager readiness 使用分层预算而不是共用一份预算：冷启动 nati
 | STCP | frps 地址 | 空 | STCP visitor 连接的 frps 地址，开启后必填 |
 | STCP | frps 端口 | `7000` | 开启后必须在 1-65535 |
 | STCP | frps token | 空 | 可选；填写时存 Keystore，不明文回显 |
+| STCP | frps TLS 叶证书 SHA-256 | 空 | 可选的 64 位小写十六进制 DER 指纹；存 Keystore，并由两个 backend 以相同 fail-closed 语义执行 |
 | STCP | frpc user | 空 | 可选，传给 frp session |
 | STCP | STCP server user | 空 | 可选，对应服务端 STCP proxy user |
 | STCP | STCP server name | 空 | 开启后必填 |
@@ -436,7 +437,7 @@ manager readiness 使用分层预算而不是共用一份预算：冷启动 nati
 | STCP | 本地绑定端口 | `4096` | 绑定 `127.0.0.1:<port>`，供 REST/SSE 共用 |
 | STCP | frp wire protocol | `v1` | 支持 `v1`/`v2`，transport 首版固定 `tcp` |
 
-移动端布局：输入内容较少的字段可一行展示两个，例如 OpenCode 用户名/密码、SSH 端口/SSH 用户名、本地转发端口/连接超时、frps 端口/STCP 本地绑定端口。私钥文本使用多行输入框；本地文件选择使用 Android 文件选择器，在 IO dispatcher 中以固定缓冲最多读取 256 KiB，不长期保存文件路径；保存边界和 JSch 认证边界再次按 UTF-8 字节数校验，不能只信任文档 provider 的声明大小。STCP token 和 secret key 使用 password field，保存后编辑页留空表示保留原 Keystore 值。
+移动端布局：输入内容较少的字段可一行展示两个，例如 OpenCode 用户名/密码、SSH 端口/SSH 用户名、本地转发端口/连接超时、frps 端口/STCP 本地绑定端口。私钥文本使用多行输入框；本地文件选择使用 Android 文件选择器，在 IO dispatcher 中以固定缓冲最多读取 256 KiB，不长期保存文件路径；保存边界和 JSch 认证边界再次按 UTF-8 字节数校验，不能只信任文档 provider 的声明大小。STCP token、TLS 叶证书 pin 和 secret key 使用 password field，保存后编辑页留空表示保留原 Keystore 值。
 
 服务器保存采用配置与凭据两阶段切换：新值先写入用途明确且带随机 UUID 的候选 alias，候选构建后先检查协程取消，再在不可取消提交段写入 `ServerConfig`、重新读取确认结果、更新 connection config epoch 并失效 SSH/STCP 运行态。写入抛异常但目标配置已持久化时按成功完成；明确未提交时才回滚候选；确认读取也失败时保守保留候选并报告 unknown outcome，避免删除可能已被配置引用的 secret。提交后的旧 alias 在配置锁外重新读取全部服务器引用后 best-effort 清理。编辑页现有留空语义保持不变：普通密码及 SSH/STCP 密钥字段留空表示保留旧值，关闭对应认证方式或连接方式才移除其配置引用；文件按钮使用“取消选择”而非暗示删除已存私钥。SSH host 或 port 改变后不继承旧 pin：`AcceptNew` 重新 TOFU，`Fingerprint` 要求新 fingerprint；TOFU 指纹使用同一事务规则。
 

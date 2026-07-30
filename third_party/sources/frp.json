@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "component": "github.com/fatedier/frp",
-  "downstreamVersion": "v0.69.1-p1",
+  "downstreamVersion": "v0.69.1-p3",
   "upstreamVersion": "v0.69.1",
   "upstreamRepository": "https://github.com/fatedier/frp",
   "upstreamCommit": "8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb",
@@ -50,7 +50,7 @@
   },
   "patches": [
     {
-      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p1/0001-transport-readiness.patch",
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p3/0001-transport-readiness.patch",
       "sha256": "f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b",
       "modifiedFiles": [
         "client/control.go",
@@ -70,11 +70,46 @@
         "client/visitor/visitor_manager.go",
         "client/visitor/visitor_manager_runtime_test.go"
       ]
+    },
+    {
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p3/0002-client-tls-config-customizer.patch",
+      "sha256": "3986ccb901d60923c4ac2f636a704d19a51b31427181a46ac5ed78eee42d1302",
+      "modifiedFiles": [
+        "client/connector.go"
+      ],
+      "addedFiles": [
+        "client/connector_tls_config_customizer_test.go"
+      ],
+      "patchedFiles": [
+        "client/connector.go",
+        "client/connector_tls_config_customizer_test.go"
+      ]
+    },
+    {
+      "path": "frpc-stcp-visitor-go/downstream/frp-v0.69.1-p3/0003-join-stcp-visitor-shutdown.patch",
+      "sha256": "35d91b30dec18ffff97b81b476742bb4b9b429e84ddb23879637a0ebdee33b79",
+      "modifiedFiles": [
+        "client/visitor/stcp.go",
+        "client/visitor/visitor.go",
+        "client/visitor/visitor_manager.go"
+      ],
+      "addedFiles": [
+        "client/visitor/visitor_shutdown_test.go"
+      ],
+      "patchedFiles": [
+        "client/visitor/stcp.go",
+        "client/visitor/visitor.go",
+        "client/visitor/visitor_manager.go",
+        "client/visitor/visitor_shutdown_test.go"
+      ]
     }
   ],
   "upstreamFileSha256BeforePatch": {
+    "client/connector.go": "6bfd9b654c51c2ac69ddd9fdff99647457e8888d9fbdc4814ce9513be2fe1fda",
     "client/control.go": "edbf19177e41cc0de94bf58ce7b94b637654ca332cc1ac8a5d06e55926acc7e2",
     "client/service.go": "221243c35349e2ac028b72b5e625a05f5866c57620757822637d9f1af9b7fda7",
+    "client/visitor/stcp.go": "212ed03c20798a34e266bea471bb6dcfc81d0fa53f3723522b0c1f77cdf0caa1",
+    "client/visitor/visitor.go": "d64b1812b612f7050e27d3407ce3ba9adbc7bcae203b163c8c70311f3550e3de",
     "client/visitor/visitor_manager.go": "353145720ab44e6908896b9336968ac61294f2cd3b1d333dc3731f79648c9799"
   }
 }

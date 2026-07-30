@@ -877,6 +877,9 @@ internal class PinnedTlsClientSocketFactory(
     override fun create(socket: Socket, endpoint: FrpTcpEndpoint): TlsClientSocket {
         val sslSocket = socketFactory.createSocket(socket, endpoint.host, endpoint.port, true) as SSLSocket
         sslSocket.useClientMode = true
+        sslSocket.sslParameters = sslSocket.sslParameters.apply {
+            endpointIdentificationAlgorithm = "HTTPS"
+        }
         return JdkTlsClientSocket(sslSocket)
     }
 
@@ -895,6 +898,9 @@ internal class PinnedCertificateTrustManager(
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
         val leaf = chain?.firstOrNull() ?: throw CertificateException("server certificate was missing")
         leaf.checkValidity()
+        if (leaf.basicConstraints >= 0) {
+            throw CertificateException("server certificate leaf must not be a certificate authority")
+        }
         val actualSha256 = MessageDigest.getInstance("SHA-256").digest(leaf.encoded)
         try {
             if (!MessageDigest.isEqual(expectedSha256, actualSha256)) {

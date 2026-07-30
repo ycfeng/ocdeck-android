@@ -2,9 +2,9 @@ OC DECK 第三方声明
 英文原文：THIRD_PARTY_NOTICES.txt
 本中文译本仅为阅读便利；适用许可条件及解释以英文原文和对应许可证正文为准。
 
-最后审阅日期：2026-07-23
+最后审阅日期：2026-07-30
 OC Deck 应用版本：0.2.3
-GoMobile bridge 版本：0.3.11-frp0.69.1-p1
+GoMobile bridge 版本：0.3.13-frp0.69.1-p3
 
 本文件列出 OC Deck 使用的第三方软件和资产。本文件不能替代
 适用的许可证正文。相关许可证的副本可在
@@ -149,12 +149,12 @@ Copyright 2009 The Go Authors.
 来源：https://go.googlesource.com/go/ 和
 https://go.googlesource.com/mobile/
 
-frp v0.69.1-p1
+frp v0.69.1-p3
 ----------------
 
 上游模块：github.com/fatedier/frp v0.69.1
 上游 commit：8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
-下游标识符：v0.69.1-p1
+下游标识符：v0.69.1-p3
 许可证：Apache-2.0
 许可证正文：third_party/licenses/Apache-2.0.txt
 来源：https://github.com/fatedier/frp/commit/8dd26c6961f2f4ca657dcd7fbfb3a4e8c3d48fbb
@@ -162,18 +162,27 @@ frp v0.69.1-p1
 由 OC Deck 贡献者修改。
 
 补丁：
-- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p1/0001-transport-readiness.patch
-- SHA-256: f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p3/0001-transport-readiness.patch
+  SHA-256: f64b5202d0b85f5a7b543390f311a9e83d8672941aa890305401ac8977fc673b
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p3/0002-client-tls-config-customizer.patch
+  SHA-256: 3986ccb901d60923c4ac2f636a704d19a51b31427181a46ac5ed78eee42d1302
+- frpc-stcp-visitor-go/downstream/frp-v0.69.1-p3/0003-join-stcp-visitor-shutdown.patch
+  SHA-256: 35d91b30dec18ffff97b81b476742bb4b9b429e84ddb23879637a0ebdee33b79
 
 已修改的上游文件：
+- client/connector.go
 - client/control.go
 - client/service.go
+- client/visitor/stcp.go
+- client/visitor/visitor.go
 - client/visitor/visitor_manager.go
 
 新增的下游文件：
+- client/connector_tls_config_customizer_test.go
 - client/runtime_state.go
 - client/runtime_state_test.go
 - client/visitor/visitor_manager_runtime_test.go
+- client/visitor/visitor_shutdown_test.go
 
 完整来源信息：third_party/sources/frp.json
 

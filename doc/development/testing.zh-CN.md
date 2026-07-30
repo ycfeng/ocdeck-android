@@ -255,7 +255,7 @@ cd frpc-stcp-visitor-go
 go run ./cmd/preparefrp
 python3 ../.github/scripts/check-go-race-environment.py
 go test -race -modfile=build/frp-patched.mod ./...
-cd build/frp-v0.69.1-p1
+cd build/frp-v0.69.1-p3
 go test -race ./client/...
 ```
 
@@ -291,7 +291,7 @@ Push-Location .\frpc-stcp-visitor-go
 Invoke-NativeChecked { go run ./cmd/preparefrp }
 Invoke-NativeChecked { python ..\.github\scripts\check-go-race-environment.py }
 Invoke-NativeChecked { go test -race '-modfile=build/frp-patched.mod' ./... }
-Push-Location .\build\frp-v0.69.1-p1
+Push-Location .\build\frp-v0.69.1-p3
 Invoke-NativeChecked { go test -race ./client/... }
 Pop-Location
 Pop-Location

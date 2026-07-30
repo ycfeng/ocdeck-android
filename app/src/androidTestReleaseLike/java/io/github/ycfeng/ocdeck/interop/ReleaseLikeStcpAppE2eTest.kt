@@ -153,8 +153,9 @@ class ReleaseLikeStcpAppE2eTest {
         val configFile = requireSafeFileName(arguments.getString(ARG_CONFIG_FILE))
         var stage = STAGE_CONFIGURATION
         val checks = linkedSetOf<String>()
-        val startThreads = captureThreadIdentities()
-        val resourceStart = captureResourceSnapshot(threadIdentities = startThreads)
+        var startThreads = captureThreadIdentities()
+        var resourceStart = captureResourceSnapshot(threadIdentities = startThreads)
+        var runtimeInitialization: AppE2eRuntimeInitialization? = null
         var visitorReadyThreads: Set<ProcTaskIdentity>? = null
         var resourceVisitorReady: AppE2eResourceSnapshot? = null
         val resourceSamples = ResourceSampleCollector()
@@ -164,6 +165,28 @@ class ReleaseLikeStcpAppE2eTest {
                 validateInvocation(it, runId)
             }
             runBlocking {
+                if (arguments.getString(ARG_RUNTIME_DIAGNOSTIC_ENABLED) == "true" &&
+                    configured.workload.profile != PROFILE_FUNCTIONAL
+                ) {
+                    stage = STAGE_RUNTIME_DIAGNOSTIC_INITIALIZE
+                    val application = instrumentation.targetContext.applicationContext as? OpenCodeApplication
+                        ?: throw AppE2eAssertionException()
+                    application.container.frpcStcpVisitorManager.initializeBackendForRuntimeDiagnostics()
+                    delay(RUNTIME_DIAGNOSTIC_QUIESCENCE_MILLIS)
+                    stage = STAGE_RUNTIME_DIAGNOSTIC_SAMPLE
+                    val initializedThreads = captureThreadIdentities()
+                    val nativeDiagnostics = application.container.frpcStcpVisitorManager
+                        .captureBackendRuntimeDiagnostics()
+                    runtimeInitialization = AppE2eRuntimeInitialization(
+                        requestedDelayMillis = RUNTIME_DIAGNOSTIC_QUIESCENCE_MILLIS,
+                        coldThreadCount = startThreads.size,
+                        initializedThreadCount = initializedThreads.size,
+                        initializedGoroutineCount = nativeDiagnostics?.goroutineCount,
+                        initializedSessionCount = nativeDiagnostics?.sessionCount,
+                    )
+                    startThreads = initializedThreads
+                    resourceStart = captureResourceSnapshot(threadIdentities = initializedThreads)
+                }
                 withTimeout(scenarioTimeoutMillis(configured.workload)) {
                     runScenario(
                         invocation = configured,
@@ -205,7 +228,21 @@ class ReleaseLikeStcpAppE2eTest {
         } else {
             null
         }
+        val postSessionNativeDiagnostics = if (runtimeInitialization != null) {
+            runBlocking {
+                val application = instrumentation.targetContext.applicationContext as? OpenCodeApplication
+                    ?: throw AppE2eAssertionException()
+                application.container.frpcStcpVisitorManager.captureBackendRuntimeDiagnostics()
+            }
+        } else {
+            null
+        }
         val result = scenarioResult.copy(
+            runtimeInitialization = runtimeInitialization?.copy(
+                postSessionQuiescenceThreadCount = quiescence?.snapshot?.threadCount,
+                postSessionQuiescenceGoroutineCount = postSessionNativeDiagnostics?.goroutineCount,
+                postSessionQuiescenceSessionCount = postSessionNativeDiagnostics?.sessionCount,
+            ),
             resources = buildResourceEvidence(
                 start = resourceStart,
                 visitorReady = resourceVisitorReady,
@@ -1679,6 +1716,7 @@ class ReleaseLikeStcpAppE2eTest {
         const val ARG_ENABLED = "ocdeck.appE2e.enabled"
         const val ARG_RUN_ID = "ocdeck.appE2e.runId"
         const val ARG_CONFIG_FILE = "ocdeck.appE2e.configFile"
+        const val ARG_RUNTIME_DIAGNOSTIC_ENABLED = "ocdeck.appE2e.runtimeDiagnostic.enabled"
         const val STATUS_RESULT_KEY = "ocdeckAppE2eResult"
         const val MAIN_ACTIVITY_CLASS = "io.github.ycfeng.ocdeck.MainActivity"
         const val BACKEND_GO_MOBILE = "gomobile"
@@ -1703,6 +1741,8 @@ class ReleaseLikeStcpAppE2eTest {
         const val FAILURE_ASSERTION = "ASSERTION"
         const val FAILURE_UNEXPECTED = "UNEXPECTED"
         const val STAGE_CONFIGURATION = "configuration"
+        const val STAGE_RUNTIME_DIAGNOSTIC_INITIALIZE = "runtime_diagnostic_initialize"
+        const val STAGE_RUNTIME_DIAGNOSTIC_SAMPLE = "runtime_diagnostic_sample"
         const val STAGE_SERVER_CONFIGURATION = "server_configuration"
         const val STAGE_STCP_READY = "stcp_ready"
         const val STAGE_SNAPSHOT = "snapshot"
@@ -1960,6 +2000,7 @@ class ReleaseLikeStcpAppE2eTest {
         const val RESOURCE_TAIL_SAMPLES = MAXIMUM_RESOURCE_SAMPLES - RESOURCE_HEAD_SAMPLES
         const val RESOURCE_SAMPLE_RETENTION_STRATEGY = "head-tail-v1"
         const val RESOURCE_QUIESCENCE_MILLIS = 90_000L
+        const val RUNTIME_DIAGNOSTIC_QUIESCENCE_MILLIS = 90_000L
         const val RESOURCE_COUNT_ATTEMPTS = 3
         const val MAXIMUM_WORKLOAD_ITERATIONS = 100_000
         const val MAXIMUM_WORKLOAD_CONCURRENCY = 32
@@ -2075,6 +2116,7 @@ private data class AppE2eResult(
     val processId: Int? = null,
     val failedStage: String? = null,
     val failureCode: String? = null,
+    val runtimeInitialization: AppE2eRuntimeInitialization? = null,
     val resources: AppE2eResourceEvidence? = null,
     val workload: AppE2eWorkloadResult? = null,
 ) {
@@ -2084,9 +2126,22 @@ private data class AppE2eResult(
             "initialControlEpoch=$initialControlEpoch, recoveredGeneration=$recoveredGeneration, " +
             "recoveredControlEpoch=$recoveredControlEpoch, suite=$suite, topology=$topology, " +
             "networkSwitchProven=$networkSwitchProven, phase=$phase, processPresent=${processId != null}, " +
-            "failedStage=$failedStage, failureCode=$failureCode, resourcesPresent=${resources != null}, " +
+            "failedStage=$failedStage, failureCode=$failureCode, " +
+            "runtimeInitializationPresent=${runtimeInitialization != null}, resourcesPresent=${resources != null}, " +
             "workloadProfile=${workload?.profile})"
 }
+
+@Serializable
+private data class AppE2eRuntimeInitialization(
+    val requestedDelayMillis: Long,
+    val coldThreadCount: Int,
+    val initializedThreadCount: Int,
+    val initializedGoroutineCount: Int? = null,
+    val initializedSessionCount: Int? = null,
+    val postSessionQuiescenceThreadCount: Int? = null,
+    val postSessionQuiescenceGoroutineCount: Int? = null,
+    val postSessionQuiescenceSessionCount: Int? = null,
+)
 
 @Serializable
 private data class AppE2eResourceSnapshot(

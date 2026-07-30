@@ -64,7 +64,7 @@ Select one expected label. These labels must be created and configured in GitHub
 - [ ] `go run ./cmd/preparefrp` passed in `frpc-stcp-visitor-go/`. / 已通过。
 - [ ] Wrapper and patched frp client `go test -race` gates passed. / wrapper 与 patched frp client 的竞态测试已通过。
 - [ ] `build-aar.sh` or `build-aar.ps1` passed. / 已通过。
-- [ ] The full Gradle gate passed: `:frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleKotlinRelease :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true`. / 已通过完整 Gradle 门禁。
+- [ ] The full Gradle gate passed: `:frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true`. / 已通过完整 Gradle 门禁。
 - [ ] A bridge byte change uses a new bridge version and Maven coordinate. / bridge 字节变化已使用新的 bridge 版本与 Maven 坐标。
 
 ## Documentation and Third Parties / 文档与第三方

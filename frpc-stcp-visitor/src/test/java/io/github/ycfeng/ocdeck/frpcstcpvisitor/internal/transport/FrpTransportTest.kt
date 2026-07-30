@@ -108,6 +108,17 @@ class FrpTransportTest {
                     ),
                 ) is PinnedTlsClientSocketFactory,
             )
+
+            val caDirectory = Files.createDirectories(directory.resolve("ca"))
+            val caMaterial = InteropTlsMaterial.create(caDirectory, SecureRandom(), certificateAuthority = true)
+            val caCertificate = Files.newInputStream(caMaterial.certificatePath).use { input ->
+                CertificateFactory.getInstance("X.509").generateCertificate(input) as X509Certificate
+            }
+            val caPin = MessageDigest.getInstance("SHA-256").digest(caCertificate.encoded)
+                .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+            assertThrows(CertificateException::class.java) {
+                PinnedCertificateTrustManager(caPin).checkServerTrusted(arrayOf(caCertificate), "RSA")
+            }
         } finally {
             directory.toFile().deleteRecursively()
         }

@@ -3,10 +3,15 @@ package frpcstcpvisitor
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,13 +37,14 @@ var (
 )
 
 type session struct {
-	id        string
-	common    *v1.ClientCommonConfig
-	service   *client.Service
-	cancel    context.CancelFunc
-	runDone   chan struct{}
-	stopOnce  sync.Once
-	authToken string
+	id                         string
+	common                     *v1.ClientCommonConfig
+	service                    *client.Service
+	cancel                     context.CancelFunc
+	runDone                    chan struct{}
+	stopOnce                   sync.Once
+	authToken                  string
+	tlsServerCertificateSHA256 string
 
 	mu       sync.Mutex
 	visitors map[string]visitorConfig
@@ -56,6 +62,10 @@ func StartSession(configJSON string) (string, error) {
 
 	cfgSource := source.NewConfigSource()
 	aggregator := source.NewAggregator(cfgSource)
+	tlsConfigCustomizer, err := newTLSConfigCustomizer(cfg.TLSServerCertificateSHA256)
+	if err != nil {
+		return "", err
+	}
 	loginFailExit := true
 	common := &v1.ClientCommonConfig{
 		Auth: v1.AuthClientConfig{
@@ -82,10 +92,16 @@ func StartSession(configJSON string) (string, error) {
 		},
 	}
 
-	service, err := client.NewService(client.ServiceOptions{
+	serviceOptions := client.ServiceOptions{
 		Common:                 common,
 		ConfigSourceAggregator: aggregator,
-	})
+	}
+	if tlsConfigCustomizer != nil {
+		serviceOptions.ConnectorCreator = func(ctx context.Context, cfg *v1.ClientCommonConfig) client.Connector {
+			return client.NewConnectorWithTLSConfigCustomizer(ctx, cfg, tlsConfigCustomizer)
+		}
+	}
+	service, err := client.NewService(serviceOptions)
 	if err != nil {
 		return "", redactedError(err, cfg.AuthToken)
 	}
@@ -93,13 +109,14 @@ func StartSession(configJSON string) (string, error) {
 	sessionID := newSessionID()
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &session{
-		id:        sessionID,
-		common:    common,
-		service:   service,
-		cancel:    cancel,
-		runDone:   make(chan struct{}),
-		visitors:  map[string]visitorConfig{},
-		authToken: cfg.AuthToken,
+		id:                         sessionID,
+		common:                     common,
+		service:                    service,
+		cancel:                     cancel,
+		runDone:                    make(chan struct{}),
+		visitors:                   map[string]visitorConfig{},
+		authToken:                  cfg.AuthToken,
+		tlsServerCertificateSHA256: cfg.TLSServerCertificateSHA256,
 	}
 
 	sessionsMu.Lock()
@@ -299,6 +316,18 @@ func GetState(sessionID string) (string, error) {
 	})
 }
 
+// GetRuntimeDiagnostics returns bounded aggregate lifecycle counts without
+// exposing goroutine, connection, endpoint, or credential identities.
+func GetRuntimeDiagnostics() (string, error) {
+	sessionsMu.Lock()
+	sessionCount := len(sessions)
+	sessionsMu.Unlock()
+	return marshalJSON(runtimeDiagnostics{
+		GoroutineCount: runtime.NumGoroutine(),
+		SessionCount:   sessionCount,
+	})
+}
+
 func parseSessionConfig(configJSON string) (sessionConfig, error) {
 	var cfg sessionConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
@@ -308,6 +337,7 @@ func parseSessionConfig(configJSON string) (sessionConfig, error) {
 	cfg.User = strings.TrimSpace(cfg.User)
 	cfg.TransportProtocol = defaultString(strings.TrimSpace(cfg.TransportProtocol), "tcp")
 	cfg.WireProtocol = defaultString(strings.TrimSpace(cfg.WireProtocol), "v1")
+	cfg.TLSServerCertificateSHA256 = strings.TrimSpace(cfg.TLSServerCertificateSHA256)
 	if cfg.ServerAddr == "" {
 		return cfg, errors.New("serverAddr is required")
 	}
@@ -319,6 +349,9 @@ func parseSessionConfig(configJSON string) (sessionConfig, error) {
 	}
 	if cfg.WireProtocol != "v1" && cfg.WireProtocol != "v2" {
 		return cfg, fmt.Errorf("unsupported wireProtocol %q", cfg.WireProtocol)
+	}
+	if _, err := decodeTLSCertificateSHA256(cfg.TLSServerCertificateSHA256); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }
@@ -422,13 +455,72 @@ func (s *session) sensitiveValues(extra ...string) []string {
 }
 
 func (s *session) sensitiveValuesLocked(extra ...string) []string {
-	values := make([]string, 0, 1+len(s.visitors)+len(extra))
-	values = append(values, s.authToken)
+	values := make([]string, 0, 2+len(s.visitors)+len(extra))
+	values = append(values, s.authToken, s.tlsServerCertificateSHA256)
 	for _, visitor := range s.visitors {
 		values = append(values, visitor.SecretKey)
 	}
 	values = append(values, extra...)
 	return values
+}
+
+func newTLSConfigCustomizer(pin string) (client.TLSConfigCustomizer, error) {
+	expected, err := decodeTLSCertificateSHA256(pin)
+	if err != nil || expected == nil {
+		return nil, err
+	}
+	return func(config *tls.Config) error {
+		if config == nil {
+			return errors.New("frpc TLS server certificate verification is unavailable")
+		}
+		serverName := config.ServerName
+		config.InsecureSkipVerify = true
+		config.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("frpc TLS server certificate verification failed")
+			}
+			leaf := state.PeerCertificates[0]
+			actual := sha256.Sum256(leaf.Raw)
+			if subtle.ConstantTimeCompare(expected[:], actual[:]) != 1 || leaf.IsCA {
+				return errors.New("frpc TLS server certificate verification failed")
+			}
+			roots := x509.NewCertPool()
+			roots.AddCert(leaf)
+			intermediates := x509.NewCertPool()
+			for _, certificate := range state.PeerCertificates[1:] {
+				intermediates.AddCert(certificate)
+			}
+			if _, err := leaf.Verify(x509.VerifyOptions{
+				DNSName:       serverName,
+				Roots:         roots,
+				Intermediates: intermediates,
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			}); err != nil {
+				return errors.New("frpc TLS server certificate verification failed")
+			}
+			return nil
+		}
+		return nil
+	}, nil
+}
+
+func decodeTLSCertificateSHA256(pin string) (*[sha256.Size]byte, error) {
+	if pin == "" {
+		return nil, nil
+	}
+	if len(pin) != sha256.Size*2 || strings.ToLower(pin) != pin {
+		return nil, errors.New("tlsServerCertificateSha256 must be 64 lowercase hexadecimal characters")
+	}
+	decoded, err := hex.DecodeString(pin)
+	if err != nil {
+		return nil, errors.New("tlsServerCertificateSha256 must be 64 lowercase hexadecimal characters")
+	}
+	expected := new([sha256.Size]byte)
+	copy(expected[:], decoded)
+	for index := range decoded {
+		decoded[index] = 0
+	}
+	return expected, nil
 }
 
 func nativeWaitDuration(timeoutMillis int64) (time.Duration, error) {

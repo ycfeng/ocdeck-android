@@ -299,6 +299,10 @@ private class StatefulContractBridge(
         return json.encodeToString(state)
     }
 
+    override fun getRuntimeDiagnostics(): String = synchronized(lock) {
+        json.encodeToString(FrpcRuntimeDiagnostics(goroutineCount = 0, sessionCount = sessions.size))
+    }
+
     fun openControl(controlEpoch: Long) {
         synchronized(lock) {
             sessions.values.forEach { session ->

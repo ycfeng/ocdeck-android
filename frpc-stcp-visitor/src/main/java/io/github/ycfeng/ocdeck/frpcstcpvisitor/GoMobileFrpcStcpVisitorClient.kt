@@ -17,7 +17,7 @@ import kotlinx.serialization.json.Json
 class GoMobileFrpcStcpVisitorClient private constructor(
     private val json: Json,
     private val bridge: GoMobileFrpcStcpVisitorBridge,
-) : FrpcStcpVisitorClient {
+) : FrpcStcpVisitorClient, FrpcStcpVisitorRuntimeDiagnostics {
     constructor(json: Json) : this(json, ReflectiveGoMobileFrpcStcpVisitorBridge())
 
     internal constructor(
@@ -27,9 +27,6 @@ class GoMobileFrpcStcpVisitorClient private constructor(
     ) : this(json, bridge)
 
     override suspend fun startSession(config: FrpcSessionConfig): String = withContext(Dispatchers.IO) {
-        require(config.tlsServerCertificateSha256 == null) {
-            "GoMobile STCP does not support a pinned TLS server certificate"
-        }
         bridge.startSession(json.encodeToString(config))
     }
 
@@ -68,6 +65,10 @@ class GoMobileFrpcStcpVisitorClient private constructor(
 
     override suspend fun getState(sessionId: String): FrpcStcpVisitorState = withContext(Dispatchers.IO) {
         decodeBridgeResult(bridge.getState(sessionId))
+    }
+
+    override suspend fun captureRuntimeDiagnostics(): FrpcRuntimeDiagnostics = withContext(Dispatchers.IO) {
+        decodeBridgeResult(bridge.getRuntimeDiagnostics())
     }
 
     private suspend fun invokeBindBridge(block: () -> String): String =
@@ -127,6 +128,8 @@ internal interface GoMobileFrpcStcpVisitorBridge {
     fun stopSession(sessionId: String, timeoutMillis: Long): String
 
     fun getState(sessionId: String): String
+
+    fun getRuntimeDiagnostics(): String
 }
 
 internal class ReflectiveGoMobileFrpcStcpVisitorBridge(
@@ -170,6 +173,9 @@ internal class ReflectiveGoMobileFrpcStcpVisitorBridge(
 
     override fun getState(sessionId: String): String =
         invokeString(listOf("getState", "GetState"), sessionId)
+
+    override fun getRuntimeDiagnostics(): String =
+        invokeString(listOf("getRuntimeDiagnostics", "GetRuntimeDiagnostics"))
 
     private fun invokeString(names: List<String>, vararg args: Any): String =
         invoke(names, String::class.java, *args) as? String

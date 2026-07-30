@@ -1,12 +1,13 @@
 package frpcstcpvisitor
 
 type sessionConfig struct {
-	ServerAddr        string `json:"serverAddr"`
-	ServerPort        int    `json:"serverPort"`
-	AuthToken         string `json:"authToken"`
-	User              string `json:"user,omitempty"`
-	TransportProtocol string `json:"transportProtocol"`
-	WireProtocol      string `json:"wireProtocol"`
+	ServerAddr                 string `json:"serverAddr"`
+	ServerPort                 int    `json:"serverPort"`
+	AuthToken                  string `json:"authToken"`
+	User                       string `json:"user,omitempty"`
+	TransportProtocol          string `json:"transportProtocol"`
+	WireProtocol               string `json:"wireProtocol"`
+	TLSServerCertificateSHA256 string `json:"tlsServerCertificateSha256,omitempty"`
 }
 
 type visitorConfig struct {
@@ -54,4 +55,9 @@ type state struct {
 type stopSessionResult struct {
 	SessionID string `json:"sessionId"`
 	Phase     string `json:"phase"`
+}
+
+type runtimeDiagnostics struct {
+	GoroutineCount int `json:"goroutineCount"`
+	SessionCount   int `json:"sessionCount"`
 }

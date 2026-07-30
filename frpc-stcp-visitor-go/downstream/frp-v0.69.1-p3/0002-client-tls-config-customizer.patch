@@ -1,0 +1,127 @@
+diff --git a/client/connector.go b/client/connector.go
+--- a/client/connector.go
++++ b/client/connector.go
+@@ -43,6 +43,9 @@ type Connector interface {
+ 	Close() error
+ }
+ 
++// TLSConfigCustomizer applies caller-owned verification before any TLS dial.
++type TLSConfigCustomizer func(*tls.Config) error
++
+ type MessageConnector interface {
+ 	Connect() (*msg.Conn, error)
+ 	Close() error
+@@ -80,17 +83,27 @@ type defaultConnectorImpl struct {
+ 	ctx context.Context
+ 	cfg *v1.ClientCommonConfig
+ 
+-	muxSession *fmux.Session
+-	quicConn   *quic.Conn
+-	closeOnce  sync.Once
++	tlsConfigCustomizer TLSConfigCustomizer
++	muxSession          *fmux.Session
++	quicConn            *quic.Conn
++	closeOnce           sync.Once
+ }
+ 
+ func NewConnector(ctx context.Context, cfg *v1.ClientCommonConfig) Connector {
++	return NewConnectorWithTLSConfigCustomizer(ctx, cfg, nil)
++}
++
++// NewConnectorWithTLSConfigCustomizer creates the default connector while
++// allowing an embedding client to install a narrow TLS verification policy.
++func NewConnectorWithTLSConfigCustomizer(
++	ctx context.Context,
++	cfg *v1.ClientCommonConfig,
++	customizer TLSConfigCustomizer,
++) Connector {
+ 	return &defaultConnectorImpl{
+-		ctx: ctx,
+-		cfg: cfg,
++		ctx:                 ctx,
++		cfg:                 cfg,
++		tlsConfigCustomizer: customizer,
+ 	}
+ }
+ 
+@@ -121,6 +134,10 @@ func (c *defaultConnectorImpl) Open() error {
+ 			xl.Warnf("fail to build tls configuration, err: %v", err)
+ 			return err
+ 		}
++		if err = c.customizeTLSConfig(tlsConfig); err != nil {
++			xl.Warnf("fail to customize tls configuration")
++			return err
++		}
+ 		tlsConfig.NextProtos = []string{"frp"}
+ 
+ 		conn, err := quic.DialAddr(
+@@ -203,6 +220,10 @@ func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
+ 			xl.Warnf("fail to build tls configuration, err: %v", err)
+ 			return nil, err
+ 		}
++		if err = c.customizeTLSConfig(tlsConfig); err != nil {
++			xl.Warnf("fail to customize tls configuration")
++			return nil, err
++		}
+ 	}
+ 
+ 	proxyType, addr, auth, err := libnet.ParseProxyURL(c.cfg.Transport.ProxyURL)
+@@ -250,6 +271,13 @@ func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
+ 	return conn, err
+ }
+ 
++func (c *defaultConnectorImpl) customizeTLSConfig(config *tls.Config) error {
++	if c.tlsConfigCustomizer == nil {
++		return nil
++	}
++	return c.tlsConfigCustomizer(config)
++}
++
+ func (c *defaultConnectorImpl) Close() error {
+ 	c.closeOnce.Do(func() {
+ 		if c.quicConn != nil {
+diff --git a/client/connector_tls_config_customizer_test.go b/client/connector_tls_config_customizer_test.go
+new file mode 100644
+--- /dev/null
++++ b/client/connector_tls_config_customizer_test.go
+@@ -0,0 +1,44 @@
++package client
++
++import (
++	"context"
++	"crypto/tls"
++	"errors"
++	"testing"
++
++	v1 "github.com/fatedier/frp/pkg/config/v1"
++)
++
++func TestConnectorTLSConfigCustomizer(t *testing.T) {
++	expected := errors.New("synthetic tls customizer failure")
++	called := false
++	connector := NewConnectorWithTLSConfigCustomizer(
++		context.Background(),
++		&v1.ClientCommonConfig{},
++		func(config *tls.Config) error {
++			called = true
++			if config == nil {
++				t.Fatal("customizer received a nil TLS config")
++			}
++			return expected
++		},
++	).(*defaultConnectorImpl)
++
++	if err := connector.customizeTLSConfig(&tls.Config{}); !errors.Is(err, expected) {
++		t.Fatalf("unexpected customizer error: %v", err)
++	}
++	if !called {
++		t.Fatal("TLS config customizer was not called")
++	}
++}
++
++func TestConnectorWithoutTLSConfigCustomizer(t *testing.T) {
++	connector := NewConnector(context.Background(), &v1.ClientCommonConfig{}).(*defaultConnectorImpl)
++	if err := connector.customizeTLSConfig(&tls.Config{}); err != nil {
++		t.Fatalf("unexpected customizer error: %v", err)
++	}
++}

@@ -23,6 +23,8 @@ import org.bouncycastle.asn1.x509.BasicConstraints
 import org.bouncycastle.asn1.x509.Certificate as BouncyCastleCertificate
 import org.bouncycastle.asn1.x509.Extension
 import org.bouncycastle.asn1.x509.ExtensionsGenerator
+import org.bouncycastle.asn1.x509.GeneralName
+import org.bouncycastle.asn1.x509.GeneralNames
 import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo
 import org.bouncycastle.asn1.x509.Time
 import org.bouncycastle.asn1.x509.V3TBSCertificateGenerator
@@ -64,13 +66,23 @@ internal data class InteropTlsMaterial(
                     setEndDate(Time(Date.from(now.plusSeconds(CERTIFICATE_LIFETIME_SECONDS))))
                     setSubject(X500Name(CERTIFICATE_DISTINGUISHED_NAME))
                     setSubjectPublicKeyInfo(SubjectPublicKeyInfo.getInstance(keyPair.public.encoded))
-                    if (certificateAuthority) {
-                        setExtensions(
-                            ExtensionsGenerator().apply {
+                    setExtensions(
+                        ExtensionsGenerator().apply {
+                            if (certificateAuthority) {
                                 addExtension(Extension.basicConstraints, true, BasicConstraints(true))
-                            }.generate(),
-                        )
-                    }
+                            }
+                            addExtension(
+                                Extension.subjectAlternativeName,
+                                false,
+                                GeneralNames(
+                                    arrayOf(
+                                        GeneralName(GeneralName.dNSName, "localhost"),
+                                        GeneralName(GeneralName.iPAddress, "127.0.0.1"),
+                                    ),
+                                ),
+                            )
+                        }.generate(),
+                    )
                 }
                 val tbsCertificate = certificateGenerator.generateTBSCertificate()
                 signatureBytes = Signature.getInstance(SIGNATURE_ALGORITHM).run {

@@ -71,22 +71,23 @@ class GoMobileFrpcStcpVisitorClientTest {
     }
 
     @Test
-    fun startSessionRejectsTlsCertificatePinsThatTheBridgeCannotEnforce() {
+    fun startSessionEncodesTlsCertificatePinForBridgeEnforcement() = runTest {
         val bridge = FakeBridge()
         val client = GoMobileFrpcStcpVisitorClient(json, bridge, Unit)
+        val pin = "0".repeat(64)
 
-        assertThrows(IllegalArgumentException::class.java) {
-            runBlocking {
-                client.startSession(
-                    FrpcSessionConfig(
-                        serverAddr = "frps.example.com",
-                        authToken = "token-value",
-                        tlsServerCertificateSha256 = "0".repeat(64),
-                    ),
-                )
-            }
-        }
-        assertNull(bridge.startedConfigJson)
+        client.startSession(
+            FrpcSessionConfig(
+                serverAddr = "frps.example.com",
+                authToken = "token-value",
+                tlsServerCertificateSha256 = pin,
+            ),
+        )
+
+        assertEquals(
+            pin,
+            json.decodeFromString<FrpcSessionConfig>(bridge.startedConfigJson!!).tlsServerCertificateSha256,
+        )
     }
 
     @Test
@@ -701,6 +702,16 @@ class GoMobileFrpcStcpVisitorClientTest {
         assertEquals(FrpcStopSessionResult("session-1", "closed"), stopped)
     }
 
+    @Test
+    fun runtimeDiagnosticsDecodeAggregateCounts() = runTest {
+        val client = GoMobileFrpcStcpVisitorClient(json, FakeBridge(), Unit)
+
+        assertEquals(
+            FrpcRuntimeDiagnostics(goroutineCount = 7, sessionCount = 2),
+            client.captureRuntimeDiagnostics(),
+        )
+    }
+
     private class FakeBridge(
         private val ensureJson: String = """{"bindPort":4096,"desiredRevision":1}""",
         private val readyJson: String = """{
@@ -756,6 +767,8 @@ class GoMobileFrpcStcpVisitorClientTest {
         }
 
         override fun getState(sessionId: String): String = stateJson
+
+        override fun getRuntimeDiagnostics(): String = """{"goroutineCount":7,"sessionCount":2}"""
     }
 
     private data class ReadyCall(

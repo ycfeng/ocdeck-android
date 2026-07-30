@@ -3,7 +3,6 @@ package io.github.ycfeng.ocdeck.feature.server
 import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
-import io.github.ycfeng.ocdeck.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -295,14 +294,12 @@ fun AddServerScreen(
                                 onValueChange = viewModel::onFrpcAuthTokenChanged,
                                 password = true,
                             )
-                            if (BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR) {
-                                ServerField(
-                                    label = stringResource(R.string.server_frpc_tls_certificate_pin_label, sensitiveSuffix),
-                                    value = state.frpcTlsServerCertificateSha256,
-                                    onValueChange = viewModel::onFrpcTlsServerCertificateSha256Changed,
-                                    password = true,
-                                )
-                            }
+                            ServerField(
+                                label = stringResource(R.string.server_frpc_tls_certificate_pin_label, sensitiveSuffix),
+                                value = state.frpcTlsServerCertificateSha256,
+                                onValueChange = viewModel::onFrpcTlsServerCertificateSha256Changed,
+                                password = true,
+                            )
                             ServerField(stringResource(R.string.server_frpc_user_label), state.frpcUser, viewModel::onFrpcUserChanged)
                             ServerField(stringResource(R.string.server_frpc_server_user_label), state.frpcServerUser, viewModel::onFrpcServerUserChanged)
                             ServerField(stringResource(R.string.server_frpc_server_name_label), state.frpcServerName, viewModel::onFrpcServerNameChanged)

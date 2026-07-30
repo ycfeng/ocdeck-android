@@ -46,6 +46,17 @@ interface FrpcStcpVisitorNetworkChangeAware {
     suspend fun reconnectAfterDefaultNetworkChange()
 }
 
+/** Optional aggregate diagnostics used only by bounded backend lifecycle evidence. */
+interface FrpcStcpVisitorRuntimeDiagnostics {
+    suspend fun captureRuntimeDiagnostics(): FrpcRuntimeDiagnostics
+}
+
+@Serializable
+data class FrpcRuntimeDiagnostics(
+    val goroutineCount: Int,
+    val sessionCount: Int,
+)
+
 @Serializable
 data class FrpcSessionConfig(
     val serverAddr: String,

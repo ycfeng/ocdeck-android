@@ -1,0 +1,250 @@
+diff --git a/client/visitor/stcp.go b/client/visitor/stcp.go
+--- a/client/visitor/stcp.go
++++ b/client/visitor/stcp.go
+@@ -36,10 +36,10 @@ func (sv *STCPVisitor) Run() (err error) {
+ 		if err != nil {
+ 			return
+ 		}
+-		go sv.acceptLoop(sv.l, "stcp local", sv.handleConn)
++		sv.startAcceptLoop(sv.l, "stcp local", sv.handleConn)
+ 	}
+ 
+-	go sv.acceptLoop(sv.internalLn, "stcp internal", sv.handleConn)
++	sv.startAcceptLoop(sv.internalLn, "stcp internal", sv.handleConn)
+ 
+ 	if sv.plugin != nil {
+ 		sv.plugin.Start()
+diff --git a/client/visitor/visitor.go b/client/visitor/visitor.go
+--- a/client/visitor/visitor.go
++++ b/client/visitor/visitor.go
+@@ -71,6 +71,7 @@ func NewVisitor(
+ 		helper:     helper,
+ 		ctx:        ctx,
+ 		internalLn: netpkg.NewInternalListener(),
++		activeConns: make(map[net.Conn]struct{}),
+ 	}
+ 	if cfg.GetBaseConfig().Plugin.Type != "" {
+ 		p, err := plugin.Create(
+@@ -121,6 +122,12 @@ type BaseVisitor struct {
+ 
+ 	mu  sync.RWMutex
+ 	ctx context.Context
++
++	handlerMu    sync.Mutex
++	handlerWG    sync.WaitGroup
++	activeConns map[net.Conn]struct{}
++	closing     bool
++	closeOnce   sync.Once
+ }
+ 
+ func (v *BaseVisitor) AcceptConn(conn net.Conn) error {
+@@ -135,20 +142,64 @@ func (v *BaseVisitor) acceptLoop(l net.Listener, name string, handleConn func(n
+ 			xl.Warnf("%s listener closed", name)
+ 			return
+ 		}
+-		go handleConn(conn)
++		v.handlerMu.Lock()
++		if v.closing {
++			v.handlerMu.Unlock()
++			conn.Close()
++			continue
++		}
++		v.activeConns[conn] = struct{}{}
++		v.handlerWG.Add(1)
++		v.handlerMu.Unlock()
++		go func() {
++			defer func() {
++				v.handlerMu.Lock()
++				delete(v.activeConns, conn)
++				v.handlerMu.Unlock()
++				v.handlerWG.Done()
++			}()
++			handleConn(conn)
++		}()
+ 	}
+ }
+ 
++func (v *BaseVisitor) startAcceptLoop(l net.Listener, name string, handleConn func(net.Conn)) {
++	v.handlerWG.Add(1)
++	go func() {
++		defer v.handlerWG.Done()
++		v.acceptLoop(l, name, handleConn)
++	}()
++}
++
+ func (v *BaseVisitor) Close() {
+-	if v.l != nil {
+-		v.l.Close()
+-	}
+-	if v.internalLn != nil {
+-		v.internalLn.Close()
+-	}
+-	if v.plugin != nil {
+-		v.plugin.Close()
+-	}
++	v.closeOnce.Do(func() {
++		v.handlerMu.Lock()
++		v.closing = true
++		activeConns := make([]net.Conn, 0, len(v.activeConns))
++		for conn := range v.activeConns {
++			activeConns = append(activeConns, conn)
++		}
++		v.handlerMu.Unlock()
++
++		if v.l != nil {
++			v.l.Close()
++		}
++		if v.internalLn != nil {
++			v.internalLn.Close()
++		}
++		if v.plugin != nil {
++			v.plugin.Close()
++		}
++		for _, conn := range activeConns {
++			conn.Close()
++		}
++		v.handlerWG.Wait()
++	})
+ }
+ 
+ func (v *BaseVisitor) dialRawVisitorConn(cfg *v1.VisitorBaseConfig) (net.Conn, error) {
+diff --git a/client/visitor/visitor_manager.go b/client/visitor/visitor_manager.go
+--- a/client/visitor/visitor_manager.go
++++ b/client/visitor/visitor_manager.go
+@@ -58,6 +58,7 @@ type Manager struct {
+ 
+ 	checkInterval           time.Duration
+ 	keepVisitorsRunningOnce sync.Once
++	keeperWG                sync.WaitGroup
+ 	statusReporter          RuntimeStatusReporter
+ 
+ 	mu     sync.RWMutex
+@@ -65,7 +66,8 @@ type Manager struct {
+ 	ctx    context.Context
+ 	closed bool
+ 
+-	stopCh chan struct{}
++	stopCh    chan struct{}
++	closeDone chan struct{}
+ }
+ 
+ func NewManager(
+@@ -82,6 +84,7 @@ func NewManager(
+ 		visitors:      make(map[string]Visitor),
+ 		checkInterval: 10 * time.Second,
+ 		ctx:           ctx,
+ 		stopCh:        make(chan struct{}),
++		closeDone:     make(chan struct{}),
+ 		statusReporter: statusReporter,
+ 	}
+ 	m.helper = &visitorHelperImpl{
+@@ -128,24 +131,30 @@ func (vm *Manager) keepVisitorsRunning() {
+ 
+ func (vm *Manager) Close() {
+ 	vm.mu.Lock()
+-	defer vm.mu.Unlock()
+ 	if vm.closed {
++		closeDone := vm.closeDone
++		vm.mu.Unlock()
++		<-closeDone
+ 		return
+ 	}
+ 	vm.closed = true
+-	for _, v := range vm.visitors {
+-		v.Close()
+-	}
+-	for name := range vm.cfgs {
+-		vm.reportStatus(name, RuntimeStatus{Phase: PhaseStopped})
+-	}
++	visitors := vm.visitors
++	cfgs := vm.cfgs
+ 	vm.visitors = make(map[string]Visitor)
+ 	vm.cfgs = make(map[string]v1.VisitorConfigurer)
+-	select {
+-	case <-vm.stopCh:
+-	default:
+-		close(vm.stopCh)
++	close(vm.stopCh)
++	vm.mu.Unlock()
++
++	for _, v := range visitors {
++		v.Close()
++	}
++	vm.keeperWG.Wait()
++	for name := range cfgs {
++		vm.reportStatus(name, RuntimeStatus{Phase: PhaseStopped})
+ 	}
++	close(vm.closeDone)
+ }
+ 
+ // Hold lock before calling this function.
+@@ -184,7 +193,11 @@ func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) error {
+ 	if len(cfgs) > 0 {
+ 		// Only start keepVisitorsRunning goroutine once and only when there is at least one visitor.
+ 		vm.keepVisitorsRunningOnce.Do(func() {
+-			go vm.keepVisitorsRunning()
++			vm.keeperWG.Add(1)
++			go func() {
++				defer vm.keeperWG.Done()
++				vm.keepVisitorsRunning()
++			}()
+ 		})
+ 	}
+ 
+diff --git a/client/visitor/visitor_shutdown_test.go b/client/visitor/visitor_shutdown_test.go
+new file mode 100644
+--- /dev/null
++++ b/client/visitor/visitor_shutdown_test.go
+@@ -0,0 +1,55 @@
++package visitor
++
++import (
++	"net"
++	"testing"
++	"time"
++
++	netpkg "github.com/fatedier/frp/pkg/util/net"
++)
++
++func TestBaseVisitorCloseWaitsForActiveHandler(t *testing.T) {
++	base := &BaseVisitor{
++		ctx:         t.Context(),
++		internalLn:  netpkg.NewInternalListener(),
++		activeConns: make(map[net.Conn]struct{}),
++	}
++	handlerStarted := make(chan struct{})
++	handlerDone := make(chan struct{})
++	base.startAcceptLoop(base.internalLn, "test internal", func(conn net.Conn) {
++		close(handlerStarted)
++		defer close(handlerDone)
++		var buffer [1]byte
++		_, _ = conn.Read(buffer[:])
++	})
++
++	clientConn, visitorConn := net.Pipe()
++	defer clientConn.Close()
++	if err := base.AcceptConn(visitorConn); err != nil {
++		t.Fatalf("accept connection: %v", err)
++	}
++	select {
++	case <-handlerStarted:
++	case <-time.After(time.Second):
++		t.Fatal("handler did not start")
++	}
++
++	closeDone := make(chan struct{})
++	go func() {
++		base.Close()
++		close(closeDone)
++	}()
++	select {
++	case <-closeDone:
++	case <-time.After(time.Second):
++		t.Fatal("Close did not wait for the active handler")
++	}
++	select {
++	case <-handlerDone:
++	default:
++		t.Fatal("Close returned before the active handler exited")
++	}
++}

@@ -242,6 +242,7 @@ internal data class AppE2eResult(
     val processId: Int? = null,
     val failedStage: String? = null,
     val failureCode: String? = null,
+    val runtimeInitialization: AppE2eRuntimeInitialization? = null,
     val resources: AppE2eResourceEvidence? = null,
     val workload: AppE2eWorkloadResult? = null,
 ) {
@@ -251,9 +252,22 @@ internal data class AppE2eResult(
             "initialControlEpoch=$initialControlEpoch, recoveredGeneration=$recoveredGeneration, " +
             "recoveredControlEpoch=$recoveredControlEpoch, suite=$suite, topology=$topology, " +
             "networkSwitchProven=$networkSwitchProven, phase=$phase, processPresent=${processId != null}, " +
-            "failedStage=$failedStage, failureCode=$failureCode, resourcesPresent=${resources != null}, " +
+            "failedStage=$failedStage, failureCode=$failureCode, " +
+            "runtimeInitializationPresent=${runtimeInitialization != null}, resourcesPresent=${resources != null}, " +
             "workloadProfile=${workload?.profile})"
 }
+
+@Serializable
+internal data class AppE2eRuntimeInitialization(
+    val requestedDelayMillis: Long,
+    val coldThreadCount: Int,
+    val initializedThreadCount: Int,
+    val initializedGoroutineCount: Int? = null,
+    val initializedSessionCount: Int? = null,
+    val postSessionQuiescenceThreadCount: Int? = null,
+    val postSessionQuiescenceGoroutineCount: Int? = null,
+    val postSessionQuiescenceSessionCount: Int? = null,
+)
 
 private data class AppE2eBackendSpec(
     val backend: String,
