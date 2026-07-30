@@ -1,0 +1,393 @@
+diff --git a/client/control.go b/client/control.go
+index 2d031ed..fba4d8b 100644
+--- a/client/control.go
++++ b/client/control.go
+@@ -87,9 +87,10 @@ type Control struct {
+ 	stopCh   chan struct{}
+ 	stopOnce sync.Once
+ 
+-	handlerMu      sync.Mutex
+-	handlerClosing bool
+-	handlerWG      sync.WaitGroup
++	handlerMu        sync.Mutex
++	handlerClosing   bool
++	handlerWG        sync.WaitGroup
++	pendingWorkConns map[*msg.Conn]struct{}
+ }
+ 
+ func NewControl(
+@@ -141,10 +142,11 @@ func (ctl *Control) handleReqWorkConn(_ msg.Message) {
+ 		xl.Warnf("start new connection to server error: %v", err)
+ 		return
+ 	}
+-	if ctl.closed.Load() {
++	if !ctl.trackPendingWorkConn(workConn) {
+ 		workConn.Close()
+ 		return
+ 	}
++	defer ctl.untrackPendingWorkConn(workConn)
+ 
+ 	m := &msg.NewWorkConn{
+ 		RunID: ctl.sessionCtx.RunID,
+@@ -174,13 +176,19 @@ func (ctl *Control) handleReqWorkConn(_ msg.Message) {
+ 
+ 	startMsg.ProxyName = naming.StripUserPrefix(ctl.sessionCtx.Common.User, startMsg.ProxyName)
+ 
++	if ctl.closed.Load() {
++		workConn.Close()
++		return
++	}
++	ctl.untrackPendingWorkConn(workConn)
++
+ 	// dispatch this work connection to related proxy
+ 	ctl.pm.HandleWorkConn(startMsg.ProxyName, workConn, &startMsg)
+ }
+ 
+ func (ctl *Control) handleReqWorkConnAsync(m msg.Message) {
+ 	ctl.handlerMu.Lock()
+-	if ctl.handlerClosing {
++	if ctl.handlerClosing || ctl.closed.Load() {
+ 		ctl.handlerMu.Unlock()
+ 		return
+ 	}
+@@ -196,10 +204,37 @@ func (ctl *Control) handleReqWorkConnAsync(m msg.Message) {
+ func (ctl *Control) waitAsyncHandlers() {
+ 	ctl.handlerMu.Lock()
+ 	ctl.handlerClosing = true
++	pendingWorkConns := make([]*msg.Conn, 0, len(ctl.pendingWorkConns))
++	for conn := range ctl.pendingWorkConns {
++		pendingWorkConns = append(pendingWorkConns, conn)
++	}
++	ctl.pendingWorkConns = nil
+ 	ctl.handlerMu.Unlock()
++	for _, conn := range pendingWorkConns {
++		conn.Close()
++	}
+ 	ctl.handlerWG.Wait()
+ }
+ 
++func (ctl *Control) trackPendingWorkConn(conn *msg.Conn) bool {
++	ctl.handlerMu.Lock()
++	defer ctl.handlerMu.Unlock()
++	if ctl.handlerClosing || ctl.closed.Load() {
++		return false
++	}
++	if ctl.pendingWorkConns == nil {
++		ctl.pendingWorkConns = make(map[*msg.Conn]struct{})
++	}
++	ctl.pendingWorkConns[conn] = struct{}{}
++	return true
++}
++
++func (ctl *Control) untrackPendingWorkConn(conn *msg.Conn) {
++	ctl.handlerMu.Lock()
++	delete(ctl.pendingWorkConns, conn)
++	ctl.handlerMu.Unlock()
++}
++
+ func (ctl *Control) handleNewProxyResp(m msg.Message) {
+ 	xl := ctl.xl
+ 	inMsg := m.(*msg.NewProxyResp)
+@@ -259,12 +294,12 @@ func (ctl *Control) Close() error {
+ func (ctl *Control) GracefulClose(d time.Duration) error {
+ 	ctl.closed.Store(true)
+ 	ctl.signalStop()
++	ctl.closeSession()
++	ctl.waitAsyncHandlers()
+ 	ctl.pm.Close()
+ 	ctl.vm.Close()
+ 
+ 	time.Sleep(d)
+-
+-	ctl.closeSession()
+ 	<-ctl.doneCh
+ 	return nil
+ }
+diff --git a/client/control_pending_work_conn_test.go b/client/control_pending_work_conn_test.go
+new file mode 100644
+index 0000000..62b588a
+--- /dev/null
++++ b/client/control_pending_work_conn_test.go
+@@ -0,0 +1,45 @@
++package client
++
++import (
++	"net"
++	"testing"
++	"time"
++
++	"github.com/fatedier/frp/pkg/msg"
++)
++
++func TestControlWaitClosesPendingWorkConn(t *testing.T) {
++	clientConn, serverConn := net.Pipe()
++	defer clientConn.Close()
++	workConn := msg.NewConn(serverConn, msg.NewReadWriter(serverConn, ""))
++
++	ctl := &Control{}
++	if !ctl.trackPendingWorkConn(workConn) {
++		t.Fatal("trackPendingWorkConn rejected an open control")
++	}
++	ctl.handlerWG.Add(1)
++	handlerDone := make(chan struct{})
++	go func() {
++		defer ctl.handlerWG.Done()
++		defer close(handlerDone)
++		var start msg.StartWorkConn
++		_ = workConn.ReadMsgInto(&start)
++	}()
++
++	waitDone := make(chan struct{})
++	go func() {
++		ctl.waitAsyncHandlers()
++		close(waitDone)
++	}()
++	select {
++	case <-waitDone:
++	case <-time.After(time.Second):
++		t.Fatal("waitAsyncHandlers did not close the pending work connection")
++	}
++	select {
++	case <-handlerDone:
++	default:
++		t.Fatal("waitAsyncHandlers returned before the pending handler exited")
++	}
++}
+diff --git a/client/visitor/stcp.go b/client/visitor/stcp.go
+index 2bc8b15..a3c5613 100644
+--- a/client/visitor/stcp.go
++++ b/client/visitor/stcp.go
+@@ -65,13 +65,16 @@ func (sv *STCPVisitor) handleConn(userConn net.Conn) {
+ 	}()
+ 
+ 	xl.Debugf("get a new stcp user connection")
+-	visitorConn, err := sv.dialRawVisitorConn(sv.cfg.GetBaseConfig())
++	visitorConn, untrackVisitorConn, err := sv.dialRawVisitorConn(sv.cfg.GetBaseConfig())
+ 	if err != nil {
+ 		xl.Warnf("dialRawVisitorConn error: %v", err)
+ 		tunnelErr = err
+ 		return
+ 	}
+-	defer visitorConn.Close()
++	defer func() {
++		untrackVisitorConn()
++		visitorConn.Close()
++	}()
+ 
+ 	remote, recycleFn, err := wrapVisitorConn(visitorConn, sv.cfg.GetBaseConfig())
+ 	if err != nil {
+diff --git a/client/visitor/sudp.go b/client/visitor/sudp.go
+index 91d57da..edfe175 100644
+--- a/client/visitor/sudp.go
++++ b/client/visitor/sudp.go
+@@ -200,16 +200,20 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
+ }
+ 
+ func (sv *SUDPVisitor) getNewVisitorConn() (net.Conn, func(), error) {
+-	rawConn, err := sv.dialRawVisitorConn(sv.cfg.GetBaseConfig())
++	rawConn, untrackConn, err := sv.dialRawVisitorConn(sv.cfg.GetBaseConfig())
+ 	if err != nil {
+ 		return nil, func() {}, err
+ 	}
+ 	rwc, recycleFn, err := wrapVisitorConn(rawConn, sv.cfg.GetBaseConfig())
+ 	if err != nil {
++		untrackConn()
+ 		rawConn.Close()
+ 		return nil, func() {}, err
+ 	}
+-	return netpkg.WrapReadWriteCloserToConn(rwc, rawConn), recycleFn, nil
++	return netpkg.WrapReadWriteCloserToConn(rwc, rawConn), func() {
++		recycleFn()
++		untrackConn()
++	}, nil
+ }
+ 
+ func (sv *SUDPVisitor) Close() {
+diff --git a/client/visitor/visitor.go b/client/visitor/visitor.go
+index ea01bcf..4220cbb 100644
+--- a/client/visitor/visitor.go
++++ b/client/visitor/visitor.go
+@@ -67,11 +67,12 @@ func NewVisitor(
+ 	ctx = xlog.NewContext(ctx, xl)
+ 	var visitor Visitor
+ 	baseVisitor := BaseVisitor{
+-		clientCfg:  clientCfg,
+-		helper:     helper,
+-		ctx:        ctx,
+-		internalLn: netpkg.NewInternalListener(),
+-		activeConns: make(map[net.Conn]struct{}),
++		clientCfg:  clientCfg,
++		helper:     helper,
++		ctx:        ctx,
++		internalLn: netpkg.NewInternalListener(),
++		activeConns: make(map[net.Conn]struct{}),
++		outboundConns: make(map[net.Conn]struct{}),
+ 	}
+ 	if cfg.GetBaseConfig().Plugin.Type != "" {
+ 		p, err := plugin.Create(
+@@ -123,11 +124,12 @@ type BaseVisitor struct {
+ 	mu  sync.RWMutex
+ 	ctx context.Context
+ 
+-	handlerMu    sync.Mutex
+-	handlerWG    sync.WaitGroup
+-	activeConns map[net.Conn]struct{}
+-	closing     bool
+-	closeOnce   sync.Once
++	handlerMu    sync.Mutex
++	handlerWG    sync.WaitGroup
++	activeConns map[net.Conn]struct{}
++	outboundConns map[net.Conn]struct{}
++	closing     bool
++	closeOnce   sync.Once
+ }
+ 
+ func (v *BaseVisitor) AcceptConn(conn net.Conn) error {
+@@ -179,6 +181,10 @@ func (v *BaseVisitor) Close() {
+ 		for conn := range v.activeConns {
+ 			activeConns = append(activeConns, conn)
+ 		}
++		outboundConns := make([]net.Conn, 0, len(v.outboundConns))
++		for conn := range v.outboundConns {
++			outboundConns = append(outboundConns, conn)
++		}
+ 		v.handlerMu.Unlock()
+ 
+ 		if v.l != nil {
+@@ -193,14 +199,46 @@ func (v *BaseVisitor) Close() {
+ 		for _, conn := range activeConns {
+ 			conn.Close()
+ 		}
++		for _, conn := range outboundConns {
++			conn.Close()
++		}
+ 		v.handlerWG.Wait()
+ 	})
+ }
+ 
+-func (v *BaseVisitor) dialRawVisitorConn(cfg *v1.VisitorBaseConfig) (net.Conn, error) {
++func (v *BaseVisitor) trackOutboundConn(conn net.Conn) (func(), bool) {
++	v.handlerMu.Lock()
++	defer v.handlerMu.Unlock()
++	if v.closing {
++		return func() {}, false
++	}
++	if v.outboundConns == nil {
++		v.outboundConns = make(map[net.Conn]struct{})
++	}
++	v.outboundConns[conn] = struct{}{}
++	var once sync.Once
++	return func() {
++		once.Do(func() {
++			v.handlerMu.Lock()
++			delete(v.outboundConns, conn)
++			v.handlerMu.Unlock()
++		})
++	}, true
++}
++
++func (v *BaseVisitor) dialRawVisitorConn(cfg *v1.VisitorBaseConfig) (net.Conn, func(), error) {
+ 	visitorConn, err := v.helper.ConnectServer()
+ 	if err != nil {
+-		return nil, fmt.Errorf("connect to server error: %v", err)
++		return nil, func() {}, fmt.Errorf("connect to server error: %v", err)
++	}
++	untrack, ok := v.trackOutboundConn(visitorConn)
++	if !ok {
++		visitorConn.Close()
++		return nil, func() {}, fmt.Errorf("visitor closed")
++	}
++	cleanup := func() {
++		untrack()
++		visitorConn.Close()
+ 	}
+ 
+ 	now := time.Now().Unix()
+@@ -215,24 +253,24 @@ func (v *BaseVisitor) dialRawVisitorConn(cfg *v1.VisitorBaseConfig) (net.Conn, e
+ 	}
+ 	err = visitorConn.WriteMsg(newVisitorConnMsg)
+ 	if err != nil {
+-		visitorConn.Close()
+-		return nil, fmt.Errorf("send newVisitorConnMsg to server error: %v", err)
++		cleanup()
++		return nil, func() {}, fmt.Errorf("send newVisitorConnMsg to server error: %v", err)
+ 	}
+ 
+ 	_ = visitorConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+ 	var newVisitorConnRespMsg msg.NewVisitorConnResp
+ 	err = visitorConn.ReadMsgInto(&newVisitorConnRespMsg)
+ 	if err != nil {
+-		visitorConn.Close()
+-		return nil, fmt.Errorf("read newVisitorConnRespMsg error: %v", err)
++		cleanup()
++		return nil, func() {}, fmt.Errorf("read newVisitorConnRespMsg error: %v", err)
+ 	}
+ 	_ = visitorConn.SetReadDeadline(time.Time{})
+ 
+ 	if newVisitorConnRespMsg.Error != "" {
+-		visitorConn.Close()
+-		return nil, fmt.Errorf("start new visitor connection error: %s", newVisitorConnRespMsg.Error)
++		cleanup()
++		return nil, func() {}, fmt.Errorf("start new visitor connection error: %s", newVisitorConnRespMsg.Error)
+ 	}
+-	return visitorConn, nil
++	return visitorConn, untrack, nil
+ }
+ 
+ func wrapVisitorConn(conn io.ReadWriteCloser, cfg *v1.VisitorBaseConfig) (io.ReadWriteCloser, func(), error) {
+diff --git a/client/visitor/visitor_outbound_shutdown_test.go b/client/visitor/visitor_outbound_shutdown_test.go
+new file mode 100644
+index 0000000..224b30b
+--- /dev/null
++++ b/client/visitor/visitor_outbound_shutdown_test.go
+@@ -0,0 +1,47 @@
++package visitor
++
++import (
++	"net"
++	"testing"
++	"time"
++
++	netpkg "github.com/fatedier/frp/pkg/util/net"
++)
++
++func TestBaseVisitorCloseClosesTrackedOutboundConn(t *testing.T) {
++	base := &BaseVisitor{
++		ctx:           t.Context(),
++		internalLn:    netpkg.NewInternalListener(),
++		activeConns:   make(map[net.Conn]struct{}),
++		outboundConns: make(map[net.Conn]struct{}),
++	}
++	clientConn, outboundConn := net.Pipe()
++	defer clientConn.Close()
++	untrack, ok := base.trackOutboundConn(outboundConn)
++	if !ok {
++		t.Fatal("trackOutboundConn rejected an open visitor")
++	}
++	defer untrack()
++
++	base.handlerWG.Add(1)
++	handlerDone := make(chan struct{})
++	go func() {
++		defer base.handlerWG.Done()
++		defer close(handlerDone)
++		var buffer [1]byte
++		_, _ = outboundConn.Read(buffer[:])
++	}()
++
++	closeDone := make(chan struct{})
++	go func() {
++		base.Close()
++		close(closeDone)
++	}()
++	select {
++	case <-closeDone:
++	case <-time.After(time.Second):
++		t.Fatal("Close did not close and wait for the outbound connection")
++	}
++	select {
++	case <-handlerDone:
++	default:
++		t.Fatal("Close returned before the outbound handler exited")
++	}
++}

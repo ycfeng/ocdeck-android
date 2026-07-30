@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-const downstreamName = "frp-v0.69.1-p4"
+const downstreamName = "frp-v0.69.1-p5"
 
 var hunkHeaderPattern = regexp.MustCompile(`^@@ -([0-9]+)(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@(.*)$`)
 
