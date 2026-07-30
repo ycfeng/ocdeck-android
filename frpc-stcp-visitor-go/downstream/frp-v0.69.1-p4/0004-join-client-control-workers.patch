@@ -1,0 +1,437 @@
+diff --git a/client/control.go b/client/control.go
+index d8dbca0..2d031ed 100644
+--- a/client/control.go
++++ b/client/control.go
+@@ -83,6 +83,13 @@ type Control struct {
+ 	// msgDispatcher is a wrapper for control connection.
+ 	// It provides a channel for sending messages, and you can register handlers to process messages based on their respective types.
+ 	msgDispatcher *msg.Dispatcher
++
++	stopCh   chan struct{}
++	stopOnce sync.Once
++
++	handlerMu      sync.Mutex
++	handlerClosing bool
++	handlerWG      sync.WaitGroup
+ }
+ 
+ func NewControl(
+@@ -96,6 +103,7 @@ func NewControl(
+ 		xl:         xlog.FromContextSafe(ctx),
+ 		sessionCtx: sessionCtx,
+ 		doneCh:     make(chan struct{}),
++		stopCh:     make(chan struct{}),
+ 	}
+ 	ctl.lastPong.Store(time.Now())
+ 
+@@ -133,6 +141,10 @@ func (ctl *Control) handleReqWorkConn(_ msg.Message) {
+ 		xl.Warnf("start new connection to server error: %v", err)
+ 		return
+ 	}
++	if ctl.closed.Load() {
++		workConn.Close()
++		return
++	}
+ 
+ 	m := &msg.NewWorkConn{
+ 		RunID: ctl.sessionCtx.RunID,
+@@ -166,6 +178,28 @@ func (ctl *Control) handleReqWorkConn(_ msg.Message) {
+ 	ctl.pm.HandleWorkConn(startMsg.ProxyName, workConn, &startMsg)
+ }
+ 
++func (ctl *Control) handleReqWorkConnAsync(m msg.Message) {
++	ctl.handlerMu.Lock()
++	if ctl.handlerClosing {
++		ctl.handlerMu.Unlock()
++		return
++	}
++	ctl.handlerWG.Add(1)
++	ctl.handlerMu.Unlock()
++
++	go func() {
++		defer ctl.handlerWG.Done()
++		ctl.handleReqWorkConn(m)
++	}()
++}
++
++func (ctl *Control) waitAsyncHandlers() {
++	ctl.handlerMu.Lock()
++	ctl.handlerClosing = true
++	ctl.handlerMu.Unlock()
++	ctl.handlerWG.Wait()
++}
++
+ func (ctl *Control) handleNewProxyResp(m msg.Message) {
+ 	xl := ctl.xl
+ 	inMsg := m.(*msg.NewProxyResp)
+@@ -212,12 +246,19 @@ func (ctl *Control) closeSession() {
+ 	})
+ }
+ 
++func (ctl *Control) signalStop() {
++	ctl.stopOnce.Do(func() {
++		close(ctl.stopCh)
++	})
++}
++
+ func (ctl *Control) Close() error {
+ 	return ctl.GracefulClose(0)
+ }
+ 
+ func (ctl *Control) GracefulClose(d time.Duration) error {
+ 	ctl.closed.Store(true)
++	ctl.signalStop()
+ 	ctl.pm.Close()
+ 	ctl.vm.Close()
+ 
+@@ -239,7 +280,7 @@ func (ctl *Control) connectServer() (*msg.Conn, error) {
+ }
+ 
+ func (ctl *Control) registerMsgHandlers() {
+-	ctl.msgDispatcher.RegisterHandler(&msg.ReqWorkConn{}, msg.AsyncHandler(ctl.handleReqWorkConn))
++	ctl.msgDispatcher.RegisterHandler(&msg.ReqWorkConn{}, ctl.handleReqWorkConnAsync)
+ 	ctl.msgDispatcher.RegisterHandler(&msg.NewProxyResp{}, ctl.handleNewProxyResp)
+ 	ctl.msgDispatcher.RegisterHandler(&msg.NatHoleResp{}, ctl.handleNatHoleResp)
+ 	ctl.msgDispatcher.RegisterHandler(&msg.Pong{}, ctl.handlePong)
+@@ -248,6 +289,7 @@ func (ctl *Control) registerMsgHandlers() {
+ // heartbeatWorker sends heartbeat to server and check heartbeat timeout.
+ func (ctl *Control) heartbeatWorker() {
+ 	xl := ctl.xl
++	var wg sync.WaitGroup
+ 
+ 	if ctl.sessionCtx.Common.Transport.HeartbeatInterval > 0 {
+ 		// Send heartbeat to server.
+@@ -262,42 +304,64 @@ func (ctl *Control) heartbeatWorker() {
+ 			return false, nil
+ 		}
+ 
+-		go wait.BackoffUntil(sendHeartBeat,
+-			wait.NewFastBackoffManager(wait.FastBackoffOptions{
+-				Duration:           time.Duration(ctl.sessionCtx.Common.Transport.HeartbeatInterval) * time.Second,
+-				InitDurationIfFail: time.Second,
+-				Factor:             2.0,
+-				Jitter:             0.1,
+-				MaxDuration:        time.Duration(ctl.sessionCtx.Common.Transport.HeartbeatInterval) * time.Second,
+-			}),
+-			true, ctl.doneCh,
+-		)
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			wait.BackoffUntil(sendHeartBeat,
++				wait.NewFastBackoffManager(wait.FastBackoffOptions{
++					Duration:           time.Duration(ctl.sessionCtx.Common.Transport.HeartbeatInterval) * time.Second,
++					InitDurationIfFail: time.Second,
++					Factor:             2.0,
++					Jitter:             0.1,
++					MaxDuration:        time.Duration(ctl.sessionCtx.Common.Transport.HeartbeatInterval) * time.Second,
++				}),
++				true, ctl.stopCh,
++			)
++		}()
+ 	}
+ 
+ 	// Check heartbeat timeout.
+ 	if ctl.sessionCtx.Common.Transport.HeartbeatInterval > 0 && ctl.sessionCtx.Common.Transport.HeartbeatTimeout > 0 {
+-		go wait.Until(func() {
+-			if time.Since(ctl.lastPong.Load().(time.Time)) > time.Duration(ctl.sessionCtx.Common.Transport.HeartbeatTimeout)*time.Second {
+-				xl.Warnf("heartbeat timeout")
+-				ctl.closeSession()
+-				return
+-			}
+-		}, time.Second, ctl.doneCh)
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			wait.Until(func() {
++				if time.Since(ctl.lastPong.Load().(time.Time)) > time.Duration(ctl.sessionCtx.Common.Transport.HeartbeatTimeout)*time.Second {
++					xl.Warnf("heartbeat timeout")
++					ctl.closeSession()
++					return
++				}
++			}, time.Second, ctl.stopCh)
++		}()
+ 	}
++	wg.Wait()
+ }
+ 
+ func (ctl *Control) worker() {
+ 	xl := ctl.xl
+-	go ctl.heartbeatWorker()
+-	go ctl.msgDispatcher.Run()
++	var owners sync.WaitGroup
++	owners.Add(1)
++	go func() {
++		defer owners.Done()
++		ctl.heartbeatWorker()
++	}()
++	owners.Add(1)
++	go func() {
++		defer owners.Done()
++		ctl.msgDispatcher.Run()
++		ctl.msgDispatcher.Wait()
++	}()
+ 
+ 	<-ctl.msgDispatcher.Done()
+ 	ctl.closed.Store(true)
++	ctl.signalStop()
+ 	xl.Debugf("control message dispatcher exited")
+ 	ctl.closeSession()
+ 
+ 	ctl.pm.Close()
+ 	ctl.vm.Close()
++	ctl.waitAsyncHandlers()
++	owners.Wait()
+ 	close(ctl.doneCh)
+ }
+ 
+diff --git a/client/control_shutdown_test.go b/client/control_shutdown_test.go
+new file mode 100644
+index 0000000..42536ff
+--- /dev/null
++++ b/client/control_shutdown_test.go
+@@ -0,0 +1,94 @@
++package client
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/fatedier/frp/pkg/msg"
++	"github.com/fatedier/frp/pkg/util/xlog"
++)
++
++type blockingMessageConnector struct {
++	started chan struct{}
++	release chan struct{}
++	once    sync.Once
++}
++
++func (c *blockingMessageConnector) Connect() (*msg.Conn, error) {
++	c.once.Do(func() { close(c.started) })
++	<-c.release
++	return nil, errors.New("connector closed")
++}
++
++func (c *blockingMessageConnector) Close() error {
++	return nil
++}
++
++func TestControlWaitsForStartedReqWorkConnHandler(t *testing.T) {
++	connector := &blockingMessageConnector{
++		started: make(chan struct{}),
++		release: make(chan struct{}),
++	}
++	ctl := &Control{
++		xl: xlog.FromContextSafe(context.Background()),
++		sessionCtx: &SessionContext{
++			Connector: connector,
++		},
++	}
++
++	ctl.handleReqWorkConnAsync(&msg.ReqWorkConn{})
++	select {
++	case <-connector.started:
++	case <-time.After(time.Second):
++		t.Fatal("async ReqWorkConn handler did not start")
++	}
++
++	waitDone := make(chan struct{})
++	go func() {
++		ctl.waitAsyncHandlers()
++		close(waitDone)
++	}()
++	select {
++	case <-waitDone:
++		t.Fatal("waitAsyncHandlers returned before the started handler exited")
++	case <-time.After(50 * time.Millisecond):
++	}
++
++	close(connector.release)
++	select {
++	case <-waitDone:
++	case <-time.After(time.Second):
++		t.Fatal("waitAsyncHandlers did not return after the handler exited")
++	}
++}
++
++func TestServiceStopWaitsForControllerWorker(t *testing.T) {
++	svr := &Service{}
++	release := make(chan struct{})
++	svr.controllerWG.Add(1)
++	go func() {
++		defer svr.controllerWG.Done()
++		<-release
++	}()
++
++	stopDone := make(chan struct{})
++	go func() {
++		svr.stop()
++		close(stopDone)
++	}()
++	select {
++	case <-stopDone:
++		t.Fatal("stop returned before the controller worker exited")
++	case <-time.After(50 * time.Millisecond):
++	}
++
++	close(release)
++	select {
++	case <-stopDone:
++	case <-time.After(time.Second):
++		t.Fatal("stop did not return after the controller worker exited")
++	}
++}
+diff --git a/client/service.go b/client/service.go
+index dc29725..cdc6371 100644
+--- a/client/service.go
++++ b/client/service.go
+@@ -132,6 +132,8 @@ type Service struct {
+ 	// config in sync across concurrent API operations.
+ 	reloadMu sync.Mutex
+ 	common   *v1.ClientCommonConfig
++
++	controllerWG sync.WaitGroup
+ 	// reloadCommon is used for filtering/defaulting during config-source reloads.
+ 	// It can be updated by /api/reload without mutating startup-only common behavior.
+ 	reloadCommon *v1.ClientCommonConfig
+@@ -272,7 +274,11 @@ func (svr *Service) Run(ctx context.Context) error {
+ 		return runErr
+ 	}
+ 
+-	go svr.keepControllerWorking()
++	svr.controllerWG.Add(1)
++	go func() {
++		defer svr.controllerWG.Done()
++		svr.keepControllerWorking()
++	}()
+ 
+ 	<-svr.ctx.Done()
+ 	svr.runtimeTracker().setPhase(SessionPhaseStopping, "")
+@@ -483,6 +489,7 @@ func (svr *Service) stop() {
+ 	if ctl != nil {
+ 		_ = ctl.GracefulClose(svr.gracefulShutdownDuration)
+ 	}
++	svr.controllerWG.Wait()
+ 	if svr.webServer != nil {
+ 		svr.webServer.Close()
+ 		svr.webServer = nil
+diff --git a/pkg/msg/handler.go b/pkg/msg/handler.go
+index 1f2775c..d8dfbb0 100644
+--- a/pkg/msg/handler.go
++++ b/pkg/msg/handler.go
+@@ -19,6 +19,7 @@ import (
+ 	"io"
+ 	"net"
+ 	"reflect"
++	"sync"
+ 
+ 	"github.com/fatedier/frp/pkg/proto/wire"
+ )
+@@ -111,6 +112,7 @@ type Dispatcher struct {
+ 
+ 	sendCh      chan Message
+ 	doneCh      chan struct{}
++	wg          sync.WaitGroup
+ 	msgHandlers map[reflect.Type]func(Message)
+ }
+ 
+@@ -125,8 +127,19 @@ func NewDispatcher(rw ReadWriter) *Dispatcher {
+ 
+ // Run will block until io.EOF or some error occurs.
+ func (d *Dispatcher) Run() {
+-	go d.sendLoop()
+-	go d.readLoop()
++	d.wg.Add(2)
++	go func() {
++		defer d.wg.Done()
++		d.sendLoop()
++	}()
++	go func() {
++		defer d.wg.Done()
++		d.readLoop()
++	}()
++}
++
++func (d *Dispatcher) Wait() {
++	d.wg.Wait()
+ }
+ 
+ func (d *Dispatcher) sendLoop() {
+diff --git a/pkg/msg/handler_test.go b/pkg/msg/handler_test.go
+new file mode 100644
+index 0000000..c329442
+--- /dev/null
++++ b/pkg/msg/handler_test.go
+@@ -0,0 +1,68 @@
++package msg
++
++import (
++	"io"
++	"sync"
++	"testing"
++	"time"
++)
++
++type blockingDispatcherReadWriter struct {
++	readRelease  chan struct{}
++	writeStarted chan struct{}
++	writeRelease chan struct{}
++	writeOnce    sync.Once
++}
++
++func (rw *blockingDispatcherReadWriter) ReadMsg() (Message, error) {
++	<-rw.readRelease
++	return nil, io.EOF
++}
++
++func (rw *blockingDispatcherReadWriter) ReadMsgInto(Message) error {
++	return nil
++}
++
++func (rw *blockingDispatcherReadWriter) WriteMsg(Message) error {
++	rw.writeOnce.Do(func() { close(rw.writeStarted) })
++	<-rw.writeRelease
++	return nil
++}
++
++func TestDispatcherWaitJoinsReadAndSendLoops(t *testing.T) {
++	rw := &blockingDispatcherReadWriter{
++		readRelease:  make(chan struct{}),
++		writeStarted: make(chan struct{}),
++		writeRelease: make(chan struct{}),
++	}
++	dispatcher := NewDispatcher(rw)
++	dispatcher.Run()
++
++	if err := dispatcher.Send(&Ping{}); err != nil {
++		t.Fatalf("send message: %v", err)
++	}
++	select {
++	case <-rw.writeStarted:
++	case <-time.After(time.Second):
++		t.Fatal("send loop did not start the blocking write")
++	}
++
++	close(rw.readRelease)
++	waitDone := make(chan struct{})
++	go func() {
++		dispatcher.Wait()
++		close(waitDone)
++	}()
++	select {
++	case <-waitDone:
++		t.Fatal("Wait returned before the blocked send loop exited")
++	case <-time.After(50 * time.Millisecond):
++	}
++
++	close(rw.writeRelease)
++	select {
++	case <-waitDone:
++	case <-time.After(time.Second):
++		t.Fatal("Wait did not return after both dispatcher loops exited")
++	}
++}

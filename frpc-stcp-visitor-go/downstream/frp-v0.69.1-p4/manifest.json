@@ -11,17 +11,20 @@
     "client/service.go": "221243c35349e2ac028b72b5e625a05f5866c57620757822637d9f1af9b7fda7",
     "client/visitor/stcp.go": "212ed03c20798a34e266bea471bb6dcfc81d0fa53f3723522b0c1f77cdf0caa1",
     "client/visitor/visitor.go": "d64b1812b612f7050e27d3407ce3ba9adbc7bcae203b163c8c70311f3550e3de",
-    "client/visitor/visitor_manager.go": "353145720ab44e6908896b9336968ac61294f2cd3b1d333dc3731f79648c9799"
+    "client/visitor/visitor_manager.go": "353145720ab44e6908896b9336968ac61294f2cd3b1d333dc3731f79648c9799",
+    "pkg/msg/handler.go": "f30fcb1e6bd365eb3c737c20a64629ed4bff8d19ede2f9ad866836fb3aae7291"
   },
   "patches": [
     "0001-transport-readiness.patch",
     "0002-client-tls-config-customizer.patch",
-    "0003-join-stcp-visitor-shutdown.patch"
+    "0003-join-stcp-visitor-shutdown.patch",
+    "0004-join-client-control-workers.patch"
   ],
   "gofmtFiles": [
     "client/connector.go",
     "client/connector_tls_config_customizer_test.go",
     "client/control.go",
+    "client/control_shutdown_test.go",
     "client/runtime_state.go",
     "client/runtime_state_test.go",
     "client/service.go",
@@ -29,6 +32,8 @@
     "client/visitor/visitor.go",
     "client/visitor/visitor_manager.go",
     "client/visitor/visitor_manager_runtime_test.go",
-    "client/visitor/visitor_shutdown_test.go"
+    "client/visitor/visitor_shutdown_test.go",
+    "pkg/msg/handler.go",
+    "pkg/msg/handler_test.go"
   ]
 }

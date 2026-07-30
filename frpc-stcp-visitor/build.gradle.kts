@@ -399,7 +399,7 @@ tasks.register("checkGoMobileBridgeAar") {
         check(provenance["ndkVersion"] == bridgeVersions.getProperty("NDK_VERSION")) {
             "GoMobile STCP visitor provenance NDK version is invalid."
         }
-        check(provenance["frpVersion"] == "v0.69.1" && provenance["frpPatch"] == "frp-v0.69.1-p3") {
+        check(provenance["frpVersion"] == "v0.69.1" && provenance["frpPatch"] == "frp-v0.69.1-p4") {
             "GoMobile STCP visitor provenance frp version is invalid."
         }
         check((provenance["nativePageAlignment"] as? Number)?.toInt() == 16384 && provenance["nativeStripped"] == true) {
@@ -417,7 +417,7 @@ tasks.register("checkGoMobileBridgeAar") {
         }
 
         val frpProvenance = parseJsonObject(goMobileBridgeFrpProvenance)
-        check(frpProvenance["downstream"] == "frp-v0.69.1-p3" && frpProvenance["version"] == "v0.69.1") {
+        check(frpProvenance["downstream"] == "frp-v0.69.1-p4" && frpProvenance["version"] == "v0.69.1") {
             "GoMobile STCP visitor frp provenance version is invalid."
         }
         check(
@@ -425,6 +425,7 @@ tasks.register("checkGoMobileBridgeAar") {
                 "client/connector.go",
                 "client/connector_tls_config_customizer_test.go",
                 "client/control.go",
+                "client/control_shutdown_test.go",
                 "client/runtime_state.go",
                 "client/runtime_state_test.go",
                 "client/service.go",
@@ -433,15 +434,19 @@ tasks.register("checkGoMobileBridgeAar") {
                 "client/visitor/visitor_manager.go",
                 "client/visitor/visitor_manager_runtime_test.go",
                 "client/visitor/visitor_shutdown_test.go",
+                "pkg/msg/handler.go",
+                "pkg/msg/handler_test.go",
             ),
         ) { "GoMobile STCP visitor frp provenance does not cover the complete patch." }
         check(
             frpProvenance["addedFiles"] == listOf(
                 "client/connector_tls_config_customizer_test.go",
+                "client/control_shutdown_test.go",
                 "client/runtime_state.go",
                 "client/runtime_state_test.go",
                 "client/visitor/visitor_manager_runtime_test.go",
                 "client/visitor/visitor_shutdown_test.go",
+                "pkg/msg/handler_test.go",
             ),
         ) { "GoMobile STCP visitor frp provenance added-file list is invalid." }
 

@@ -19,15 +19,15 @@ const (
 	ANetModulePath            = "github.com/wlynxg/anet"
 	ANetModuleVersion         = "v0.0.5"
 	FRPModulePath             = "github.com/fatedier/frp"
-	FRPModuleVersion          = "v0.69.1-p3"
+	FRPModuleVersion          = "v0.69.1-p4"
 	FRPUpstreamVersion        = "v0.69.1"
-	FRPPatchName              = "frp-v0.69.1-p3"
+	FRPPatchName              = "frp-v0.69.1-p4"
 	YamuxModulePath           = "github.com/hashicorp/yamux"
 	YamuxModuleVersion        = "v0.1.1"
 	YamuxReplacementPath      = "github.com/fatedier/yamux"
 	YamuxReplacementVersion   = "v0.0.0-20250825093530-d0154be01cd6"
 	localModuleZeroVersion    = "v0.0.0-00010101000000-000000000000"
-	expectedBridgeFRPSuffix   = "-frp0.69.1-p3"
+	expectedBridgeFRPSuffix   = "-frp0.69.1-p4"
 	moduleGraphDigestByteSize = 32
 )
 
