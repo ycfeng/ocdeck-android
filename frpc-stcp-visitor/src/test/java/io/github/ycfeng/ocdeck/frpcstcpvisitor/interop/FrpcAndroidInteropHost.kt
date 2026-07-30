@@ -284,6 +284,7 @@ private data class AppE2eExecution(
     val recoveredGeneration: Long,
     val recoveredControlEpoch: Long,
     val processRecreated: Boolean,
+    val runtimeInitializations: List<AppE2eRuntimeInitialization>,
     val resources: List<AppE2eResourceEvidence>,
     val workloads: List<AppE2eWorkloadResult>,
 )
@@ -308,6 +309,7 @@ private data class AppE2eSummary(
     val recoveredGeneration: Long,
     val recoveredControlEpoch: Long,
     val processRecreated: Boolean,
+    val runtimeInitializations: List<AppE2eRuntimeInitialization>,
     val resources: List<AppE2eResourceEvidence>,
     val workload: AppE2eWorkload,
     val workloads: List<AppE2eWorkloadResult>,
@@ -1231,6 +1233,7 @@ private class FrpcAndroidInteropRunner {
                     recoveredControlEpoch = result.recoveredControlEpoch
                         ?: throw InteropFailure("App E2E result omitted its recovered control epoch"),
                     processRecreated = false,
+                    runtimeInitializations = listOfNotNull(result.runtimeInitialization),
                     resources = listOf(
                         result.resources ?: throw InteropFailure("App E2E result omitted its resource evidence"),
                     ),
@@ -1264,6 +1267,7 @@ private class FrpcAndroidInteropRunner {
                         recoveredGeneration = execution.recoveredGeneration,
                         recoveredControlEpoch = execution.recoveredControlEpoch,
                         processRecreated = execution.processRecreated,
+                        runtimeInitializations = execution.runtimeInitializations,
                         resources = execution.resources,
                         workload = workload,
                         workloads = execution.workloads,
@@ -1664,6 +1668,7 @@ private class FrpcAndroidInteropRunner {
             recoveredGeneration = recoveredGeneration,
             recoveredControlEpoch = recoveredControlEpoch,
             processRecreated = true,
+            runtimeInitializations = listOfNotNull(prepare.runtimeInitialization, recovery.runtimeInitialization),
             resources = listOf(
                 prepare.resources ?: throw InteropFailure("App E2E process prepare omitted its resource evidence"),
                 recovery.resources ?: throw InteropFailure("App E2E process recovery omitted its resource evidence"),
