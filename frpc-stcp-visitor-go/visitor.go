@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"runtime/metrics"
 	"sort"
 	"strconv"
 	"strings"
@@ -326,8 +327,61 @@ func GetRuntimeDiagnostics() (string, error) {
 		GoroutineCount: runtime.NumGoroutine(),
 		SessionCount:   sessionCount,
 		OwnerCounts:    client.RuntimeLifecycleDiagnosticsSnapshot(),
+		RuntimeCounts:  runtimeMetricsSnapshot(),
 	})
 }
+
+var runtimeMetricAllowlist = []string{
+	"/cgo/go-to-c-calls:calls",
+	"/gc/cycles/forced:gc-cycles",
+	"/gc/cycles/total:gc-cycles",
+	"/gc/heap/live:bytes",
+	"/gc/heap/objects:objects",
+	"/gc/scan/stack:bytes",
+	"/memory/classes/heap/stacks:bytes",
+	"/memory/classes/os-stacks:bytes",
+	"/sched/gomaxprocs:threads",
+	"/sched/goroutines:goroutines",
+	"/sched/goroutines/not-in-go:goroutines",
+	"/sched/goroutines/runnable:goroutines",
+	"/sched/goroutines/running:goroutines",
+	"/sched/goroutines/waiting:goroutines",
+	"/sched/goroutines-created:goroutines",
+	"/sched/threads/total:threads",
+}
+
+func runtimeMetricsSnapshot() map[string]int64 {
+	supported := make(map[string]bool)
+	for _, description := range metrics.All() {
+		if description.Kind == metrics.KindUint64 {
+			supported[description.Name] = true
+		}
+	}
+	samples := make([]metrics.Sample, 0, len(runtimeMetricAllowlist))
+	for _, name := range runtimeMetricAllowlist {
+		if supported[name] {
+			samples = append(samples, metrics.Sample{Name: name})
+		}
+	}
+	if len(samples) == 0 {
+		return nil
+	}
+	metrics.Read(samples)
+	counts := make(map[string]int64, len(samples))
+	for _, sample := range samples {
+		if sample.Value.Kind() != metrics.KindUint64 {
+			continue
+		}
+		value := sample.Value.Uint64()
+		if value > maxRuntimeMetricInt64 {
+			value = maxRuntimeMetricInt64
+		}
+		counts[sample.Name] = int64(value)
+	}
+	return counts
+}
+
+const maxRuntimeMetricInt64 = uint64(1<<63 - 1)
 
 func parseSessionConfig(configJSON string) (sessionConfig, error) {
 	var cfg sessionConfig

@@ -305,6 +305,7 @@ private class StatefulContractBridge(
                 goroutineCount = 0,
                 sessionCount = sessions.size,
                 ownerCounts = mapOf("contract.sessions" to sessions.size.toLong()),
+                runtimeCounts = mapOf("contract.goroutines" to 0L),
             ),
         )
     }

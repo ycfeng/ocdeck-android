@@ -61,4 +61,5 @@ type runtimeDiagnostics struct {
 	GoroutineCount int              `json:"goroutineCount"`
 	SessionCount   int              `json:"sessionCount"`
 	OwnerCounts    map[string]int64 `json:"ownerCounts,omitempty"`
+	RuntimeCounts  map[string]int64 `json:"runtimeCounts,omitempty"`
 }

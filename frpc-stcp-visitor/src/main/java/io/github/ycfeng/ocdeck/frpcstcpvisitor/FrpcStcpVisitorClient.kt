@@ -56,6 +56,7 @@ data class FrpcRuntimeDiagnostics(
     val goroutineCount: Int,
     val sessionCount: Int,
     val ownerCounts: Map<String, Long> = emptyMap(),
+    val runtimeCounts: Map<String, Long> = emptyMap(),
 )
 
 @Serializable

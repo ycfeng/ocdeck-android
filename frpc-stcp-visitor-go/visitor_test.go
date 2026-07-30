@@ -268,6 +268,9 @@ func TestRuntimeDiagnosticsReportOnlyAggregateCounts(t *testing.T) {
 	if len(after.OwnerCounts) == 0 || after.OwnerCounts["client.controls"] < 0 {
 		t.Fatalf("unexpected owner diagnostics: %+v", after.OwnerCounts)
 	}
+	if len(after.RuntimeCounts) == 0 || after.RuntimeCounts["/sched/goroutines:goroutines"] <= 0 {
+		t.Fatalf("unexpected runtime metrics diagnostics: %+v", after.RuntimeCounts)
+	}
 }
 
 func installTestSession(t *testing.T, id string) *session {

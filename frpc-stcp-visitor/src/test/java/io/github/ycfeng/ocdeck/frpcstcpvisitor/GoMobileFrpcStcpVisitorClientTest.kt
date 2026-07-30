@@ -711,6 +711,7 @@ class GoMobileFrpcStcpVisitorClientTest {
                 goroutineCount = 7,
                 sessionCount = 2,
                 ownerCounts = mapOf("client.controls" to 1L, "visitor.handlers" to 0L),
+                runtimeCounts = mapOf("/sched/goroutines:goroutines" to 7L),
             ),
             client.captureRuntimeDiagnostics(),
         )
@@ -773,7 +774,7 @@ class GoMobileFrpcStcpVisitorClientTest {
         override fun getState(sessionId: String): String = stateJson
 
         override fun getRuntimeDiagnostics(): String =
-            """{"goroutineCount":7,"sessionCount":2,"ownerCounts":{"client.controls":1,"visitor.handlers":0}}"""
+            """{"goroutineCount":7,"sessionCount":2,"ownerCounts":{"client.controls":1,"visitor.handlers":0},"runtimeCounts":{"/sched/goroutines:goroutines":7}}"""
     }
 
     private data class ReadyCall(
