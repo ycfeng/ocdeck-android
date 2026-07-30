@@ -37,12 +37,12 @@
 - [ ] 已审查 K6V 报告限制：模拟器证据不能替代分离的目标 ABI 真机与 16KB runtime lane、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。两个设备 lane 可以使用不同设备；无法获得物理 ARM 16KB 硬件记录为残余风险，而不是 K7 开发阻塞项。
 - [ ] Canary 与 Kotlin Release-Like APK 只作为无 bridge 验证输出，GoMobile Release-Like 只作为带 suffix、使用 Debug 证书的对比输出；三者均未暂存或发布。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，exact-candidate App E2E artifact 已绑定干净的小写 commit/tree、本地与已安装 target/test APK SHA-256 身份、清理成功和 `authorizesKotlinDefault=false`。External 证据精确包含 17 个有序 instrumentation checks，以及 Host 断言 `configured_pinned_public_server` 与 `network_restored`。否则本项明确记录为不适用。
-- [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已在批准的设备矩阵上运行对称 GoMobile/Kotlin `baseline`、重连/并发 `stress`、`leak` 与长期 `soak` profile，并使用 summary schema 10 / App result schema 10 有界证据通过 `k7-resource-v2`；历史 schema-9 summary 仍是 CPU No-Go 输入，但不满足 v2 生命周期契约。否则本项明确记录为不适用。
+- [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已在批准的设备矩阵上运行对称 GoMobile/Kotlin `baseline`、重连/并发 `stress`、`leak` 与长期 `soak` profile，并使用 summary schema 10 / App result schema 11 有界证据通过 `k7-resource-v2`；历史 schema-9 summary 仍是 CPU No-Go 输入，但不满足 v2 生命周期契约。否则本项明确记录为不适用。
 - [ ] 所选 allowlist profile 的签名制品校验已通过。公共检查覆盖 output metadata 与实际 APK manifest 的 application ID/版本、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、全部 native library、法律资产、文件名和 `SHA256SUMS`；GoMobile 还要求 bridge class 与 sidecar 绑定的 `libgojni.so`，Kotlin-default 则拒绝二者。
 
 ## K7 资源验收
 
-`k7-resource-v2` 是当前有版本号的 K7 资源策略。`:frpc-stcp-visitor:frpcValidateAppResourceEvidence` 可对已经生成的证据对执行该策略；`frpcAppResourceTest` 会先生成证据对，再应用同一策略。它只接受 summary schema 10（内嵌 App result schema 10）。每个通过的 non-functional result 必须包含有界的 `proc-task-lifecycle-v1` 16 桶 presence histogram，覆盖 `start`、首次 `visitorReady`、`postCleanup` 和 90 秒 `quiescence`，且各检查点线程总数必须与 histogram 精确一致。证据不含线程 ID、名称、hash、stack、等待通道、命令行或其他线程身份。历史 schema-9 summary 仍是有效 CPU No-Go 证据，但 v2 验收会 fail closed。策略通过仍只属于证据，绝不会把 `authorizesKotlinDefault` 设为 `true`。
+`k7-resource-v2` 是当前有版本号的 K7 资源策略。`:frpc-stcp-visitor:frpcValidateAppResourceEvidence` 可对已经生成的证据对执行该策略；`frpcAppResourceTest` 会先生成证据对，再应用同一策略。它只接受 summary schema 10（内嵌 App result schema 11）。每个通过的 non-functional result 必须包含有界的 `proc-task-lifecycle-v1` 16 桶 presence histogram，覆盖 `start`、首次 `visitorReady`、`postCleanup` 和 90 秒 `quiescence`，且各检查点线程总数必须与 histogram 精确一致。证据不含线程 ID、名称、hash、stack、等待通道、命令行或其他线程身份。历史 schema-9 summary 仍是有效 CPU No-Go 证据，但 v2 验收会 fail closed。策略通过仍只属于证据，绝不会把 `authorizesKotlinDefault` 设为 `true`。
 
 - [ ] 每条物理性能 lane 都完整保留三组成对 `baseline`、`stress` 和 `leak`，不得只挑选有利结果。通过 `ocdeck.frp.appResource.backendOrder` 交替使用 `gomobile,kotlin`、`kotlin,gomobile`、`gomobile,kotlin` 顺序；记录并保持充电状态、thermal 状态、电源模式、无线网络、后台负载和测试服务器位置可比。受 thermal throttling 或无关负载影响的运行必须在查看结果前记录拒绝原因，并完整重跑。
 - [ ] 批准的矩阵包含既有 API 31、4 KiB 物理 `arm64-v8a` 基准设备，以及维护者可获得的最新 Android API 物理 `arm64-v8a` 设备。官方 API 36 16KB x86_64 lane 负责 page-size/runtime 安全，但 emulator CPU 数值不能替代真机性能。公开 ABI 加载和 external-network 覆盖继续由各自独立门禁约束，并披露残余风险。

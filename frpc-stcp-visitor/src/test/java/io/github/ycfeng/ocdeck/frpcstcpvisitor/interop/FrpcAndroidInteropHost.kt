@@ -264,9 +264,11 @@ internal data class AppE2eRuntimeInitialization(
     val initializedThreadCount: Int,
     val initializedGoroutineCount: Int? = null,
     val initializedSessionCount: Int? = null,
+    val initializedOwnerCounts: Map<String, Long> = emptyMap(),
     val postSessionQuiescenceThreadCount: Int? = null,
     val postSessionQuiescenceGoroutineCount: Int? = null,
     val postSessionQuiescenceSessionCount: Int? = null,
+    val postSessionQuiescenceOwnerCounts: Map<String, Long> = emptyMap(),
 )
 
 private data class AppE2eBackendSpec(
@@ -3664,7 +3666,7 @@ private class FrpcAndroidInteropRunner {
         const val APP_E2E_TEST_CLASS = "io.github.ycfeng.ocdeck.interop.ReleaseLikeStcpAppE2eTest"
         const val APP_E2E_TEST_METHOD = "runConfiguredAppFlow"
         const val APP_E2E_RESULT_STATUS_KEY = "ocdeckAppE2eResult"
-        const val APP_E2E_SCHEMA_VERSION = 10
+        const val APP_E2E_SCHEMA_VERSION = 11
         const val APP_E2E_SUMMARY_SCHEMA_VERSION = 10
         const val BACKEND_GO_MOBILE = "gomobile"
         const val BACKEND_KOTLIN = "kotlin"
