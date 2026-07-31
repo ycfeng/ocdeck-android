@@ -13,6 +13,7 @@ import kotlinx.serialization.json.Json
 internal class YamuxTestTransport(
     private val writeGate: Deferred<Unit>? = null,
     private val writeGateAfterStarts: Int = 0,
+    private val writeGates: Map<Int, Deferred<Unit>> = emptyMap(),
     private val yieldBetweenWrittenBytes: Boolean = false,
     private val writeFailure: Throwable? = null,
     private val writeFailureOnStart: Int? = null,
@@ -77,6 +78,7 @@ internal class YamuxTestTransport(
         activeWrites.incrementAndGet()
         try {
             beforeWrite?.invoke(writeStart, source, offset, length)
+            writeGates[writeStart]?.await()
             if (writeStart > writeGateAfterStarts) writeGate?.await()
             if (writeFailureOnStart == null || writeFailureOnStart == writeStart) {
                 writeFailure?.let { throw it }
