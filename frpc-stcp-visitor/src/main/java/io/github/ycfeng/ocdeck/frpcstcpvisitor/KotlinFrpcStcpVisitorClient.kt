@@ -19,6 +19,7 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelayC
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.ProductionFrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.SocketFrpLocalListenerFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.AndroidDefaultNetworkTcpDialRouteProvider
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxWriterBurstDiagnostics
 import java.net.BindException
 import java.net.InetAddress
 import java.util.LinkedHashMap
@@ -65,7 +66,10 @@ class KotlinFrpcStcpVisitorClient private constructor(
     private val ioDispatcher: CoroutineDispatcher,
     private val lifecycleHooks: KotlinFrpcRuntimeLifecycleHooks,
     private val runtimeDelayer: FrpRuntimeDelayer,
-) : FrpcStcpVisitorClient, FrpcStcpVisitorNetworkChangeAware, AutoCloseable {
+) : FrpcStcpVisitorClient,
+    FrpcStcpVisitorNetworkChangeAware,
+    FrpcStcpVisitorRuntimeDiagnostics,
+    AutoCloseable {
     constructor() : this(
         parentContext = Dispatchers.IO + CoroutineName("KotlinFrpcClientRoot"),
         controlFactory = ProductionFrpSessionControlFactory(),
@@ -232,6 +236,12 @@ class KotlinFrpcStcpVisitorClient private constructor(
             sessionId = sessionId,
             phase = PHASE_CLOSED,
         )
+
+    override suspend fun captureRuntimeDiagnostics(): FrpcRuntimeDiagnostics = FrpcRuntimeDiagnostics(
+        goroutineCount = 0,
+        sessionCount = sessionsMutex.withLock { sessions.size },
+        runtimeCounts = YamuxWriterBurstDiagnostics.enableAndSnapshot(),
+    )
 
     override suspend fun reconnectAfterDefaultNetworkChange() {
         currentCoroutineContext().ensureActive()
