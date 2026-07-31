@@ -184,7 +184,10 @@ class ReleaseLikeStcpAppE2eTest {
                         initializedGoroutineCount = nativeDiagnostics?.goroutineCount,
                         initializedSessionCount = nativeDiagnostics?.sessionCount,
                         initializedOwnerCounts = nativeDiagnostics?.ownerCounts.orEmpty(),
-                        initializedRuntimeCounts = nativeDiagnostics?.runtimeCounts.orEmpty(),
+                        initializedRuntimeCounts = mergeRuntimeCounts(
+                            nativeDiagnostics?.runtimeCounts.orEmpty(),
+                            captureSafeFdCategoryCounts(),
+                        ),
                     )
                     startThreads = initializedThreads
                     resourceStart = captureResourceSnapshot(threadIdentities = initializedThreads)
@@ -245,7 +248,10 @@ class ReleaseLikeStcpAppE2eTest {
                 postSessionQuiescenceGoroutineCount = postSessionNativeDiagnostics?.goroutineCount,
                 postSessionQuiescenceSessionCount = postSessionNativeDiagnostics?.sessionCount,
                 postSessionQuiescenceOwnerCounts = postSessionNativeDiagnostics?.ownerCounts.orEmpty(),
-                postSessionQuiescenceRuntimeCounts = postSessionNativeDiagnostics?.runtimeCounts.orEmpty(),
+                postSessionQuiescenceRuntimeCounts = mergeRuntimeCounts(
+                    postSessionNativeDiagnostics?.runtimeCounts.orEmpty(),
+                    captureSafeFdCategoryCounts(),
+                ),
             ),
             resources = buildResourceEvidence(
                 start = resourceStart,
@@ -1484,6 +1490,51 @@ class ReleaseLikeStcpAppE2eTest {
         throw AppE2eAssertionException()
     }
 
+    private fun captureSafeFdCategoryCounts(): Map<String, Long> {
+        val counts = FD_CATEGORY_KEYS.associateWithTo(linkedMapOf()) { 0L }
+        var total = 0
+        try {
+            Files.newDirectoryStream(File("/proc/self/fd").toPath()).use { entries ->
+                entries.forEach { entry ->
+                    total += 1
+                    if (total > MAXIMUM_RESOURCE_COUNT) throw AppE2eAssertionException()
+                    val category = try {
+                        classifyFdTarget(Files.readSymbolicLink(entry).toString())
+                    } catch (_: Exception) {
+                        FD_CATEGORY_UNREADABLE
+                    }
+                    counts[category] = checkNotNull(counts[category]) + 1L
+                }
+            }
+        } catch (failure: AppE2eAssertionException) {
+            throw failure
+        } catch (_: Exception) {
+            throw AppE2eAssertionException()
+        }
+        counts[FD_CATEGORY_TOTAL] = total.toLong()
+        return counts
+    }
+
+    private fun classifyFdTarget(target: String): String = when {
+        target.startsWith("socket:") -> FD_CATEGORY_SOCKET
+        target.startsWith("pipe:") -> FD_CATEGORY_PIPE
+        target.startsWith("anon_inode:") -> FD_CATEGORY_ANON_INODE
+        target.startsWith("/memfd:") || target.startsWith("memfd:") -> FD_CATEGORY_MEMFD
+        target.startsWith("/dev/") -> FD_CATEGORY_DEVICE
+        target.startsWith("/") -> FD_CATEGORY_FILE
+        else -> FD_CATEGORY_OTHER
+    }
+
+    private fun mergeRuntimeCounts(
+        backendCounts: Map<String, Long>,
+        fdCounts: Map<String, Long>,
+    ): Map<String, Long> = buildMap(backendCounts.size + fdCounts.size) {
+        putAll(backendCounts)
+        fdCounts.forEach { (key, value) ->
+            if (put(key, value) != null) throw AppE2eAssertionException()
+        }
+    }
+
     private fun buildResourceEvidence(
         start: AppE2eResourceSnapshot,
         visitorReady: AppE2eResourceSnapshot?,
@@ -1988,6 +2039,26 @@ class ReleaseLikeStcpAppE2eTest {
         const val MAXIMUM_OUTAGE_MILLIS = 300_000L
         const val NETWORK_TRANSPORT_TIMEOUT_MILLIS = 90_000L
         const val MAXIMUM_RESOURCE_COUNT = 16_384
+        const val FD_CATEGORY_TOTAL = "app.fd.category.total"
+        const val FD_CATEGORY_SOCKET = "app.fd.category.socket"
+        const val FD_CATEGORY_PIPE = "app.fd.category.pipe"
+        const val FD_CATEGORY_ANON_INODE = "app.fd.category.anon_inode"
+        const val FD_CATEGORY_MEMFD = "app.fd.category.memfd"
+        const val FD_CATEGORY_DEVICE = "app.fd.category.device"
+        const val FD_CATEGORY_FILE = "app.fd.category.file"
+        const val FD_CATEGORY_OTHER = "app.fd.category.other"
+        const val FD_CATEGORY_UNREADABLE = "app.fd.category.unreadable"
+        val FD_CATEGORY_KEYS = listOf(
+            FD_CATEGORY_TOTAL,
+            FD_CATEGORY_SOCKET,
+            FD_CATEGORY_PIPE,
+            FD_CATEGORY_ANON_INODE,
+            FD_CATEGORY_MEMFD,
+            FD_CATEGORY_DEVICE,
+            FD_CATEGORY_FILE,
+            FD_CATEGORY_OTHER,
+            FD_CATEGORY_UNREADABLE,
+        )
         const val THREAD_LIFECYCLE_SCHEMA_VERSION = 1
         const val THREAD_LIFECYCLE_CLASSIFIER = "proc-task-lifecycle-v1"
         const val THREAD_LIFECYCLE_CAPTURE_LIMIT = 16_384
