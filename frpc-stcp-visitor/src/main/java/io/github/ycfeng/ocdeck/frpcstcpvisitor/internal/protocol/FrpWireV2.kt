@@ -423,47 +423,56 @@ internal object FrpWireV2 {
     }
 
     fun readMessage(input: InputStream): FrpMessage? {
-        val payload = readMessagePayload(input) ?: return null
-        return try {
-            decodeMessagePayload(payload)
-        } finally {
-            payload.fill(0)
-        }
+        val frame = readFrame(input) ?: return null
+        return decodeMessageFrame(frame)
     }
 
     suspend fun readMessage(input: FrpMuxStream): FrpMessage? {
-        val payload = readMessagePayload(input) ?: return null
-        return try {
-            decodeMessagePayload(payload)
-        } finally {
-            payload.fill(0)
-        }
+        val frame = readFrame(input) ?: return null
+        return decodeMessageFrame(frame)
     }
 
     fun writeMessage(output: OutputStream, message: FrpMessage) {
-        val payload = encodeMessagePayload(message)
-        var header: ByteArray? = null
+        val frame = encodeMessageFrame(message)
         try {
-            val encodedHeader = ByteArray(FRAME_HEADER_SIZE)
-            header = encodedHeader
-            encodeFrameHeader(FRAME_TYPE_MESSAGE, payload.size, encodedHeader, offset = 0)
-            writeSafely(output, encodedHeader)
-            writeSafely(output, payload)
+            writeFrame(output, frame)
         } finally {
-            header?.fill(0)
-            payload.fill(0)
+            frame.payload.fill(0)
         }
     }
 
-    fun encodeMessage(message: FrpMessage): ByteArray = encodeMessageBytes(message, includeMagic = false)
+    fun encodeMessage(message: FrpMessage): ByteArray {
+        val output = ClearingByteArrayOutputStream(128)
+        return try {
+            writeMessage(output, message)
+            output.copyAndClear()
+        } catch (failure: Throwable) {
+            output.clear()
+            throw failure
+        }
+    }
 
-    fun encodeMessageWithMagic(message: FrpMessage): ByteArray = encodeMessageBytes(message, includeMagic = true)
+    fun encodeMessageWithMagic(message: FrpMessage): ByteArray {
+        val encoded = encodeMessage(message)
+        return try {
+            ByteArray(MAGIC_BYTES.size + encoded.size).also { combined ->
+                MAGIC_BYTES.copyInto(combined)
+                encoded.copyInto(combined, destinationOffset = MAGIC_BYTES.size)
+            }
+        } finally {
+            encoded.fill(0)
+        }
+    }
 
     fun encodeMessageFrame(message: FrpMessage): FrpV2Frame {
-        val payload = encodeMessagePayload(message)
+        val jsonPayload = FrpMessageJson.encode(message, MAX_FRAME_PAYLOAD - MESSAGE_TYPE_SIZE)
+        val payload = ByteArray(MESSAGE_TYPE_SIZE + jsonPayload.size)
         return try {
+            encodeUInt16(FrpMessageTypes.v2TypeOf(message), payload, 0)
+            jsonPayload.copyInto(payload, destinationOffset = MESSAGE_TYPE_SIZE)
             FrpV2Frame(FRAME_TYPE_MESSAGE, payload = payload)
         } finally {
+            jsonPayload.fill(0)
             payload.fill(0)
         }
     }
@@ -472,150 +481,15 @@ internal object FrpWireV2 {
         if (frame.type != FRAME_TYPE_MESSAGE) {
             throw FrpProtocolException(FrpProtocolFailure.UNEXPECTED_TYPE)
         }
-        return decodeMessagePayload(frame.payload)
-    }
-
-    private fun encodeMessageBytes(message: FrpMessage, includeMagic: Boolean): ByteArray {
-        val payload = encodeMessagePayload(message)
-        val frameOffset = if (includeMagic) MAGIC_BYTES.size else 0
-        var encoded: ByteArray? = null
-        var success = false
-        return try {
-            val destination = ByteArray(frameOffset + FRAME_HEADER_SIZE + payload.size)
-            encoded = destination
-            if (includeMagic) {
-                MAGIC_BYTES.copyInto(destination)
-            }
-            encodeFrameHeader(FRAME_TYPE_MESSAGE, payload.size, destination, frameOffset)
-            payload.copyInto(destination, destinationOffset = frameOffset + FRAME_HEADER_SIZE)
-            success = true
-            destination
-        } finally {
-            payload.fill(0)
-            if (!success) encoded?.fill(0)
-        }
-    }
-
-    private fun encodeMessagePayload(message: FrpMessage): ByteArray {
-        val jsonPayload = FrpMessageJson.encode(message, MAX_FRAME_PAYLOAD - MESSAGE_TYPE_SIZE)
-        var payload: ByteArray? = null
-        var success = false
-        return try {
-            val destination = ByteArray(MESSAGE_TYPE_SIZE + jsonPayload.size)
-            payload = destination
-            encodeUInt16(FrpMessageTypes.v2TypeOf(message), destination, 0)
-            jsonPayload.copyInto(destination, destinationOffset = MESSAGE_TYPE_SIZE)
-            success = true
-            destination
-        } finally {
-            jsonPayload.fill(0)
-            if (!success) payload?.fill(0)
-        }
-    }
-
-    private fun decodeMessagePayload(payload: ByteArray): FrpMessage {
-        if (payload.size < MESSAGE_TYPE_SIZE) {
+        if (frame.payload.size < MESSAGE_TYPE_SIZE) {
             throw FrpProtocolException(FrpProtocolFailure.TRUNCATED_BODY)
         }
-        val messageType = decodeUInt16(payload, 0)
+        val messageType = decodeUInt16(frame.payload, 0)
         if (!FrpMessageTypes.isKnownV2(messageType)) {
             throw FrpProtocolException(FrpProtocolFailure.UNKNOWN_TYPE)
         }
-        return FrpMessageJson.decodeV2(
-            messageType,
-            payload,
-            offset = MESSAGE_TYPE_SIZE,
-            length = payload.size - MESSAGE_TYPE_SIZE,
-        )
-    }
-
-    private fun readMessagePayload(input: InputStream): ByteArray? {
-        val first = readByteSafely(input)
-        if (first < 0) return null
-        val header = ByteArray(FRAME_HEADER_SIZE)
-        var payload: ByteArray? = null
-        var success = false
-        return try {
-            header[0] = first.toByte()
-            readFullySafely(
-                input = input,
-                destination = header,
-                offset = 1,
-                length = FRAME_HEADER_SIZE - 1,
-                truncatedFailure = FrpProtocolFailure.TRUNCATED_HEADER,
-            )
-            val type = decodeUInt16(header, 0)
-            val flags = decodeUInt16(header, 2)
-            val payloadLength = validateFrameHeader(type, flags, decodeUInt32(header, 4))
-            payload = ByteArray(payloadLength)
-            readFullySafely(
-                input = input,
-                destination = payload,
-                truncatedFailure = FrpProtocolFailure.TRUNCATED_BODY,
-            )
-            if (type != FRAME_TYPE_MESSAGE) {
-                throw FrpProtocolException(FrpProtocolFailure.UNEXPECTED_TYPE)
-            }
-            success = true
-            payload
-        } finally {
-            header.fill(0)
-            if (!success) payload?.fill(0)
-        }
-    }
-
-    private suspend fun readMessagePayload(input: FrpMuxStream): ByteArray? {
-        val first = readByteSafely(input)
-        if (first < 0) return null
-        val header = ByteArray(FRAME_HEADER_SIZE)
-        var payload: ByteArray? = null
-        var success = false
-        return try {
-            header[0] = first.toByte()
-            readFullySafely(
-                input = input,
-                destination = header,
-                offset = 1,
-                length = FRAME_HEADER_SIZE - 1,
-                truncatedFailure = FrpProtocolFailure.TRUNCATED_HEADER,
-            )
-            val type = decodeUInt16(header, 0)
-            val flags = decodeUInt16(header, 2)
-            val payloadLength = validateFrameHeader(type, flags, decodeUInt32(header, 4))
-            payload = ByteArray(payloadLength)
-            readFullySafely(
-                input = input,
-                destination = payload,
-                truncatedFailure = FrpProtocolFailure.TRUNCATED_BODY,
-            )
-            if (type != FRAME_TYPE_MESSAGE) {
-                throw FrpProtocolException(FrpProtocolFailure.UNEXPECTED_TYPE)
-            }
-            success = true
-            payload
-        } finally {
-            header.fill(0)
-            if (!success) payload?.fill(0)
-        }
-    }
-
-    private fun validateFrameHeader(type: Int, flags: Int, payloadLength: Long): Int {
-        if (!isKnownFrameType(type)) {
-            throw FrpProtocolException(FrpProtocolFailure.UNKNOWN_TYPE)
-        }
-        if (flags != 0) {
-            throw FrpProtocolException(FrpProtocolFailure.INVALID_FLAGS)
-        }
-        if (payloadLength > MAX_FRAME_PAYLOAD.toLong()) {
-            throw FrpProtocolException(FrpProtocolFailure.LENGTH_LIMIT)
-        }
-        return payloadLength.toInt()
-    }
-
-    private fun encodeFrameHeader(type: Int, payloadLength: Int, destination: ByteArray, offset: Int) {
-        encodeUInt16(type, destination, offset)
-        encodeUInt16(0, destination, offset + 2)
-        encodeUInt32(payloadLength.toLong(), destination, offset + 4)
+        val jsonPayload = frame.payload.copyOfRange(MESSAGE_TYPE_SIZE, frame.payload.size)
+        return FrpMessageJson.decodeV2(messageType, jsonPayload)
     }
 
     fun selectAeadAlgorithm(algorithms: List<String>): String? =
