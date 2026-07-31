@@ -1522,7 +1522,7 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            afterPumpOutcomeReceived = {
+            afterFirstPumpOutcomeCaptured = {
                 notificationReceived.complete(Unit)
                 blockCoordinator.await()
             },
@@ -1631,7 +1631,7 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            afterPumpOutcomeReceived = {
+            afterFirstPumpOutcomeCaptured = {
                 notificationReceived.complete(Unit)
                 blockCoordinator.await()
             },
@@ -1696,7 +1696,7 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            afterPumpOutcomeReceived = {
+            afterFirstPumpOutcomeCaptured = {
                 notificationReceived.complete(Unit)
                 blockCoordinator.await()
             },
@@ -2037,6 +2037,122 @@ class KotlinFrpcStcpVisitorClientTest {
             control.releaseStop()
             control.awaitStopped()
             parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun parentCancellationAbortsUninterruptibleLocalPumpBeforeFinalJoin() = runBlocking {
+        val parentJob = SupervisorJob()
+        val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
+        val control = FakeSessionControl(
+            generation = 1L,
+            protocol = FrpWireProtocol.V1,
+            parentScope = parentScope,
+            stopRelease = null,
+        )
+        val identity = control.open(epoch = 1L, transport = 1L)
+        val stream = ScriptedMuxStream(
+            inputBytes = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored")),
+        )
+        control.enqueueStream(stream)
+        val local = UninterruptibleLocalConnection()
+        val relay = FrpVisitorRelay(
+            visitorRevision = 1L,
+            listenerAttempt = 1L,
+            control = control,
+            identity = identity,
+            visitor = FrpRelayVisitorConfig(
+                serverName = "remote-service",
+                serverUser = "",
+                sessionUser = "",
+                secretKey = SYNTHETIC_SECRET,
+            ),
+            local = local,
+            parentScope = parentScope,
+            unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+            ioDispatcher = Dispatchers.IO,
+        )
+        try {
+            relay.start()
+            local.awaitReadStarted()
+            withTimeout(5_000L) { local.outputShutdown.await() }
+
+            parentJob.cancel(CancellationException("cancel relay owner while joining local pump"))
+
+            val actual = try {
+                withTimeout(5_000L) { relay.awaitStopped() }
+                throw AssertionError("cancelled relay unexpectedly completed")
+            } catch (failure: CancellationException) {
+                failure
+            }
+            assertTrue(actual.message?.contains("cancel relay owner") == true ||
+                actual.cause?.message?.contains("cancel relay owner") == true)
+            assertEquals(1, local.closeCount.get())
+            assertEquals(1, stream.resetCount.get())
+        } finally {
+            relay.close()
+            control.releaseStop()
+            parentJob.cancel()
+        }
+    }
+
+    @Test
+    fun parentCancellationResetsUninterruptibleOwnerPumpBeforeFinalJoin() = runBlocking {
+        val remoteReadRelease = CompletableDeferred<Unit>()
+        val parentJob = SupervisorJob()
+        val parentScope = CoroutineScope(parentJob + Dispatchers.Default)
+        val control = FakeSessionControl(
+            generation = 1L,
+            protocol = FrpWireProtocol.V1,
+            parentScope = parentScope,
+            stopRelease = null,
+        )
+        val identity = control.open(epoch = 1L, transport = 1L)
+        val stream = ScriptedMuxStream(
+            inputBytes = FrpWireV1.encodeMessage(NewVisitorConnResp(proxyName = "ignored")),
+            afterInputRelease = remoteReadRelease,
+            afterInputWaitNonCancellable = true,
+        )
+        control.enqueueStream(stream)
+        val local = BlockingLocalConnection()
+        val relay = FrpVisitorRelay(
+            visitorRevision = 1L,
+            listenerAttempt = 1L,
+            control = control,
+            identity = identity,
+            visitor = FrpRelayVisitorConfig(
+                serverName = "remote-service",
+                serverUser = "",
+                sessionUser = "",
+                secretKey = SYNTHETIC_SECRET,
+            ),
+            local = local,
+            parentScope = parentScope,
+            unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
+            ioDispatcher = Dispatchers.IO,
+        )
+        try {
+            relay.start()
+            withTimeout(5_000L) { local.readStarted.await() }
+            withTimeout(5_000L) { stream.afterInputStarted.await() }
+
+            parentJob.cancel(CancellationException("cancel relay owner during remote read"))
+
+            val actual = try {
+                withTimeout(5_000L) { relay.awaitStopped() }
+                throw AssertionError("cancelled relay unexpectedly completed")
+            } catch (failure: CancellationException) {
+                failure
+            }
+            assertTrue(actual.message?.contains("cancel relay owner") == true ||
+                actual.cause?.message?.contains("cancel relay owner") == true)
+            assertEquals(1, local.closeCount.get())
+            assertEquals(1, stream.resetCount.get())
+        } finally {
+            remoteReadRelease.complete(Unit)
+            relay.close()
+            control.releaseStop()
+            parentJob.cancel()
         }
     }
 
@@ -2716,12 +2832,15 @@ private class UninterruptibleLocalConnection : FrpLocalConnection {
     }
     override val output: OutputStream = ByteArrayOutputStream()
     val closeCount = AtomicInteger(0)
+    val outputShutdown = CompletableDeferred<Unit>()
 
     suspend fun awaitReadStarted() {
         assertTrue(withContext(Dispatchers.IO) { readStarted.await(5, TimeUnit.SECONDS) })
     }
 
-    override fun shutdownOutput() = Unit
+    override fun shutdownOutput() {
+        outputShutdown.complete(Unit)
+    }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
@@ -2750,6 +2869,7 @@ private class ScriptedMuxStream(
     inputBytes: ByteArray,
     private val firstReadRelease: CompletableDeferred<Unit>? = null,
     private val afterInputRelease: CompletableDeferred<Unit>? = null,
+    private val afterInputWaitNonCancellable: Boolean = false,
     private val afterInputResult: Int = -1,
     private val afterInputFailure: Throwable? = null,
     private val closeWriteRelease: CompletableDeferred<Unit>? = null,
@@ -2767,6 +2887,7 @@ private class ScriptedMuxStream(
     val resetCount = AtomicInteger(0)
     val resetStarted = CompletableDeferred<Unit>()
     val readStarted = CompletableDeferred<Unit>()
+    val afterInputStarted = CompletableDeferred<Unit>()
     private val firstRead = AtomicBoolean(true)
 
     override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
@@ -2774,7 +2895,14 @@ private class ScriptedMuxStream(
         if (firstRead.compareAndSet(true, false)) firstReadRelease?.await()
         if (reset.get()) return -1
         if (inputOffset >= input.size) {
-            afterInputRelease?.await()
+            afterInputStarted.complete(Unit)
+            afterInputRelease?.let { release ->
+                if (afterInputWaitNonCancellable) {
+                    withContext(NonCancellable) { release.await() }
+                } else {
+                    release.await()
+                }
+            }
             afterInputFailure?.let { throw it }
             if (reset.get()) return -1
             return afterInputResult
