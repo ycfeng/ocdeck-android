@@ -339,7 +339,6 @@ internal class TcpTlsYamuxTransport internal constructor(
     private val activeReads = AtomicInteger(0)
     private val activeWrites = AtomicInteger(0)
     private val readerToken = Any()
-    private val writerToken = Any()
 
     @OptIn(InternalCoroutinesApi::class)
     override suspend fun runReaderLoop(block: suspend () -> Unit) {
@@ -386,27 +385,6 @@ internal class TcpTlsYamuxTransport internal constructor(
         return count
     }
 
-    override suspend fun runWriterLoop(block: suspend () -> Unit) {
-        withContext(dispatcher + DirectWriterContext(writerToken)) {
-            currentCoroutineContext().ensureActive()
-            block()
-        }
-    }
-
-    override suspend fun <T> runWriterWrite(block: suspend () -> T): T {
-        val context = currentCoroutineContext()
-        val directWriter = context[DirectWriterContext]
-        val writeJob = context[Job]
-        if (directWriter?.token !== writerToken || writeJob == null) return block()
-        check(directWriter.activeWriteJob.compareAndSet(null, writeJob))
-        return try {
-            writeJob.ensureActive()
-            block()
-        } finally {
-            check(directWriter.activeWriteJob.compareAndSet(writeJob, null))
-        }
-    }
-
     private fun readDirect(destination: ByteArray, offset: Int, length: Int, ownerJob: Job): Int {
         ownerJob.ensureActive()
         if (closeController.isClosed) {
@@ -443,60 +421,9 @@ internal class TcpTlsYamuxTransport internal constructor(
     override suspend fun writeFully(source: ByteArray, offset: Int, length: Int) {
         requireRange(source.size, offset, length)
         if (length == 0) return
-        val context = currentCoroutineContext()
-        val directWriter = context[DirectWriterContext]
-        val writeJob = context[Job]
-        if (
-            directWriter?.token === writerToken &&
-            directWriter.activeWriteJob.get() === writeJob &&
-            writeJob != null
-        ) {
-            writeDirect(source, offset, length, writeJob)
-            return
-        }
         if (closeController.isClosed) throw FrpTransportException(FrpTransportFailure.CLOSED)
         runTransportIo(FrpTransportFailure.WRITE_FAILED, activeWrites) {
             output.write(source, offset, length)
-        }
-    }
-
-    @OptIn(InternalCoroutinesApi::class)
-    private fun writeDirect(source: ByteArray, offset: Int, length: Int, writeJob: Job) {
-        writeJob.ensureActive()
-        if (closeController.isClosed) {
-            writeJob.ensureActive()
-            throw FrpTransportException(FrpTransportFailure.CLOSED)
-        }
-        val cancellationHandle = writeJob.invokeOnCompletion(
-            onCancelling = true,
-            invokeImmediately = true,
-        ) { cause ->
-            if (cause != null) closeAfterCancellation(closeController, cause)
-        }
-        var counted = false
-        try {
-            writeJob.ensureActive()
-            activeWrites.incrementAndGet()
-            counted = true
-            try {
-                output.write(source, offset, length)
-            } catch (failure: CancellationException) {
-                throw failure
-            } catch (failure: Error) {
-                throw failure
-            } catch (failure: FrpTransportException) {
-                writeJob.ensureActive()
-                throw failure
-            } catch (_: Exception) {
-                writeJob.ensureActive()
-                throw FrpTransportException(
-                    if (closeController.isClosed) FrpTransportFailure.CLOSED else FrpTransportFailure.WRITE_FAILED,
-                )
-            }
-            writeJob.ensureActive()
-        } finally {
-            if (counted) activeWrites.decrementAndGet()
-            cancellationHandle.dispose()
         }
     }
 
@@ -557,14 +484,6 @@ internal class TcpTlsYamuxTransport internal constructor(
         var ownerJob: Job? = null
 
         companion object Key : CoroutineContext.Key<DirectReaderContext>
-    }
-
-    private class DirectWriterContext(
-        val token: Any,
-    ) : AbstractCoroutineContextElement(DirectWriterContext) {
-        val activeWriteJob = AtomicReference<Job?>()
-
-        companion object Key : CoroutineContext.Key<DirectWriterContext>
     }
 }
 
