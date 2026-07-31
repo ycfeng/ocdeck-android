@@ -365,7 +365,6 @@ internal class FrpVisitorRelay(
     parentScope: CoroutineScope,
     private val unixTimeSource: FrpUnixTimeSource,
     private val ioDispatcher: CoroutineDispatcher,
-    private val bufferPool: FrpRelayBufferPool,
     private val afterPumpOutcomeReceived: suspend () -> Unit = {},
     private val afterOrdinaryPumpFailureClassified: suspend () -> Unit = {},
     private val beforeHandshakeCommit: suspend () -> Unit = {},
@@ -782,7 +781,7 @@ internal class FrpVisitorRelay(
         lease: FrpClientStreamLease,
         baseOutput: OutputStream,
     ) {
-        val buffer = bufferPool.borrow()
+        val buffer = ByteArray(RELAY_BUFFER_SIZE)
         var remoteOutput: OutputStream? = null
         var selectedFailure: Throwable? = null
         try {
@@ -804,7 +803,7 @@ internal class FrpVisitorRelay(
                 selectedFailure = preferRelayFatal(selectedFailure, classified)
             }
         } finally {
-            bufferPool.release(buffer)
+            buffer.fill(0)
             remoteOutput?.let { output ->
                 try {
                     runInterruptible(blockingIoContext) { output.close() }
@@ -832,7 +831,7 @@ internal class FrpVisitorRelay(
     }
 
     private suspend fun copyLocalToRemoteDirect(lease: FrpClientStreamLease) = withContext(ioDispatcher) {
-        val buffer = bufferPool.borrow()
+        val buffer = ByteArray(RELAY_BUFFER_SIZE)
         var selectedFailure: Throwable? = null
         try {
             while (true) {
@@ -852,7 +851,7 @@ internal class FrpVisitorRelay(
                 selectedFailure = preferRelayFatal(selectedFailure, classified)
             }
         } finally {
-            bufferPool.release(buffer)
+            buffer.fill(0)
         }
         selectedFailure?.let { throw it }
         try {
@@ -867,7 +866,7 @@ internal class FrpVisitorRelay(
     }
 
     private suspend fun copyRemoteToLocal(baseInput: InputStream) {
-        val buffer = bufferPool.borrow()
+        val buffer = ByteArray(RELAY_BUFFER_SIZE)
         var remoteInput: InputStream? = null
         var selectedFailure: Throwable? = null
         try {
@@ -889,7 +888,7 @@ internal class FrpVisitorRelay(
                 selectedFailure = preferRelayFatal(selectedFailure, classified)
             }
         } finally {
-            bufferPool.release(buffer)
+            buffer.fill(0)
             remoteInput?.let { input ->
                 try {
                     runInterruptible(blockingIoContext) { input.close() }
@@ -917,7 +916,7 @@ internal class FrpVisitorRelay(
     }
 
     private suspend fun copyRemoteToLocalDirect(lease: FrpClientStreamLease) = withContext(ioDispatcher) {
-        val buffer = bufferPool.borrow()
+        val buffer = ByteArray(RELAY_BUFFER_SIZE)
         var selectedFailure: Throwable? = null
         try {
             while (true) {
@@ -937,7 +936,7 @@ internal class FrpVisitorRelay(
                 selectedFailure = preferRelayFatal(selectedFailure, classified)
             }
         } finally {
-            bufferPool.release(buffer)
+            buffer.fill(0)
         }
         selectedFailure?.let { throw it }
         try {
@@ -1013,6 +1012,7 @@ internal class FrpVisitorRelay(
 
     private companion object {
         const val VISITOR_HANDSHAKE_TIMEOUT_MILLIS = 10_000L
+        const val RELAY_BUFFER_SIZE = 16 * 1024
     }
 
     private enum class RelayRunnerState {

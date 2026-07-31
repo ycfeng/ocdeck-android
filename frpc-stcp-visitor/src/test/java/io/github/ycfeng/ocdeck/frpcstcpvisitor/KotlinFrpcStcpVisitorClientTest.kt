@@ -20,12 +20,10 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.protocol.NewVisitorConnR
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpLocalConnection
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpLocalListener
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpLocalListenerFactory
-import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpRelayBufferPool
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpSessionControl
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpRelayVisitorConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelay
-import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FRP_RELAY_BUFFER_SIZE
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.productionFrpControlConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportException
@@ -66,7 +64,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -1525,7 +1522,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            bufferPool = newRelayBufferPool(),
             afterPumpOutcomeReceived = {
                 notificationReceived.complete(Unit)
                 blockCoordinator.await()
@@ -1581,7 +1577,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            bufferPool = newRelayBufferPool(),
             afterOrdinaryPumpFailureClassified = {
                 failureClassified.complete(Unit)
                 releaseClassification.await()
@@ -1636,7 +1631,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            bufferPool = newRelayBufferPool(),
             afterPumpOutcomeReceived = {
                 notificationReceived.complete(Unit)
                 blockCoordinator.await()
@@ -1702,7 +1696,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            bufferPool = newRelayBufferPool(),
             afterPumpOutcomeReceived = {
                 notificationReceived.complete(Unit)
                 blockCoordinator.await()
@@ -1922,7 +1915,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            bufferPool = newRelayBufferPool(),
         )
         try {
             relay.start()
@@ -1956,7 +1948,6 @@ class KotlinFrpcStcpVisitorClientTest {
         control.enqueueStream(stream)
         val local = FakeLocalConnection(localPayload)
         val dispatcher = CountingDispatcher(Dispatchers.IO)
-        val bufferPool = newRelayBufferPool()
         val relay = FrpVisitorRelay(
             visitorRevision = 1L,
             listenerAttempt = 1L,
@@ -1972,7 +1963,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = dispatcher,
-            bufferPool = bufferPool,
         )
         try {
             relay.start()
@@ -1987,14 +1977,6 @@ class KotlinFrpcStcpVisitorClientTest {
             assertEquals(1, local.shutdownOutputCount.get())
             // Each pump enters once; the three chunks in each direction add no local-I/O dispatches.
             assertEquals(2, dispatcher.dispatchCount.get())
-            assertEquals(2, bufferPool.retainedCount)
-            bufferPool.withBuffer { first ->
-                assertTrue(first.all { it == 0.toByte() })
-                bufferPool.withBuffer { second ->
-                    assertNotSame(first, second)
-                    assertTrue(second.all { it == 0.toByte() })
-                }
-            }
         } finally {
             relay.close()
             control.close()
@@ -2037,7 +2019,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            bufferPool = newRelayBufferPool(),
         )
         try {
             relay.start()
@@ -2086,7 +2067,6 @@ class KotlinFrpcStcpVisitorClientTest {
             parentScope = parentScope,
             unixTimeSource = FrpUnixTimeSource { FIXED_TIMESTAMP },
             ioDispatcher = Dispatchers.IO,
-            bufferPool = newRelayBufferPool(),
         )
         try {
             relay.start()
@@ -2283,11 +2263,6 @@ class KotlinFrpcStcpVisitorClientTest {
         lifecycleHooks = hooks,
         runtimeDelayer = runtimeDelayer,
         testOnly = Unit,
-    )
-
-    private fun newRelayBufferPool(): FrpRelayBufferPool = FrpRelayBufferPool(
-        bufferSize = FRP_RELAY_BUFFER_SIZE,
-        capacity = 2,
     )
 
     private fun sessionConfig(
