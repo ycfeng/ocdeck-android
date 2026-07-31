@@ -28,7 +28,6 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.productionFrpCon
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpMuxStream
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportException
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.FrpTransportFailure
-import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.yamux.YamuxWriterBurstDiagnostics
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -70,38 +69,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class KotlinFrpcStcpVisitorClientTest {
-    @Test
-    fun runtimeDiagnosticsEnableBoundedWriterBurstCounters() = runBlocking {
-        YamuxWriterBurstDiagnostics.resetForTest()
-        val parentScope = newParentScope()
-        val client = newClient(
-            parentScope = parentScope,
-            controlFactory = FakeControlFactory(),
-            listenerFactory = FakeListenerFactory(),
-        )
-        try {
-            val diagnostics = client.captureRuntimeDiagnostics()
-            assertEquals(0, diagnostics.goroutineCount)
-            assertEquals(0, diagnostics.sessionCount)
-            assertEquals(
-                setOf(
-                    YamuxWriterBurstDiagnostics.DATA_SELECTIONS_KEY,
-                    YamuxWriterBurstDiagnostics.DATA_SELECTIONS_WITH_QUEUED_SUCCESSOR_KEY,
-                    YamuxWriterBurstDiagnostics.DATA_WIRE_BYTES_KEY,
-                    YamuxWriterBurstDiagnostics.CONTROL_SELECTIONS_KEY,
-                    YamuxWriterBurstDiagnostics.TERMINAL_SELECTIONS_KEY,
-                ),
-                diagnostics.runtimeCounts.keys,
-            )
-            assertTrue(diagnostics.runtimeCounts.values.all { it == 0L })
-            assertTrue(YamuxWriterBurstDiagnostics.isEnabled)
-        } finally {
-            client.close()
-            parentScope.cancel()
-            YamuxWriterBurstDiagnostics.resetForTest()
-        }
-    }
-
     @Test
     fun revisionsValidationFixedBindAndLoopbackOwnershipAreLinearized() = runBlocking {
         val controlFactory = FakeControlFactory()

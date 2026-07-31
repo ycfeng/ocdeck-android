@@ -168,59 +168,6 @@ class YamuxConcurrencyTest {
     }
 
     @Test
-    fun writerBurstDiagnosticsObserveQueuedDataWithoutChangingOrder() = runTest {
-        YamuxWriterBurstDiagnostics.resetForTest(enabled = true)
-        try {
-            val gate = CompletableDeferred<Unit>()
-            val transport = YamuxTestTransport(writeGate = gate)
-            val writer = YamuxFrameWriter(
-                transport = transport,
-                config = testConfig(maxStreams = 8, writerMailboxCapacity = 8),
-                scope = backgroundScope,
-                onFatalFailure = { throw it },
-            )
-            val control = async { writer.write(pingHeader(1L)) }
-            transport.awaitWriteStarts(1)
-            val writes = List(5) { index ->
-                async {
-                    writer.write(
-                        YamuxFrameHeader(YamuxFrameType.DATA, 0, index.toLong() + 1L, 1L),
-                        byteArrayOf(index.toByte()),
-                    )
-                }
-            }
-            runCurrent()
-            assertEquals(6, writer.pendingFrameCount)
-
-            gate.complete(Unit)
-            control.await()
-            writes.forEach { it.await() }
-
-            assertEquals(
-                listOf(1L, 2L, 3L, 4L, 5L),
-                parseYamuxTrace(transport.writtenBytes())
-                    .filter { it.header.type == YamuxFrameType.DATA }
-                    .map { it.header.streamId },
-            )
-            val snapshot = YamuxWriterBurstDiagnostics.snapshot()
-            assertEquals(5L, snapshot.getValue(YamuxWriterBurstDiagnostics.DATA_SELECTIONS_KEY))
-            assertEquals(
-                4L,
-                snapshot.getValue(YamuxWriterBurstDiagnostics.DATA_SELECTIONS_WITH_QUEUED_SUCCESSOR_KEY),
-            )
-            assertEquals(
-                5L * (YamuxProtocol.HEADER_SIZE + 1L),
-                snapshot.getValue(YamuxWriterBurstDiagnostics.DATA_WIRE_BYTES_KEY),
-            )
-            assertEquals(1L, snapshot.getValue(YamuxWriterBurstDiagnostics.CONTROL_SELECTIONS_KEY))
-            assertEquals(0L, snapshot.getValue(YamuxWriterBurstDiagnostics.TERMINAL_SELECTIONS_KEY))
-            writer.shutdownAndJoin(YamuxSessionClosedFailure())
-        } finally {
-            YamuxWriterBurstDiagnostics.resetForTest()
-        }
-    }
-
-    @Test
     fun productionDataWritesUseAtMostSixteenKiBFrames() = runTest {
         val transport = YamuxTestTransport()
         val session = createYamuxClientSession(transport, backgroundScope, testConfig())

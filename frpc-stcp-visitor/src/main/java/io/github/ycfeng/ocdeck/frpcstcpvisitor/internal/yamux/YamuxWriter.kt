@@ -9,7 +9,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.DisposableHandle
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
@@ -379,7 +378,6 @@ internal class YamuxFrameWriter(
             }
 
             activeRequest.set(request)
-            recordSelectionDiagnostics(request)
             val ownershipFailure = request.commitPhysicalWriteOwnership()
             val physicalFailure = ownershipFailure ?: writeRequest(request)
             activeRequest.compareAndSet(request, null)
@@ -395,19 +393,6 @@ internal class YamuxFrameWriter(
                 }
                 return
             }
-        }
-    }
-
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private fun recordSelectionDiagnostics(request: Request) {
-        if (!YamuxWriterBurstDiagnostics.isEnabled) return
-        when (request.priority) {
-            RequestPriority.NORMAL -> YamuxWriterBurstDiagnostics.recordDataSelection(
-                hasQueuedSuccessor = !normalMailbox.isEmpty,
-                wireBytes = YamuxProtocol.HEADER_SIZE.toLong() + request.header.length,
-            )
-            RequestPriority.CONTROL -> YamuxWriterBurstDiagnostics.recordControlSelection()
-            RequestPriority.TERMINAL -> YamuxWriterBurstDiagnostics.recordTerminalSelection()
         }
     }
 
