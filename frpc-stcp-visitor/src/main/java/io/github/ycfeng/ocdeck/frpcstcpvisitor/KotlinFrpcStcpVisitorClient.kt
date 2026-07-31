@@ -11,11 +11,13 @@ import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.control.SystemFrpUnixTim
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpLocalConnection
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpLocalListener
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpLocalListenerFactory
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpRelayBufferPool
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpRelayVisitorConfig
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpSessionControl
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelay
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FrpVisitorRelayCleanupPhase
+import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.FRP_RELAY_BUFFER_SIZE
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.ProductionFrpSessionControlFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.runtime.SocketFrpLocalListenerFactory
 import io.github.ycfeng.ocdeck.frpcstcpvisitor.internal.transport.AndroidDefaultNetworkTcpDialRouteProvider
@@ -127,6 +129,10 @@ class KotlinFrpcStcpVisitorClient private constructor(
     private val sessionsMutex = Mutex()
     private val sessions = LinkedHashMap<String, KotlinFrpcRuntimeSession>()
     private val relayBudget = RuntimeRelayBudget(MAXIMUM_GLOBAL_RELAYS)
+    private val relayBufferPool = FrpRelayBufferPool(
+        bufferSize = FRP_RELAY_BUFFER_SIZE,
+        capacity = MAXIMUM_GLOBAL_RELAYS * RELAY_DIRECTIONS,
+    )
 
     override suspend fun startSession(config: FrpcSessionConfig): String {
         currentCoroutineContext().ensureActive()
@@ -149,6 +155,7 @@ class KotlinFrpcStcpVisitorClient private constructor(
                 lifecycleHooks = lifecycleHooks,
                 runtimeDelayer = runtimeDelayer,
                 relayBudget = relayBudget,
+                relayBufferPool = relayBufferPool,
                 onCleanupComplete = { completed ->
                     sessionsMutex.withLock {
                         if (sessions[sessionId] === completed) sessions.remove(sessionId)
@@ -270,6 +277,7 @@ class KotlinFrpcStcpVisitorClient private constructor(
                     }
                 }
             } finally {
+                relayBufferPool.close()
                 ownerJob.cancel()
                 clientCleanupJob.cancel()
             }
@@ -319,6 +327,7 @@ class KotlinFrpcStcpVisitorClient private constructor(
         const val MAXIMUM_SESSION_ID_LENGTH = 128
         const val MAXIMUM_RELAY_IO_PARALLELISM = 64
         const val MAXIMUM_GLOBAL_RELAYS = 32
+        const val RELAY_DIRECTIONS = 2
         const val NETWORK_CHANGE_INVALIDATION_TIMEOUT_MILLIS = 5_000L
     }
 }
@@ -397,6 +406,7 @@ private class KotlinFrpcRuntimeSession(
     private val lifecycleHooks: KotlinFrpcRuntimeLifecycleHooks,
     private val runtimeDelayer: FrpRuntimeDelayer,
     private val relayBudget: RuntimeRelayBudget,
+    private val relayBufferPool: FrpRelayBufferPool,
     private val onCleanupComplete: suspend (KotlinFrpcRuntimeSession) -> Unit,
 ) : AutoCloseable {
     private val started = AtomicBoolean(false)
@@ -1088,6 +1098,7 @@ private class KotlinFrpcRuntimeSession(
             parentScope = scope,
             unixTimeSource = unixTimeSource,
             ioDispatcher = ioDispatcher,
+            bufferPool = relayBufferPool,
             beforeHandshakeCommit = lifecycleHooks.beforeVisitorHandshakeCommit,
             handshakeTimeoutMillis = lifecycleHooks.visitorHandshakeTimeoutMillis,
         )
