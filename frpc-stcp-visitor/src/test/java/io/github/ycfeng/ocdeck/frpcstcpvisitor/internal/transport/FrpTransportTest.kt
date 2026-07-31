@@ -906,6 +906,33 @@ class FrpTransportTest {
     }
 
     @Test
+    fun writerLoopUsesOneDispatcherEntryForSequentialWritesThroughSharedClose() = runBlocking {
+        val dispatcher = QueueingDispatcher()
+        val output = ByteArrayOutputStream()
+        val transport = TcpTlsYamuxTransport(
+            input = ByteArrayInputStream(ByteArray(0)),
+            output = output,
+            closeController = TransportCloseController(),
+            dispatcher = dispatcher,
+        )
+        val shared = SharedCloseYamuxPhysicalTransport(transport)
+        val result = async(Dispatchers.Default) {
+            shared.runWriterLoop {
+                shared.runWriterWrite { shared.writeFully(byteArrayOf(3)) }
+                shared.runWriterWrite { shared.writeFully(byteArrayOf(5)) }
+            }
+        }
+        assertTrue(withContext(Dispatchers.IO) { dispatcher.queued.await(5, TimeUnit.SECONDS) })
+
+        dispatcher.take().run()
+
+        withTimeout(5_000L) { result.await() }
+        assertTrue(output.toByteArray().contentEquals(byteArrayOf(3, 5)))
+        assertEquals(1, dispatcher.dispatchCount.get())
+        assertEquals(0, transport.diagnostics().activeWrites)
+    }
+
+    @Test
     fun cancellingDirectReaderClosesBlockedSocketAndPreservesCause() = runBlocking {
         val socket = TestSocket(blockReadUntilClose = true)
         val closeController = TransportCloseController().also { it.attachSocket(socket) }
@@ -933,6 +960,68 @@ class FrpTransportTest {
     }
 
     @Test
+    fun cancellingDirectWriterClosesBlockedSocketAndPreservesCause() = runBlocking {
+        val socket = TestSocket(blockWriteUntilClose = true)
+        val closeController = TransportCloseController().also { it.attachSocket(socket) }
+        val transport = TcpTlsYamuxTransport(
+            input = socket.getInputStream(),
+            output = socket.getOutputStream(),
+            closeController = closeController,
+            dispatcher = Dispatchers.IO,
+        )
+        val writer = async {
+            transport.runWriterLoop {
+                transport.runWriterWrite {
+                    transport.writeFully(byteArrayOf(1))
+                }
+            }
+        }
+        assertTrue(withContext(Dispatchers.IO) { socket.writeStarted.await(5, TimeUnit.SECONDS) })
+        assertEquals(1, transport.diagnostics().activeWrites)
+        val cancellation = CancellationException("direct writer cancellation marker")
+
+        writer.cancel(cancellation)
+        val failure = withTimeout(5_000L) { suspendFailureOf { writer.await() } }
+
+        assertOriginalCancellation(cancellation, failure)
+        assertEquals(1, socket.closeCount.get())
+        assertEquals(0, transport.diagnostics().activeWrites)
+        assertTrue(transport.diagnostics().closed)
+    }
+
+    @Test
+    fun nestedDirectWriterTimeoutClosesBlockedSocketAndReleasesDiagnostics() = runBlocking {
+        val socket = TestSocket(blockWriteUntilClose = true)
+        val closeController = TransportCloseController().also { it.attachSocket(socket) }
+        val transport = TcpTlsYamuxTransport(
+            input = socket.getInputStream(),
+            output = socket.getOutputStream(),
+            closeController = closeController,
+            dispatcher = Dispatchers.IO,
+        )
+        val writer = async {
+            suspendFailureOf {
+                transport.runWriterLoop {
+                    withTimeout(500L) {
+                        transport.runWriterWrite {
+                            transport.writeFully(byteArrayOf(1))
+                        }
+                    }
+                }
+            }
+        }
+        assertTrue(withContext(Dispatchers.IO) { socket.writeStarted.await(5, TimeUnit.SECONDS) })
+        assertEquals(1, transport.diagnostics().activeWrites)
+
+        val failure = withTimeout(5_000L) { writer.await() }
+
+        assertTrue(failure is TimeoutCancellationException)
+        assertEquals(1, socket.closeCount.get())
+        assertEquals(0, transport.diagnostics().activeWrites)
+        assertTrue(transport.diagnostics().closed)
+    }
+
+    @Test
     fun readerLoopJvmErrorPreservesIdentityAndReleasesDiagnostics() = runBlocking {
         val error = SyntheticTransportError()
         val transport = TcpTlsYamuxTransport(
@@ -954,6 +1043,32 @@ class FrpTransportTest {
 
         assertSame(error, failure)
         assertEquals(0, transport.diagnostics().activeReads)
+    }
+
+    @Test
+    fun writerLoopJvmErrorPreservesIdentityAndReleasesDiagnostics() = runBlocking {
+        val error = SyntheticTransportError()
+        val transport = TcpTlsYamuxTransport(
+            input = ByteArrayInputStream(ByteArray(0)),
+            output = object : OutputStream() {
+                override fun write(value: Int) = throw error
+
+                override fun write(source: ByteArray, offset: Int, length: Int) = throw error
+            },
+            closeController = TransportCloseController(),
+            dispatcher = Dispatchers.IO,
+        )
+
+        val failure = suspendFailureOf {
+            transport.runWriterLoop {
+                transport.runWriterWrite {
+                    transport.writeFully(byteArrayOf(1))
+                }
+            }
+        }
+
+        assertSame(error, failure)
+        assertEquals(0, transport.diagnostics().activeWrites)
     }
 
     @Test
@@ -988,6 +1103,84 @@ class FrpTransportTest {
             suspendFailureOf { session.close() }
             parentScope.cancel()
         }
+    }
+
+    @Test
+    fun writerLoopSetupFailureTerminatesSessionInsteadOfLeavingItOpen() = runBlocking {
+        val closeCount = AtomicInteger(0)
+        val transport = object : YamuxPhysicalTransport {
+            override suspend fun runWriterLoop(block: suspend () -> Unit) {
+                throw IOException("writer setup detail marker")
+            }
+
+            override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int =
+                awaitCancellation()
+
+            override suspend fun writeFully(source: ByteArray, offset: Int, length: Int) =
+                throw AssertionError("write must not run")
+
+            override fun close() {
+                closeCount.incrementAndGet()
+            }
+        }
+        val parentScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val session = createYamuxClientSession(
+            transport = transport,
+            parentScope = parentScope,
+            config = YamuxConfig(keepAliveEnabled = false),
+        )
+        try {
+            val failure = withTimeout(5_000L) { suspendFailureOf { session.awaitTermination() } }
+            assertTrue(failure is YamuxTransportFailure)
+            assertTrue(session.diagnostics().terminated)
+            assertEquals(1, closeCount.get())
+        } finally {
+            suspendFailureOf { session.close() }
+            parentScope.cancel()
+        }
+    }
+
+    @Test
+    fun writerLoopDispatcherRejectionPreservesFailureClassesAndTerminatesSession() = runBlocking {
+        suspend fun runCase(rejection: Throwable): Throwable? {
+            val socket = TestSocket()
+            val closeController = TransportCloseController().also { it.attachSocket(socket) }
+            val transport = TcpTlsYamuxTransport(
+                input = socket.getInputStream(),
+                output = socket.getOutputStream(),
+                closeController = closeController,
+                dispatcher = RejectingDispatcher(rejection),
+            )
+            val parentScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val session = createYamuxClientSession(
+                transport = transport,
+                parentScope = parentScope,
+                config = YamuxConfig(keepAliveEnabled = false),
+            )
+            return try {
+                withTimeout(5_000L) { suspendFailureOf { session.awaitTermination() } }.also {
+                    assertTrue(session.diagnostics().terminated)
+                    assertEquals(0, session.diagnostics().activeChildJobs)
+                    assertEquals(0, transport.diagnostics().activeWrites)
+                    assertTrue(transport.diagnostics().closed)
+                    assertEquals(1, socket.closeCount.get())
+                }
+            } finally {
+                suspendFailureOf { session.close() }
+                parentScope.cancel()
+            }
+        }
+
+        val marker = "writer dispatcher detail marker"
+        val ordinaryFailure = runCase(IOException(marker))
+        assertTrue(ordinaryFailure is YamuxTransportFailure)
+        assertFalse(ordinaryFailure.toString().contains(marker))
+
+        val cancellation = CancellationException("writer dispatcher cancellation marker")
+        assertOriginalCancellation(cancellation, runCase(cancellation))
+
+        val error = SyntheticTransportError()
+        assertSame(error, runCase(error))
     }
 
     @Test
@@ -1402,11 +1595,13 @@ class FrpTransportTest {
         private val connectFailure: Throwable? = null,
         private val blockConnectUntilClose: Boolean = false,
         private val blockReadUntilClose: Boolean = false,
+        private val blockWriteUntilClose: Boolean = false,
         private val closeFailure: Throwable? = null,
     ) : Socket() {
         val closeCount = AtomicInteger(0)
         val connectStarted = CountDownLatch(1)
         val readStarted = CountDownLatch(1)
+        val writeStarted = CountDownLatch(1)
         var connectedEndpoint: SocketAddress? = null
             private set
         private val closedSignal = CountDownLatch(1)
@@ -1419,9 +1614,23 @@ class FrpTransportTest {
 
             override fun read(destination: ByteArray, offset: Int, length: Int): Int = read()
         }
-        private val output = ByteArrayOutputStream()
+        private val written = ByteArrayOutputStream()
+        private val output = object : OutputStream() {
+            override fun write(value: Int) {
+                write(byteArrayOf(value.toByte()), 0, 1)
+            }
 
-        fun writtenBytes(): ByteArray = output.toByteArray()
+            override fun write(source: ByteArray, offset: Int, length: Int) {
+                writeStarted.countDown()
+                if (blockWriteUntilClose) {
+                    closedSignal.await()
+                    throw SocketException("closed")
+                }
+                written.write(source, offset, length)
+            }
+        }
+
+        fun writtenBytes(): ByteArray = written.toByteArray()
 
         override fun connect(endpoint: SocketAddress?, timeout: Int) {
             connectStarted.countDown()

@@ -30,12 +30,24 @@ internal class YamuxTestTransport(
     private val outputLock = Any()
     private val output = ByteArrayOutputStream()
     private val closed = AtomicBoolean(false)
+    private val writerLoopStarts = AtomicInteger(0)
+    private val writerWriteStarts = AtomicInteger(0)
     private val writeStarts = AtomicInteger(0)
     private val activeReads = AtomicInteger(0)
     private val activeWrites = AtomicInteger(0)
 
     private var currentInput: ByteArray? = null
     private var currentOffset = 0
+
+    override suspend fun runWriterLoop(block: suspend () -> Unit) {
+        writerLoopStarts.incrementAndGet()
+        block()
+    }
+
+    override suspend fun <T> runWriterWrite(block: suspend () -> T): T {
+        writerWriteStarts.incrementAndGet()
+        return block()
+    }
 
     override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
         require(offset >= 0 && length >= 0 && offset <= destination.size - length)
@@ -151,6 +163,12 @@ internal class YamuxTestTransport(
 
     val writeStartCount: Int
         get() = writeStarts.get()
+
+    val writerLoopStartCount: Int
+        get() = writerLoopStarts.get()
+
+    val writerWriteStartCount: Int
+        get() = writerWriteStarts.get()
 
     private sealed interface Inbound {
         data class Bytes(val value: ByteArray) : Inbound

@@ -85,6 +85,8 @@ class YamuxConcurrencyTest {
         gate.complete(Unit)
         writing.await()
 
+        assertEquals(1, transport.writerLoopStartCount)
+        assertEquals(1, transport.writerWriteStartCount)
         assertEquals(1, transport.writeStartCount)
         assertArrayEquals(byteArrayOf(1, 2, 3, 4), parseYamuxTrace(transport.writtenBytes()).single().body)
         writer.shutdownAndJoin(YamuxSessionClosedFailure())

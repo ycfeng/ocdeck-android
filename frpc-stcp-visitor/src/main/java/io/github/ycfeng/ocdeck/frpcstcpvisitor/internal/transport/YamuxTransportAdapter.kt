@@ -226,6 +226,13 @@ internal class SharedCloseYamuxPhysicalTransport(
         delegate.runReaderLoop(block)
     }
 
+    override suspend fun runWriterLoop(block: suspend () -> Unit) {
+        delegate.runWriterLoop(block)
+    }
+
+    override suspend fun <T> runWriterWrite(block: suspend () -> T): T =
+        delegate.runWriterWrite(block)
+
     override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int =
         delegate.read(destination, offset, length)
 

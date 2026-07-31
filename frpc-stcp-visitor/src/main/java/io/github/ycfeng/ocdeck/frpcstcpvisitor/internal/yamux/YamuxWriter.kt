@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.Job
@@ -43,6 +44,7 @@ internal class YamuxFrameWriter(
     private val onFatalFailure: (Throwable) -> Unit,
     private val onCallbackFailure: (Throwable) -> Unit = onFatalFailure,
     private val beforeMailboxSend: suspend (YamuxFrameHeader) -> Unit = {},
+    startImmediately: Boolean = true,
 ) {
     private val normalMailbox = Channel<Request>(config.writerMailboxCapacity)
     private val controlMailbox = Channel<Request>(config.maxStreams)
@@ -59,13 +61,21 @@ internal class YamuxFrameWriter(
     private var normalQueuedBytes = 0L
     private var priorityQueuedBytes = 0L
     private var consecutiveControlWrites = 0
-    private val writerJob: Job = scope.launch { runWriter() }
+    private val writerJob: Job = scope.launch(start = CoroutineStart.LAZY) { runWriterJob() }
+
+    init {
+        if (startImmediately) writerJob.start()
+    }
 
     val pendingFrameCount: Int
         get() = queuedCount.get() + if (activeRequest.get() == null) 0 else 1
 
     val pendingByteCount: Long
         get() = synchronized(byteBudgetLock) { normalQueuedBytes + priorityQueuedBytes }
+
+    fun start() {
+        writerJob.start()
+    }
 
     suspend fun write(
         header: YamuxFrameHeader,
@@ -346,6 +356,24 @@ internal class YamuxFrameWriter(
         throw checkNotNull(preferYamuxFailure(cause, request.failure()))
     }
 
+    private suspend fun runWriterJob() {
+        try {
+            transport.runWriterLoop(::runWriter)
+        } catch (failure: CancellationException) {
+            if (!fullyStopped.get()) failWriter(failure)
+        } catch (failure: Error) {
+            failWriter(failure)
+        } catch (failure: Exception) {
+            when (val dispatchedFailure = failure.dispatchFailureCause()) {
+                is CancellationException -> if (!fullyStopped.get()) failWriter(dispatchedFailure)
+                is Error -> failWriter(dispatchedFailure)
+                else -> if (!fullyStopped.get()) {
+                    failWriter(YamuxTransportFailure(YamuxTransportOperation.WRITE))
+                }
+            }
+        }
+    }
+
     private suspend fun runWriter() {
         while (true) {
             val request = try {
@@ -444,7 +472,9 @@ internal class YamuxFrameWriter(
 
     private suspend fun writeRequest(request: Request): Throwable? = try {
         val completed = withTimeoutOrNull(config.writeTimeoutMillis) {
-            transport.writeFully(request.frame())
+            transport.runWriterWrite {
+                transport.writeFully(request.frame())
+            }
             true
         }
         if (completed == null) YamuxTimeoutFailure(YamuxTimeoutKind.WRITE) else null
@@ -784,6 +814,11 @@ internal class YamuxFrameWriter(
         const val MAX_CONTROL_BURST = 8
     }
 }
+
+private const val COROUTINES_DISPATCH_EXCEPTION = "kotlinx.coroutines.DispatchException"
+
+private fun Exception.dispatchFailureCause(): Throwable? =
+    if (javaClass.name == COROUTINES_DISPATCH_EXCEPTION) cause else null
 
 private fun invokeCallback(callback: () -> Unit): Throwable? = try {
     callback()

@@ -119,6 +119,7 @@ internal class YamuxClientSession(
         scope = scope,
         onFatalFailure = ::terminateNow,
         onCallbackFailure = ::terminateFromCallback,
+        startImmediately = false,
     )
     private var parentCompletionHandle: DisposableHandle? = null
     private var readerJob: Job? = null
@@ -130,9 +131,12 @@ internal class YamuxClientSession(
         repeat(config.maxStreams) {
             check(streamPermits.trySend(Unit).isSuccess)
         }
-        readerJob = scope.launch { runReaderJob() }
-        receiveUpdateJob = scope.launch { runReceiveUpdateDispatcher() }
-        resetDispatcherJob = scope.launch { runResetDispatcher() }
+        synchronized(endingLock) {
+            if (!ending) writer.start()
+        }
+        readerJob = if (!ending) scope.launch { runReaderJob() } else null
+        receiveUpdateJob = if (!ending) scope.launch { runReceiveUpdateDispatcher() } else null
+        resetDispatcherJob = if (!ending) scope.launch { runResetDispatcher() } else null
         keepAliveJob = if (config.keepAliveEnabled && !ending) {
             scope.launch { runKeepAlive() }
         } else {

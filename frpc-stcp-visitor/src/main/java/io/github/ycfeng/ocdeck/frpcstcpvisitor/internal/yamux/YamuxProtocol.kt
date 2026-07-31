@@ -52,6 +52,12 @@ internal interface YamuxPhysicalTransport {
     /** Runs the single session reader in any transport-owned blocking context. */
     suspend fun runReaderLoop(block: suspend () -> Unit) = block()
 
+    /** Runs the single session writer in any transport-owned blocking context. */
+    suspend fun runWriterLoop(block: suspend () -> Unit) = block()
+
+    /** Runs one physically owned frame write in the writer's transport context. */
+    suspend fun <T> runWriterWrite(block: suspend () -> T): T = block()
+
     /** Returns 1..length or -1. Returning zero is a transport contract failure. */
     suspend fun read(destination: ByteArray, offset: Int, length: Int): Int
 
