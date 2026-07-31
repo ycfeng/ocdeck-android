@@ -48,7 +48,7 @@ internal class YamuxFrameWriter(
     private val controlMailbox = Channel<Request>(config.maxStreams)
     private val terminalMailbox = Channel<Request>(1)
     private val queuedCount = AtomicInteger(0)
-    private val activeFrameCount = AtomicInteger(0)
+    private val activeRequest = AtomicReference<Request?>()
     private val ownershipLock = Any()
     private val terminationFailure = AtomicReference<Throwable?>()
     private val regularStopped = AtomicBoolean(false)
@@ -62,7 +62,7 @@ internal class YamuxFrameWriter(
     private val writerJob: Job = scope.launch { runWriter() }
 
     val pendingFrameCount: Int
-        get() = queuedCount.get() + activeFrameCount.get()
+        get() = queuedCount.get() + if (activeRequest.get() == null) 0 else 1
 
     val pendingByteCount: Long
         get() = synchronized(byteBudgetLock) { normalQueuedBytes + priorityQueuedBytes }
@@ -360,12 +360,6 @@ internal class YamuxFrameWriter(
                 if (!fullyStopped.get()) failWriter(YamuxTransportFailure(YamuxTransportOperation.WRITE))
                 return
             }
-            val batch = collectImmediateDataBatch(request)
-            if (batch != null) {
-                if (processDataBatch(batch)) return
-                continue
-            }
-
             request.releaseQueueCount(::decrementQueuedCount)
             if (!request.isNew()) continue
 
@@ -383,10 +377,10 @@ internal class YamuxFrameWriter(
                 continue
             }
 
-            activeFrameCount.set(1)
+            activeRequest.set(request)
             val ownershipFailure = request.commitPhysicalWriteOwnership()
             val physicalFailure = ownershipFailure ?: writeRequest(request)
-            activeFrameCount.set(0)
+            activeRequest.compareAndSet(request, null)
             val resolution = request.finish(physicalFailure)
             if (resolution.failure != null) {
                 if (
@@ -401,108 +395,6 @@ internal class YamuxFrameWriter(
             }
         }
     }
-
-    private fun collectImmediateDataBatch(firstRequest: Request): List<Request>? {
-        if (
-            firstRequest.priority != RequestPriority.NORMAL ||
-            firstRequest.header.type != YamuxFrameType.DATA ||
-            terminationFailure.get() != null ||
-            firstRequest.payloadBytes + config.outboundDataFrameSize > MAX_DATA_BATCH_PAYLOAD_BYTES
-        ) {
-            return null
-        }
-        val secondRequest = normalMailbox.tryReceive().getOrNull() ?: return null
-        val requests = ArrayList<Request>(MAX_DATA_BATCH_FRAMES)
-        requests += firstRequest
-        requests += secondRequest
-        var payloadBytes = firstRequest.payloadBytes
-        if (secondRequest.isNew()) payloadBytes += secondRequest.payloadBytes
-        while (
-            requests.size < MAX_DATA_BATCH_FRAMES &&
-            terminationFailure.get() == null &&
-            payloadBytes + config.outboundDataFrameSize <= MAX_DATA_BATCH_PAYLOAD_BYTES
-        ) {
-            val next = normalMailbox.tryReceive().getOrNull() ?: break
-            requests += next
-            if (next.isNew()) payloadBytes += next.payloadBytes
-        }
-        return requests
-    }
-
-    private suspend fun processDataBatch(candidates: List<Request>): Boolean {
-        val claimed = ArrayList<Request>(candidates.size)
-        var ownershipFailure: Throwable? = null
-        var nextCandidateIndex = 0
-        while (nextCandidateIndex < candidates.size) {
-            val request = candidates[nextCandidateIndex++]
-            request.releaseQueueCount(::decrementQueuedCount)
-            if (!request.isNew()) continue
-
-            var claimFailure: Throwable? = null
-            val requestClaimed = synchronized(ownershipLock) {
-                claimFailure = terminationFailure.get()
-                claimFailure == null && request.claimPhysicalWrite()
-            }
-            if (!requestClaimed) {
-                claimFailure?.let { failure ->
-                    ownershipFailure = preferYamuxFailure(ownershipFailure, failure)
-                    ownershipFailure = preferYamuxFailure(
-                        ownershipFailure,
-                        reportCallbackFailureSafely(request.cancelBeforeStart(failure)),
-                    )
-                    break
-                }
-                continue
-            }
-
-            claimed += request
-            activeFrameCount.incrementAndGet()
-            val callbackFailure = request.commitPhysicalWriteOwnership()
-            if (callbackFailure != null) {
-                ownershipFailure = preferYamuxFailure(ownershipFailure, callbackFailure)
-                break
-            }
-        }
-
-        var unclaimedFailure = ownershipFailure ?: claimFailureForBatchRemainder()
-        while (nextCandidateIndex < candidates.size) {
-            val request = candidates[nextCandidateIndex++]
-            request.releaseQueueCount(::decrementQueuedCount)
-            val reportingFailure = reportCallbackFailureSafely(request.cancelBeforeStart(unclaimedFailure))
-            ownershipFailure = preferYamuxFailure(ownershipFailure, reportingFailure)
-            unclaimedFailure = preferYamuxFailure(unclaimedFailure, reportingFailure) ?: unclaimedFailure
-        }
-        if (claimed.isEmpty()) {
-            ownershipFailure?.let(::failWriter)
-            return ownershipFailure != null
-        }
-
-        val physicalFailure = try {
-            ownershipFailure ?: writeRequests(claimed)
-        } finally {
-            activeFrameCount.addAndGet(-claimed.size)
-        }
-        var selectedFailure: Throwable? = null
-        var callbackFailure: Throwable? = null
-        claimed.forEach { request ->
-            val resolution = request.finish(physicalFailure)
-            selectedFailure = preferYamuxFailure(selectedFailure, resolution.failure)
-            callbackFailure = preferYamuxFailure(callbackFailure, resolution.callbackFailure)
-        }
-        if (selectedFailure == null) return false
-        if (
-            !fullyStopped.get() ||
-            selectedFailure is Error ||
-            ownershipFailure != null ||
-            callbackFailure != null
-        ) {
-            failWriter(checkNotNull(selectedFailure))
-        }
-        return true
-    }
-
-    private fun claimFailureForBatchRemainder(): Throwable =
-        terminationFailure.get() ?: YamuxSessionClosedFailure()
 
     private suspend fun receiveNextRequest(): Request {
         while (true) {
@@ -564,35 +456,6 @@ internal class YamuxFrameWriter(
         if (failure is YamuxFailure) failure else YamuxTransportFailure(YamuxTransportOperation.WRITE)
     }
 
-    private suspend fun writeRequests(requests: List<Request>): Throwable? = try {
-        if (requests.size == 1) {
-            writeRequest(requests.single())
-        } else {
-            val wireBytes = requests.fold(0L) { total, request ->
-                Math.addExact(total, request.wireBytes)
-            }
-            check(wireBytes <= MAX_DATA_BATCH_WIRE_BYTES && wireBytes <= Int.MAX_VALUE.toLong())
-            val scratch = ByteArray(wireBytes.toInt())
-            var offset = 0
-            requests.forEach { request ->
-                val frame = request.frame()
-                frame.copyInto(scratch, offset)
-                offset += frame.size
-            }
-            val completed = withTimeoutOrNull(config.writeTimeoutMillis) {
-                transport.writeFully(scratch)
-                true
-            }
-            if (completed == null) YamuxTimeoutFailure(YamuxTimeoutKind.WRITE) else null
-        }
-    } catch (failure: CancellationException) {
-        if (fullyStopped.get()) shutdownFailure.get() ?: failure else failure
-    } catch (failure: Error) {
-        failure
-    } catch (failure: Exception) {
-        if (failure is YamuxFailure) failure else YamuxTransportFailure(YamuxTransportOperation.WRITE)
-    }
-
     private fun failWriter(failure: Throwable) {
         val drained = stopAcceptingAll(failure)
         onFatalFailure(checkNotNull(preferYamuxFailure(failure, drained)))
@@ -614,8 +477,8 @@ internal class YamuxFrameWriter(
             val request = mailbox.tryReceive().getOrNull() ?: break
             request.releaseQueueCount(::decrementQueuedCount)
             val resolution = request.cancelBeforeStart(cause) ?: continue
+            resolution.callbackFailure?.let(onCallbackFailure)
             selected = preferYamuxFailure(selected, resolution.failure)
-            selected = preferYamuxFailure(selected, reportCallbackFailureSafely(resolution))
         }
         return selected
     }
@@ -745,12 +608,6 @@ internal class YamuxFrameWriter(
         resolution?.callbackFailure?.let(onCallbackFailure)
     }
 
-    private fun reportCallbackFailureSafely(resolution: RequestResolution?): Throwable? {
-        val callbackFailure = resolution?.callbackFailure ?: return null
-        val reportingFailure = invokeCallback { onCallbackFailure(callbackFailure) }
-        return preferYamuxFailure(callbackFailure, reportingFailure)
-    }
-
     private fun abortFailure(abort: YamuxWriteAbort): Throwable = try {
         abort.failure()
     } catch (failure: Throwable) {
@@ -808,7 +665,7 @@ internal class YamuxFrameWriter(
     private class Request(
         val header: YamuxFrameHeader,
         frame: ByteArray,
-        val wireBytes: Long,
+        private val wireBytes: Long,
         val priority: RequestPriority,
         private val onWriteStarted: () -> Unit,
         private val onNotStarted: () -> Unit,
@@ -822,8 +679,6 @@ internal class YamuxFrameWriter(
         private val released = AtomicBoolean(false)
         private val abortHandle = AtomicReference<DisposableHandle?>()
         val completion = CompletableDeferred<Unit>()
-        val payloadBytes: Long
-            get() = wireBytes - YamuxProtocol.HEADER_SIZE
 
         fun markQueueCounted() {
             queueCounted.set(true)
@@ -855,10 +710,8 @@ internal class YamuxFrameWriter(
 
         fun claimPhysicalWrite(): Boolean = state.compareAndSet(NEW, STARTED)
 
-        fun commitPhysicalWriteOwnership(): Throwable? {
-            val callbackFailure = invokeCallback(onWriteStarted) ?: return null
-            val reportingFailure = invokeCallback { onCallbackFailure(callbackFailure) }
-            return preferYamuxFailure(callbackFailure, reportingFailure)
+        fun commitPhysicalWriteOwnership(): Throwable? = invokeCallback(onWriteStarted).also { failure ->
+            if (failure != null) onCallbackFailure(failure)
         }
 
         fun cancelBeforeStart(cause: Throwable): RequestResolution? {
@@ -929,10 +782,6 @@ internal class YamuxFrameWriter(
 
     internal companion object {
         const val MAX_CONTROL_BURST = 8
-        const val MAX_DATA_BATCH_FRAMES = 4
-        const val MAX_DATA_BATCH_PAYLOAD_BYTES = 64L * 1024L
-        const val MAX_DATA_BATCH_WIRE_BYTES =
-            MAX_DATA_BATCH_PAYLOAD_BYTES + MAX_DATA_BATCH_FRAMES * YamuxProtocol.HEADER_SIZE
     }
 }
 
