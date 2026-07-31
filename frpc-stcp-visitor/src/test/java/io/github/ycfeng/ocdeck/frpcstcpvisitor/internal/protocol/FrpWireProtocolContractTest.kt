@@ -259,6 +259,79 @@ class FrpWireProtocolContractTest {
     }
 
     @Test
+    fun v2RangeDecodeUsesOnlyTheSelectedJsonSlice() {
+        val json = """{"timestamp":7,"future":true}""".encodeToByteArray()
+        val source = byteArrayOf(0xc3.toByte()) + json + byteArrayOf(0xc3.toByte())
+        val ping = FrpMessageJson.decodeV2(
+            FrpMessageTypes.V2_PING,
+            source,
+            offset = 1,
+            length = json.size,
+        ) as Ping
+        assertEquals(7L, ping.timestamp)
+
+        listOf(
+            -1 to 1,
+            0 to -1,
+            source.size to 1,
+            Int.MAX_VALUE to 1,
+        ).forEach { (offset, length) ->
+            assertFailure(FrpProtocolFailure.INVALID_FIELD) {
+                FrpMessageJson.decodeV2(FrpMessageTypes.V2_PING, source, offset, length)
+            }
+        }
+    }
+
+    @Test
+    fun v2ReadMessageConsumesKnownNonMessagePayloadBeforeFailing() = runBlocking {
+        val frame = v2Frame(FrpWireV2.FRAME_TYPE_SERVER_HELLO, "{}".encodeToByteArray())
+        val input = ByteArrayInputStream(frame)
+        assertFailure(FrpProtocolFailure.UNEXPECTED_TYPE) { FrpWireV2.readMessage(input) }
+        assertEquals(0, input.available())
+
+        val stream = ChunkedMuxStream(frame, maximumChunkSize = 2)
+        assertFailureSuspend(FrpProtocolFailure.UNEXPECTED_TYPE) { FrpWireV2.readMessage(stream) }
+        assertEquals(0, stream.remainingBytes())
+
+        assertFailure(FrpProtocolFailure.TRUNCATED_BODY) {
+            FrpWireV2.readMessage(ByteArrayInputStream(frame.copyOf(frame.size - 1)))
+        }
+        assertFailureSuspend(FrpProtocolFailure.TRUNCATED_BODY) {
+            FrpWireV2.readMessage(ChunkedMuxStream(frame.copyOf(frame.size - 1), maximumChunkSize = 2))
+        }
+    }
+
+    @Test
+    fun v2MessageFastpathPreservesFrameOwnershipAndClearsTemporaryBuffers() {
+        val sourcePayload = byteArrayOf(1, 2, 3)
+        val frame = FrpV2Frame(FrpWireV2.FRAME_TYPE_MESSAGE, payload = sourcePayload)
+        sourcePayload.fill(9)
+        assertArrayEquals(byteArrayOf(1, 2, 3), frame.payload)
+
+        val encoded = FrpWireV2.encodeMessage(Ping(timestamp = 7))
+        val input = CapturingInputStream(encoded)
+        assertEquals(Ping(timestamp = 7), FrpWireV2.readMessage(input))
+        assertTrue(input.destinationBuffers.isNotEmpty())
+        input.destinationBuffers.forEach { buffer -> assertTrue(buffer.all { it == 0.toByte() }) }
+
+        val truncatedInput = CapturingInputStream(encoded.copyOf(encoded.size - 1))
+        assertFailure(FrpProtocolFailure.TRUNCATED_BODY) { FrpWireV2.readMessage(truncatedInput) }
+        truncatedInput.destinationBuffers.forEach { buffer -> assertTrue(buffer.all { it == 0.toByte() }) }
+
+        val output = CapturingOutputStream()
+        FrpWireV2.writeMessage(output, Ping(timestamp = 7))
+        assertEquals(2, output.writeCount)
+        assertArrayEquals(encoded, output.bytes.toByteArray())
+        output.sourceBuffers.forEach { buffer -> assertTrue(buffer.all { it == 0.toByte() }) }
+
+        val failedOutput = CapturingOutputStream(failAtWrite = 2)
+        assertFailure(FrpProtocolFailure.WRITE_FAILED) {
+            FrpWireV2.writeMessage(failedOutput, Ping(timestamp = 7))
+        }
+        failedOutput.sourceBuffers.forEach { buffer -> assertTrue(buffer.all { it == 0.toByte() }) }
+    }
+
+    @Test
     fun jsonEncodingMatchesGoEscapingAndUtf8MapOrdering() {
         val encoded = FrpMessageJson.encode(
             Login(
@@ -574,6 +647,39 @@ class FrpWireProtocolContractTest {
         override suspend fun closeWrite() = Unit
 
         override suspend fun reset() = Unit
+
+        fun remainingBytes(): Int = input.size - position
+    }
+
+    private class CapturingInputStream(source: ByteArray) : InputStream() {
+        private val delegate = ByteArrayInputStream(source)
+        val destinationBuffers = mutableListOf<ByteArray>()
+
+        override fun read(): Int = delegate.read()
+
+        override fun read(destination: ByteArray, offset: Int, length: Int): Int {
+            destinationBuffers += destination
+            return delegate.read(destination, offset, length)
+        }
+    }
+
+    private class CapturingOutputStream(
+        private val failAtWrite: Int? = null,
+    ) : OutputStream() {
+        val bytes = ByteArrayOutputStream()
+        val sourceBuffers = mutableListOf<ByteArray>()
+        var writeCount = 0
+
+        override fun write(value: Int) {
+            bytes.write(value)
+        }
+
+        override fun write(source: ByteArray, offset: Int, length: Int) {
+            sourceBuffers += source
+            writeCount++
+            if (writeCount == failAtWrite) throw IOException("write-marker")
+            bytes.write(source, offset, length)
+        }
     }
 
     private class ThrowingMuxStream(
@@ -593,6 +699,16 @@ class FrpWireProtocolContractTest {
         assertEquals(expected, failure.failure)
     }
 
+    private suspend fun assertFailureSuspend(expected: FrpProtocolFailure, operation: suspend () -> Unit) {
+        val failure = try {
+            operation()
+            throw AssertionError("Expected protocol failure: $expected")
+        } catch (failure: FrpProtocolException) {
+            failure
+        }
+        assertEquals(expected, failure.failure)
+    }
+
     private fun bytesForPath(path: String): ByteArray {
         val entry = FrpContractFixtures.manifest.entries.single { it.path == path }
         return FrpContractFixtures.bytes(entry.id)
@@ -606,6 +722,12 @@ class FrpWireProtocolContractTest {
             .putLong(payload.size.toLong())
         payload.copyInto(frame, destinationOffset = 1 + Long.SIZE_BYTES)
         return frame
+    }
+
+    private fun v2Frame(type: Int, payload: ByteArray): ByteArray {
+        val output = ByteArrayOutputStream()
+        FrpWireV2.writeFrame(output, FrpV2Frame(type, payload = payload))
+        return output.toByteArray()
     }
 
     private fun fixedBytes(start: Int, count: Int): ByteArray =

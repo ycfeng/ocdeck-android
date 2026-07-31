@@ -22,13 +22,25 @@ internal object FrpMessageJson {
     fun encode(message: FrpMessage, maximumBytes: Int): ByteArray =
         FrpJsonEncoding.encodeMessage(message, maximumBytes)
 
-    fun decodeV1(type: Int, payload: ByteArray): FrpMessage = decode(type, payload, version = 1)
+    fun decodeV1(type: Int, payload: ByteArray): FrpMessage =
+        decode(type, payload, offset = 0, length = payload.size, version = 1)
 
-    fun decodeV2(type: Int, payload: ByteArray): FrpMessage = decode(type, payload, version = 2)
+    fun decodeV2(type: Int, payload: ByteArray): FrpMessage =
+        decode(type, payload, offset = 0, length = payload.size, version = 2)
 
-    private fun decode(type: Int, payload: ByteArray, version: Int): FrpMessage {
+    fun decodeV2(type: Int, payload: ByteArray, offset: Int, length: Int): FrpMessage =
+        decode(type, payload, offset, length, version = 2)
+
+    private fun decode(type: Int, payload: ByteArray, offset: Int, length: Int, version: Int): FrpMessage {
+        if (offset < 0 || length < 0 || offset > payload.size - length) {
+            throw FrpProtocolException(FrpProtocolFailure.INVALID_FIELD)
+        }
         val text = try {
-            payload.decodeToString(throwOnInvalidSequence = true)
+            payload.decodeToString(
+                startIndex = offset,
+                endIndex = offset + length,
+                throwOnInvalidSequence = true,
+            )
         } catch (exception: CharacterCodingException) {
             throw FrpProtocolException(FrpProtocolFailure.INVALID_JSON)
         }
