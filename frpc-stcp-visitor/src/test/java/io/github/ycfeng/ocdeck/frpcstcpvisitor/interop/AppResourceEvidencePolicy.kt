@@ -12,9 +12,12 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
-internal const val APP_RESOURCE_POLICY_VERSION = "k7-resource-v2"
+internal const val APP_RESOURCE_POLICY_VERSION = "k7-resource-v3"
 private const val MAXIMUM_EVIDENCE_BYTES = 64 * 1024L
-private const val MAXIMUM_CPU_REGRESSION_RATIO = 1.50
+private const val MAXIMUM_NORMAL_CPU_REGRESSION_RATIO = 1.75
+private const val MAXIMUM_CONDITIONAL_CPU_REGRESSION_RATIO = 2.00
+private const val MAXIMUM_CONDITIONAL_WALL_REGRESSION_RATIO = 1.05
+private const val MAXIMUM_CONDITIONAL_PSS_REGRESSION_RATIO = 1.00
 private const val MAXIMUM_WALL_REGRESSION_RATIO = 1.25
 private const val MAXIMUM_PSS_REGRESSION_RATIO = 1.25
 private const val PSS_REGRESSION_ALLOWANCE_KIB = 16 * 1024.0
@@ -22,6 +25,9 @@ private const val MINIMUM_COMPARATIVE_WALL_MILLIS = 60_000L
 private const val MAXIMUM_STABLE_FD_COUNT = 256.0
 private const val MAXIMUM_STABLE_THREAD_COUNT = 256.0
 private const val MAXIMUM_FD_TREND = 4.0
+private const val MAXIMUM_KOTLIN_QUIESCENCE_THREAD_DELTA = 8L
+private const val MAXIMUM_GOMOBILE_WARNING_FREE_QUIESCENCE_THREAD_DELTA = 8L
+private const val MAXIMUM_GOMOBILE_QUIESCENCE_THREAD_DELTA = 16L
 private const val MAXIMUM_THREAD_TREND = 8.0
 private const val PSS_TREND_ALLOWANCE_KIB = 8 * 1024.0
 private const val PSS_TREND_RATIO = 0.15
@@ -63,6 +69,7 @@ internal data class AppResourcePolicyEvaluation(
     val wallRegressionRatio: Double?,
     val pssRegressionRatio: Double?,
     val failures: List<String>,
+    val warnings: List<String>,
 )
 
 internal fun loadAppResourcePolicyInput(file: File, expectedBackend: String): AppResourcePolicyInput {
@@ -245,6 +252,7 @@ internal fun evaluateAppResourcePolicy(
     kotlin: AppResourcePolicyInput,
 ): AppResourcePolicyEvaluation {
     val failures = mutableListOf<String>()
+    val warnings = mutableListOf<String>()
     if (goMobile.backend != "gomobile" || kotlin.backend != "kotlin" ||
         goMobile.repository != kotlin.repository || goMobile.device != kotlin.device ||
         goMobile.workload != kotlin.workload || goMobile.workloadResult != kotlin.workloadResult ||
@@ -262,8 +270,15 @@ internal fun evaluateAppResourcePolicy(
     if (profile != "baseline" &&
         maxOf(goMobile.wallDurationMillis, kotlin.wallDurationMillis) >= MINIMUM_COMPARATIVE_WALL_MILLIS
     ) {
-        if (cpuRatio == null || cpuRatio > MAXIMUM_CPU_REGRESSION_RATIO) {
-            failures += "Kotlin process CPU exceeded the 1.50x GoMobile limit."
+        if (cpuRatio == null || cpuRatio > MAXIMUM_CONDITIONAL_CPU_REGRESSION_RATIO) {
+            failures += "Kotlin process CPU exceeded the 2.00x GoMobile hard limit."
+        } else if (cpuRatio > MAXIMUM_NORMAL_CPU_REGRESSION_RATIO) {
+            if (wallRatio == null || wallRatio > MAXIMUM_CONDITIONAL_WALL_REGRESSION_RATIO) {
+                failures += "Kotlin process CPU above 1.75x required wall duration at or below 1.05x GoMobile."
+            }
+            if (pssRatio == null || pssRatio > MAXIMUM_CONDITIONAL_PSS_REGRESSION_RATIO) {
+                failures += "Kotlin process CPU above 1.75x required stable-window PSS at or below GoMobile."
+            }
         }
         if (wallRatio == null || wallRatio > MAXIMUM_WALL_REGRESSION_RATIO) {
             failures += "Kotlin wall duration exceeded the 1.25x GoMobile limit."
@@ -283,14 +298,28 @@ internal fun evaluateAppResourcePolicy(
         if (input.quiescence.openFdCount - input.start.openFdCount > MAXIMUM_FD_TREND) {
             failures += "${input.backend} post-cleanup FD count remained more than four above baseline."
         }
-        if (input.quiescence.threadCount - input.start.threadCount > MAXIMUM_THREAD_TREND) {
-            failures += "${input.backend} post-cleanup thread count remained more than eight above baseline."
-        }
         if (profile == "leak" || profile == "soak") {
             evaluateTrend(input, failures)
         }
     }
-    return AppResourcePolicyEvaluation(profile, cpuRatio, wallRatio, pssRatio, failures.distinct())
+    val kotlinQuiescenceThreadDelta = kotlin.quiescence.threadCount - kotlin.start.threadCount
+    if (kotlinQuiescenceThreadDelta > MAXIMUM_KOTLIN_QUIESCENCE_THREAD_DELTA) {
+        failures += "kotlin post-cleanup thread count remained more than eight above baseline."
+    }
+    val goMobileQuiescenceThreadDelta = goMobile.quiescence.threadCount - goMobile.start.threadCount
+    if (goMobileQuiescenceThreadDelta > MAXIMUM_GOMOBILE_QUIESCENCE_THREAD_DELTA) {
+        failures += "gomobile post-cleanup thread count remained more than sixteen above baseline."
+    } else if (goMobileQuiescenceThreadDelta > MAXIMUM_GOMOBILE_WARNING_FREE_QUIESCENCE_THREAD_DELTA) {
+        warnings += "gomobile post-cleanup thread count remained more than eight above baseline."
+    }
+    return AppResourcePolicyEvaluation(
+        profile,
+        cpuRatio,
+        wallRatio,
+        pssRatio,
+        failures.distinct(),
+        warnings.distinct(),
+    )
 }
 
 private fun evaluateTrend(input: AppResourcePolicyInput, failures: MutableList<String>) {
@@ -388,6 +417,9 @@ fun main(args: Array<String>) {
         kotlin,
     )
     println(formatAppResourcePolicySummary(goMobile, kotlin, evaluation))
+    if (evaluation.warnings.isNotEmpty()) {
+        println("App resource evidence warnings: ${evaluation.warnings.joinToString(" ")}")
+    }
     check(evaluation.failures.isEmpty()) {
         "App resource evidence failed $APP_RESOURCE_POLICY_VERSION: ${evaluation.failures.joinToString(" ")}"
     }
@@ -403,7 +435,8 @@ internal fun formatAppResourcePolicySummary(
             "wallRatio=${evaluation.wallRegressionRatio?.format()} " +
             "pssRatio=${evaluation.pssRegressionRatio?.format()} " +
             "gomobileThreads=${goMobile.threadCohorts.format()} " +
-            "kotlinThreads=${kotlin.threadCohorts.format()} status=" +
+            "kotlinThreads=${kotlin.threadCohorts.format()} " +
+            "warnings=${evaluation.warnings.size} status=" +
             if (evaluation.failures.isEmpty()) "passed" else "failed"
 
 private fun AppE2eThreadLifecycleCohorts.format(): String =

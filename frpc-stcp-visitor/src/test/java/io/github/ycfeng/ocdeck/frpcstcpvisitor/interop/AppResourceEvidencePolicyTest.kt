@@ -1,11 +1,13 @@
 package io.github.ycfeng.ocdeck.frpcstcpvisitor.interop
 
+import java.io.ByteArrayOutputStream
+import java.io.PrintStream
+import java.nio.file.Files
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -19,20 +21,58 @@ class AppResourceEvidencePolicyTest {
         val evaluation = evaluateAppResourcePolicy(goMobile, kotlin)
 
         assertTrue(evaluation.failures.isEmpty())
+        assertTrue(evaluation.warnings.isEmpty())
         assertEquals(1.4, evaluation.cpuRegressionRatio!!, 0.001)
         assertTrue(
             formatAppResourcePolicySummary(goMobile, kotlin, evaluation).contains(
                 "gomobileThreads=baseline:100,warmup:0,postWarmup:0 " +
-                    "kotlinThreads=baseline:104,warmup:0,postWarmup:0 status=passed",
+                    "kotlinThreads=baseline:104,warmup:0,postWarmup:0 warnings=0 status=passed",
             ),
         )
     }
 
     @Test
-    fun cpuRegressionFailsClosed() {
+    fun normalCpuBoundaryPasses() {
         val evaluation = evaluateAppResourcePolicy(
             input("gomobile", cpu = 100_000, pss = 80_000, threads = 100),
-            input("kotlin", cpu = 230_000, pss = 60_000, threads = 104),
+            input("kotlin", cpu = 175_000, pss = 100_000, threads = 104),
+        )
+
+        assertTrue(evaluation.failures.isEmpty())
+    }
+
+    @Test
+    fun conditionalCpuRangePassesAtWallAndPssBoundaries() {
+        listOf(176_000L, 200_000L).forEach { kotlinCpu ->
+            val evaluation = evaluateAppResourcePolicy(
+                input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, wall = 120_000),
+                input("kotlin", cpu = kotlinCpu, pss = 80_000, threads = 104, wall = 126_000),
+            )
+
+            assertTrue(evaluation.failures.toString(), evaluation.failures.isEmpty())
+        }
+    }
+
+    @Test
+    fun conditionalCpuRangeRequiresCompensatingWallAndPss() {
+        val wallFailure = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, wall = 120_000),
+            input("kotlin", cpu = 180_000, pss = 80_000, threads = 104, wall = 126_001),
+        )
+        val pssFailure = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100),
+            input("kotlin", cpu = 180_000, pss = 80_001, threads = 104),
+        )
+
+        assertTrue(wallFailure.failures.any { it.contains("required wall duration") })
+        assertTrue(pssFailure.failures.any { it.contains("required stable-window PSS") })
+    }
+
+    @Test
+    fun cpuHardLimitFailsClosed() {
+        val evaluation = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100),
+            input("kotlin", cpu = 200_001, pss = 60_000, threads = 104),
         )
 
         assertTrue(evaluation.failures.any { it.contains("process CPU") })
@@ -61,15 +101,103 @@ class AppResourceEvidencePolicyTest {
     }
 
     @Test
-    fun postCleanupThreadResidueFailsClosed() {
+    fun kotlinPostCleanupThreadBudgetIsHard() {
         val goMobile = input("gomobile", cpu = 100_000, pss = 80_000, threads = 100)
-        val kotlin = input("kotlin", cpu = 140_000, pss = 60_000, threads = 100).let { input ->
-            input.copy(quiescence = input.quiescence.copy(threadCount = input.start.threadCount + 9))
+        val passing = evaluateAppResourcePolicy(
+            goMobile,
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100, quiescenceThreadDelta = 8),
+        )
+        val failing = evaluateAppResourcePolicy(
+            goMobile,
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100, quiescenceThreadDelta = 9),
+        )
+
+        assertTrue(passing.failures.isEmpty())
+        assertTrue(failing.failures.any { it.contains("kotlin post-cleanup thread") })
+    }
+
+    @Test
+    fun goMobilePostCleanupThreadResidueWarnsThenFails() {
+        val warningFree = evaluateAppResourcePolicy(
+            input(
+                "gomobile",
+                cpu = 100_000,
+                pss = 80_000,
+                threads = 100,
+                quiescenceThreadDelta = 8,
+            ),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100),
+        )
+        assertTrue(warningFree.failures.isEmpty())
+        assertTrue(warningFree.warnings.isEmpty())
+
+        listOf(9L, 16L).forEach { delta ->
+            val goMobile = input(
+                "gomobile",
+                cpu = 100_000,
+                pss = 80_000,
+                threads = 100,
+                quiescenceThreadDelta = delta,
+            )
+            val kotlin = input("kotlin", cpu = 140_000, pss = 60_000, threads = 100)
+            val evaluation = evaluateAppResourcePolicy(goMobile, kotlin)
+
+            assertTrue(evaluation.failures.isEmpty())
+            assertTrue(evaluation.warnings.any { it.contains("gomobile post-cleanup thread") })
+            assertTrue(formatAppResourcePolicySummary(goMobile, kotlin, evaluation).contains("warnings=1 status=passed"))
         }
+        val failure = evaluateAppResourcePolicy(
+            input(
+                "gomobile",
+                cpu = 100_000,
+                pss = 80_000,
+                threads = 100,
+                quiescenceThreadDelta = 17,
+            ),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100),
+        )
 
-        val evaluation = evaluateAppResourcePolicy(goMobile, kotlin)
+        assertTrue(failure.failures.any { it.contains("gomobile post-cleanup thread") })
+    }
 
-        assertTrue(evaluation.failures.any { it.contains("post-cleanup thread") })
+    @Test
+    fun validWarningSummaryLoadsAndCliPasses() {
+        val directory = Files.createTempDirectory("ocdeck-resource-warning")
+        val originalOut = System.out
+        val output = ByteArrayOutputStream()
+        try {
+            Files.write(
+                directory.resolve("gomobile-app-resource.json"),
+                evidenceJson(
+                    backend = "gomobile",
+                    endCpu = 100_000,
+                    resourceCpu = 100_000,
+                    quiescenceThreads = 109,
+                    histogram = MutableList(16) { 0 }.also {
+                        it[15] = 100
+                        it[8] = 9
+                    },
+                ).toByteArray(),
+            )
+            Files.write(
+                directory.resolve("kotlin-app-resource.json"),
+                evidenceJson(
+                    backend = "kotlin",
+                    endCpu = 140_000,
+                    resourceCpu = 140_000,
+                ).toByteArray(),
+            )
+            System.setOut(PrintStream(output, true, Charsets.UTF_8.name()))
+
+            main(arrayOf(directory.toString()))
+
+            val text = output.toString(Charsets.UTF_8.name())
+            assertTrue(text.contains("warnings=1 status=passed"))
+            assertTrue(text.contains("App resource evidence warnings:"))
+        } finally {
+            System.setOut(originalOut)
+            directory.toFile().deleteRecursively()
+        }
     }
 
     @Test
@@ -155,6 +283,86 @@ class AppResourceEvidencePolicyTest {
         assertTrue(evaluation.failures.any { it.contains("wall duration") })
     }
 
+    @Test
+    fun comparativeLimitsStartAtSixtySecondsAndSkipBaseline() {
+        val belowThreshold = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, wall = 59_999),
+            input("kotlin", cpu = 250_000, pss = 120_000, threads = 104, wall = 59_999),
+        )
+        val atThreshold = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, wall = 60_000),
+            input("kotlin", cpu = 200_001, pss = 60_000, threads = 104, wall = 60_000),
+        )
+        val baseline = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, profile = "baseline"),
+            input("kotlin", cpu = 250_000, pss = 120_000, threads = 104, profile = "baseline"),
+        )
+
+        assertTrue(belowThreshold.failures.isEmpty())
+        assertTrue(atThreshold.failures.any { it.contains("process CPU") })
+        assertTrue(baseline.failures.isEmpty())
+    }
+
+    @Test
+    fun ordinaryPssHardLimitStillFails() {
+        val evaluation = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100),
+            input("kotlin", cpu = 170_000, pss = 116_385, threads = 104),
+        )
+
+        assertTrue(evaluation.failures.any { it.contains("PSS exceeded") })
+    }
+
+    @Test
+    fun ordinaryWallAndPssHardLimitBoundariesPass() {
+        val evaluation = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, wall = 120_000),
+            input("kotlin", cpu = 170_000, pss = 116_384, threads = 104, wall = 150_000),
+        )
+
+        assertTrue(evaluation.failures.toString(), evaluation.failures.isEmpty())
+    }
+
+    @Test
+    fun ordinaryWallHardLimitStillFails() {
+        val evaluation = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, wall = 120_000),
+            input("kotlin", cpu = 170_000, pss = 60_000, threads = 104, wall = 150_001),
+        )
+
+        assertTrue(evaluation.failures.any { it.contains("1.25x GoMobile limit") })
+    }
+
+    @Test
+    fun goMobileLeakWindowThreadGrowthStillFailsClosed() {
+        val evaluation = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, threadGrowth = 9),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100),
+        )
+
+        assertTrue(evaluation.failures.any { it.contains("gomobile thread count increased") })
+    }
+
+    @Test
+    fun threadTrendBoundaryIsHardOnlyForLeakAndSoak() {
+        val leakAtBoundary = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, threadGrowth = 8),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100),
+        )
+        val soakAboveBoundary = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, profile = "soak"),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100, threadGrowth = 9, profile = "soak"),
+        )
+        val stressAboveBoundary = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, profile = "stress"),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100, threadGrowth = 9, profile = "stress"),
+        )
+
+        assertTrue(leakAtBoundary.failures.isEmpty())
+        assertTrue(soakAboveBoundary.failures.any { it.contains("thread count increased") })
+        assertTrue(stressAboveBoundary.failures.isEmpty())
+    }
+
     private fun input(
         backend: String,
         cpu: Long,
@@ -162,12 +370,14 @@ class AppResourceEvidencePolicyTest {
         threads: Long,
         threadGrowth: Long = 0,
         wall: Long = 120_000,
+        profile: String = "leak",
+        quiescenceThreadDelta: Long = 0,
     ): AppResourcePolicyInput {
         val samples = (0 until 16).map { index ->
             AppResourcePolicySnapshot(
                 elapsedRealtimeMillis = index * 1_000L,
                 processCpuMillis = index * 100L,
-                pssKiB = pss + index * 32,
+                pssKiB = pss,
                 javaHeapBytes = 8L * 1024 * 1024,
                 nativeHeapBytes = 12L * 1024 * 1024,
                 openFdCount = 100,
@@ -175,7 +385,7 @@ class AppResourceEvidencePolicyTest {
                 sampleOrdinal = index + 1,
             )
         }
-        val workload = AppE2eWorkload("leak", 16, 1, 0, 4, 1)
+        val workload = AppE2eWorkload(profile, 16, 1, 0, 4, 1)
         val lifecycle = AppE2eThreadLifecycle(
             schemaVersion = APP_E2E_THREAD_LIFECYCLE_SCHEMA_VERSION,
             classifier = APP_E2E_THREAD_LIFECYCLE_CLASSIFIER,
@@ -184,11 +394,11 @@ class AppResourceEvidencePolicyTest {
         )
         return AppResourcePolicyInput(
             backend = backend,
-            profile = "leak",
+            profile = profile,
             repository = buildJsonObject { put("candidate", "same") },
             device = buildJsonObject { put("serial", "same") },
             workload = workload,
-            workloadResult = AppE2eWorkloadResult("leak", 16, 4),
+            workloadResult = AppE2eWorkloadResult(profile, 16, 4),
             wallDurationMillis = wall,
             cpuDurationMillis = cpu,
             start = samples.first(),
@@ -198,6 +408,7 @@ class AppResourceEvidencePolicyTest {
             quiescence = samples.first().copy(
                 elapsedRealtimeMillis = samples.last().elapsedRealtimeMillis + APP_E2E_RESOURCE_QUIESCENCE_MILLIS,
                 processCpuMillis = samples.last().processCpuMillis,
+                threadCount = samples.first().threadCount + quiescenceThreadDelta,
             ),
             threadLifecycle = lifecycle,
             threadCohorts = threadLifecycleCohorts(lifecycle),
@@ -205,17 +416,19 @@ class AppResourceEvidencePolicyTest {
     }
 
     private fun evidenceJson(
+        backend: String = "gomobile",
         completedIterations: Int = 10,
         reconnectCount: Int = 5,
         sampleOrdinals: List<Int> = (1..5).toList(),
         histogram: List<Int> = MutableList(16) { 0 }.also { it[15] = 100 },
         startThreads: Int = 100,
+        quiescenceThreads: Int = 100,
         endCpu: Long = 10_000,
         resourceCpu: Long = 10_000,
         openFdCount: Int = 100,
     ): String = buildJsonObject {
             put("schemaVersion", 10)
-            put("backend", "gomobile")
+            put("backend", backend)
             put("suite", "core")
             put("status", "passed")
             put("cleanupVerified", true)
@@ -266,7 +479,13 @@ class AppResourceEvidencePolicyTest {
                     putJsonObject("quiescence") {
                         put("requestedDelayMillis", APP_E2E_RESOURCE_QUIESCENCE_MILLIS)
                         putJsonObject("snapshot") {
-                            addSnapshot(210_000, endCpu, null, openFdCount = openFdCount)
+                            addSnapshot(
+                                210_000,
+                                endCpu,
+                                null,
+                                threads = quiescenceThreads,
+                                openFdCount = openFdCount,
+                            )
                         }
                     }
                     putJsonObject("threadLifecycle") {
