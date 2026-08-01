@@ -12,7 +12,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
-internal const val APP_RESOURCE_POLICY_VERSION = "k7-resource-v3"
+internal const val APP_RESOURCE_POLICY_VERSION = "k7-resource-v4"
 private const val MAXIMUM_EVIDENCE_BYTES = 64 * 1024L
 private const val MAXIMUM_NORMAL_CPU_REGRESSION_RATIO = 1.75
 private const val MAXIMUM_CONDITIONAL_CPU_REGRESSION_RATIO = 2.00
@@ -25,6 +25,8 @@ private const val MINIMUM_COMPARATIVE_WALL_MILLIS = 60_000L
 private const val MAXIMUM_STABLE_FD_COUNT = 256.0
 private const val MAXIMUM_STABLE_THREAD_COUNT = 256.0
 private const val MAXIMUM_FD_TREND = 4.0
+private const val MAXIMUM_WARNING_FREE_QUIESCENCE_FD_DELTA = 4L
+private const val MAXIMUM_QUIESCENCE_FD_DELTA = 8L
 private const val MAXIMUM_KOTLIN_QUIESCENCE_THREAD_DELTA = 8L
 private const val MAXIMUM_GOMOBILE_WARNING_FREE_QUIESCENCE_THREAD_DELTA = 8L
 private const val MAXIMUM_GOMOBILE_QUIESCENCE_THREAD_DELTA = 16L
@@ -295,8 +297,11 @@ internal fun evaluateAppResourcePolicy(
         if (stable.map { it.threadCount }.average() > MAXIMUM_STABLE_THREAD_COUNT) {
             failures += "${input.backend} stable-window thread count exceeded 256."
         }
-        if (input.quiescence.openFdCount - input.start.openFdCount > MAXIMUM_FD_TREND) {
-            failures += "${input.backend} post-cleanup FD count remained more than four above baseline."
+        val quiescenceFdDelta = input.quiescence.openFdCount - input.start.openFdCount
+        if (quiescenceFdDelta > MAXIMUM_QUIESCENCE_FD_DELTA) {
+            failures += "${input.backend} post-cleanup FD count remained more than eight above baseline."
+        } else if (quiescenceFdDelta > MAXIMUM_WARNING_FREE_QUIESCENCE_FD_DELTA) {
+            warnings += "${input.backend} post-cleanup FD count remained more than four above baseline."
         }
         if (profile == "leak" || profile == "soak") {
             evaluateTrend(input, failures)

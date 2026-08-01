@@ -161,7 +161,40 @@ class AppResourceEvidencePolicyTest {
     }
 
     @Test
-    fun validWarningSummaryLoadsAndCliPasses() {
+    fun postCleanupFdResidueWarnsThenFailsForBothBackends() {
+        listOf("gomobile", "kotlin").forEach { backend ->
+            fun evaluation(delta: Long): AppResourcePolicyEvaluation {
+                val goMobile = input(
+                    "gomobile",
+                    cpu = 100_000,
+                    pss = 80_000,
+                    threads = 100,
+                    quiescenceFdDelta = if (backend == "gomobile") delta else 0,
+                )
+                val kotlin = input(
+                    "kotlin",
+                    cpu = 140_000,
+                    pss = 60_000,
+                    threads = 100,
+                    quiescenceFdDelta = if (backend == "kotlin") delta else 0,
+                )
+                return evaluateAppResourcePolicy(goMobile, kotlin)
+            }
+
+            val warningFree = evaluation(4)
+            assertTrue(warningFree.failures.isEmpty())
+            assertTrue(warningFree.warnings.isEmpty())
+            listOf(5L, 8L).forEach { delta ->
+                val warning = evaluation(delta)
+                assertTrue(warning.failures.isEmpty())
+                assertTrue(warning.warnings.any { it.contains("$backend post-cleanup FD") })
+            }
+            assertTrue(evaluation(9).failures.any { it.contains("$backend post-cleanup FD") })
+        }
+    }
+
+    @Test
+    fun validFdWarningSummaryLoadsAndCliPasses() {
         val directory = Files.createTempDirectory("ocdeck-resource-warning")
         val originalOut = System.out
         val output = ByteArrayOutputStream()
@@ -172,11 +205,7 @@ class AppResourceEvidencePolicyTest {
                     backend = "gomobile",
                     endCpu = 100_000,
                     resourceCpu = 100_000,
-                    quiescenceThreads = 109,
-                    histogram = MutableList(16) { 0 }.also {
-                        it[15] = 100
-                        it[8] = 9
-                    },
+                    quiescenceOpenFdCount = 105,
                 ).toByteArray(),
             )
             Files.write(
@@ -363,15 +392,60 @@ class AppResourceEvidencePolicyTest {
         assertTrue(stressAboveBoundary.failures.isEmpty())
     }
 
+    @Test
+    fun fdTrendBoundaryRemainsHardOnlyForLeakAndSoak() {
+        val leakAtBoundary = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, fdGrowth = 4),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100),
+        )
+        val soakAboveBoundary = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, profile = "soak"),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100, fdGrowth = 5, profile = "soak"),
+        )
+        val stressAboveBoundary = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, profile = "stress"),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100, fdGrowth = 5, profile = "stress"),
+        )
+
+        assertTrue(leakAtBoundary.failures.isEmpty())
+        assertTrue(soakAboveBoundary.failures.any { it.contains("FD count increased") })
+        assertTrue(stressAboveBoundary.failures.isEmpty())
+    }
+
+    @Test
+    fun stableFdCountBoundaryRemainsHardForEveryProfile() {
+        val passing = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, stableFdCount = 256),
+            input("kotlin", cpu = 140_000, pss = 60_000, threads = 100, stableFdCount = 256),
+        )
+        val failing = evaluateAppResourcePolicy(
+            input("gomobile", cpu = 100_000, pss = 80_000, threads = 100, profile = "baseline"),
+            input(
+                "kotlin",
+                cpu = 140_000,
+                pss = 60_000,
+                threads = 100,
+                stableFdCount = 257,
+                profile = "baseline",
+            ),
+        )
+
+        assertTrue(passing.failures.isEmpty())
+        assertTrue(failing.failures.any { it.contains("stable-window FD count exceeded 256") })
+    }
+
     private fun input(
         backend: String,
         cpu: Long,
         pss: Long,
         threads: Long,
         threadGrowth: Long = 0,
+        fdGrowth: Long = 0,
+        stableFdCount: Long = 100,
         wall: Long = 120_000,
         profile: String = "leak",
         quiescenceThreadDelta: Long = 0,
+        quiescenceFdDelta: Long = 0,
     ): AppResourcePolicyInput {
         val samples = (0 until 16).map { index ->
             AppResourcePolicySnapshot(
@@ -380,7 +454,7 @@ class AppResourceEvidencePolicyTest {
                 pssKiB = pss,
                 javaHeapBytes = 8L * 1024 * 1024,
                 nativeHeapBytes = 12L * 1024 * 1024,
-                openFdCount = 100,
+                openFdCount = stableFdCount + if (index >= 12) fdGrowth else 0,
                 threadCount = threads + if (index >= 12) threadGrowth else 0,
                 sampleOrdinal = index + 1,
             )
@@ -408,6 +482,7 @@ class AppResourceEvidencePolicyTest {
             quiescence = samples.first().copy(
                 elapsedRealtimeMillis = samples.last().elapsedRealtimeMillis + APP_E2E_RESOURCE_QUIESCENCE_MILLIS,
                 processCpuMillis = samples.last().processCpuMillis,
+                openFdCount = samples.first().openFdCount + quiescenceFdDelta,
                 threadCount = samples.first().threadCount + quiescenceThreadDelta,
             ),
             threadLifecycle = lifecycle,
@@ -426,6 +501,7 @@ class AppResourceEvidencePolicyTest {
         endCpu: Long = 10_000,
         resourceCpu: Long = 10_000,
         openFdCount: Int = 100,
+        quiescenceOpenFdCount: Int = openFdCount,
     ): String = buildJsonObject {
             put("schemaVersion", 10)
             put("backend", backend)
@@ -484,7 +560,7 @@ class AppResourceEvidencePolicyTest {
                                 endCpu,
                                 null,
                                 threads = quiescenceThreads,
-                                openFdCount = openFdCount,
+                                openFdCount = quiescenceOpenFdCount,
                             )
                         }
                     }

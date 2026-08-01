@@ -273,6 +273,39 @@ internal data class AppE2eRuntimeInitialization(
     val postSessionQuiescenceRuntimeCounts: Map<String, Long> = emptyMap(),
 )
 
+private val APP_E2E_RUNTIME_COUNT_KEYS = setOf(
+    "/cgo/go-to-c-calls:calls",
+    "/gc/cycles/forced:gc-cycles",
+    "/gc/cycles/total:gc-cycles",
+    "/gc/heap/live:bytes",
+    "/gc/heap/objects:objects",
+    "/gc/scan/stack:bytes",
+    "/memory/classes/heap/stacks:bytes",
+    "/memory/classes/os-stacks:bytes",
+    "/sched/gomaxprocs:threads",
+    "/sched/goroutines:goroutines",
+    "/sched/goroutines/not-in-go:goroutines",
+    "/sched/goroutines/runnable:goroutines",
+    "/sched/goroutines/running:goroutines",
+    "/sched/goroutines/waiting:goroutines",
+    "/sched/goroutines-created:goroutines",
+    "/sched/threads/total:threads",
+    "app.fd.category.total",
+    "app.fd.category.socket",
+    "app.fd.category.pipe",
+    "app.fd.category.anon_inode",
+    "app.fd.category.memfd",
+    "app.fd.category.device",
+    "app.fd.category.file",
+    "app.fd.category.other",
+    "app.fd.category.unreadable",
+)
+
+internal fun isValidAppE2eRuntimeInitialization(value: AppE2eRuntimeInitialization): Boolean =
+    listOf(value.initializedRuntimeCounts, value.postSessionQuiescenceRuntimeCounts).all { counts ->
+        counts.all { (key, count) -> key in APP_E2E_RUNTIME_COUNT_KEYS && count >= 0L }
+    }
+
 private data class AppE2eBackendSpec(
     val backend: String,
     val targetPackage: String,
@@ -2239,6 +2272,7 @@ private class FrpcAndroidInteropRunner {
             result.suite != invocation.suite || result.topology != expectedTopology ||
             result.networkSwitchProven != expectedNetworkSwitchProof || result.phase != invocation.phase ||
             result.failedStage != null || result.failureCode != null ||
+            result.runtimeInitialization?.let(::isValidAppE2eRuntimeInitialization) == false ||
             result.resources?.let {
                 isValidAppE2eResourceEvidence(it, invocation.workload, result.workload)
             } != true || !expectedWorkload

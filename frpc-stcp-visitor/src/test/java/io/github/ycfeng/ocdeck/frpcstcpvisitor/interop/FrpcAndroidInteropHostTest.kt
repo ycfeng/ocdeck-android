@@ -741,6 +741,52 @@ class FrpcAndroidInteropHostTest {
     }
 
     @Test
+    fun runtimeDiagnosticsAcceptOnlyAllowlistedAggregateCountKeys() {
+        val goRuntimeCounts = listOf(
+            "/cgo/go-to-c-calls:calls",
+            "/gc/cycles/forced:gc-cycles",
+            "/gc/cycles/total:gc-cycles",
+            "/gc/heap/live:bytes",
+            "/gc/heap/objects:objects",
+            "/gc/scan/stack:bytes",
+            "/memory/classes/heap/stacks:bytes",
+            "/memory/classes/os-stacks:bytes",
+            "/sched/gomaxprocs:threads",
+            "/sched/goroutines:goroutines",
+            "/sched/goroutines/not-in-go:goroutines",
+            "/sched/goroutines/runnable:goroutines",
+            "/sched/goroutines/running:goroutines",
+            "/sched/goroutines/waiting:goroutines",
+            "/sched/goroutines-created:goroutines",
+            "/sched/threads/total:threads",
+        ).associateWith { 1L }
+        val valid = AppE2eRuntimeInitialization(
+            requestedDelayMillis = 1,
+            coldThreadCount = 1,
+            initializedThreadCount = 1,
+            initializedRuntimeCounts = goRuntimeCounts + ("app.fd.category.pipe" to 4L),
+            postSessionQuiescenceRuntimeCounts = mapOf("app.fd.category.total" to 102),
+        )
+
+        assertTrue(
+            isValidAppE2eRuntimeInitialization(
+                valid.copy(initializedRuntimeCounts = emptyMap(), postSessionQuiescenceRuntimeCounts = emptyMap()),
+            ),
+        )
+        assertTrue(isValidAppE2eRuntimeInitialization(valid))
+        assertFalse(
+            isValidAppE2eRuntimeInitialization(
+                valid.copy(initializedRuntimeCounts = mapOf("app.fd.raw.target" to 1)),
+            ),
+        )
+        assertFalse(
+            isValidAppE2eRuntimeInitialization(
+                valid.copy(postSessionQuiescenceRuntimeCounts = mapOf("app.fd.category.pipe" to -1)),
+            ),
+        )
+    }
+
+    @Test
     fun recoveryIdentityKeepsKotlinGenerationAndAllowsGoMobileReplacement() {
         assertTrue(isValidAppE2eRecoveryIdentity("kotlin", 2, 3, 2, 4))
         assertFalse(isValidAppE2eRecoveryIdentity("kotlin", 2, 3, 3, 1))
