@@ -216,8 +216,21 @@ def audit_versions(
         [
             ("goMobileReleaseRuntimeOnly", f"{application_id}:{artifact_id}"),
             ("goMobileEmergencyReleaseRuntimeOnly", f"{application_id}:{artifact_id}"),
+            ("androidTestRuntimeOnly", f"{application_id}:{artifact_id}"),
         ],
         "GoMobile bridge variant dependencies",
+    )
+    require(
+        re.search(
+            r'if\s*\(providers\.gradleProperty\("requireGoMobileBridge"\)'
+            r'\.map\(String::toBoolean\)\.getOrElse\(false\)\)\s*\{\s*'
+            r'add\(\s*"androidTestRuntimeOnly",\s*'
+            r'"[^\"]+:\$goMobileBridgeVersion",\s*\)\s*\}',
+            bridge_build,
+            re.DOTALL,
+        )
+        is not None,
+        "Android test bridge dependency must require the explicit requireGoMobileBridge gate",
     )
     for script_name in ("build-aar.sh", "build-aar.ps1"):
         script = read_text(GO_ROOT / script_name)
