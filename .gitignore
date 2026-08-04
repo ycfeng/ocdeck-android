@@ -33,3 +33,4 @@ keystore/
 # Python local state
 __pycache__/
 *.py[cod]
+.opencode/goals/

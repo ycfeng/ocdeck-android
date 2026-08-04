@@ -39,16 +39,18 @@ For ordinary app work, install Android SDK 36 and Build Tools 36.0.0. Changes to
 Run the normal verification from the repository root:
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
+.\gradlew.bat :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:verifyPureKotlinPackaging
 ```
 
 On Unix-like systems:
 
 ```bash
-./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
+./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:verifyPureKotlinPackaging
 ```
 
-This is the ordinary baseline and does not require every documentation, UI, or small App change to build Canary or Kotlin Release-Like. If a change affects STCP backend selection, the pure Kotlin backend, `AppContainer` STCP assembly, shared manager integration, or CI/Release variant validation, also run `:app:testCanaryUnitTest`, `:app:testKotlinReleaseUnitTest`, `:app:assembleCanary`, `:app:assembleKotlinRelease`, and `:app:verifyPureKotlinPackaging`.
+This baseline verifies that formal Debug uses the pure Kotlin backend and that the ordinary pure-Kotlin APK variants remain bridge-free. If a change affects STCP backend selection, the pure Kotlin backend, `AppContainer` STCP assembly, shared manager integration, or CI/Release variant validation, also review the focused Canary and Kotlin Release-Like results produced by `:app:verifyPureKotlinPackaging` and run their unit tests explicitly when diagnosing a failure.
+
+Formal `debug` and `release` are pure Kotlin. `canary` and `kotlinRelease` remain Kotlin verification variants, and `goMobileRelease` remains the symmetric GoMobile verification variant. Stable tags and publication use `kotlin-release`. The formal-identity, Release-signed `goMobileEmergencyRelease` profile is manual-only and must be built only by the protected Release workflow; it is not an ordinary contributor build or publication profile.
 
 ## Architecture Rules
 
@@ -76,9 +78,10 @@ The normal minimum gate is:
 :app:testDebugUnitTest
 :frpc-stcp-visitor:testDebugUnitTest
 :app:assembleDebug
+:app:verifyPureKotlinPackaging
 ```
 
-Canary and Kotlin Release-Like tasks are conditional for ordinary work, not a universal minimum. They are required for STCP backend/selection changes and are always part of the complete bridge/CI-equivalent gate.
+The aggregate packaging task builds and checks formal Debug, Canary, and Kotlin Release-Like, rejecting a GoMobile bridge dependency or `libgojni.so`. These retained Kotlin and GoMobile comparison gates remain required through K10, one complete stable public release cycle after Kotlin became the formal default.
 
 If a change touches `frpc-stcp-visitor-go/`, `frpc-stcp-visitor/`, the frp patch, bridge API, bridge dependency, or bridge version, also run the CI-equivalent bridge gates:
 
@@ -91,10 +94,10 @@ frpc-stcp-visitor-go: go test -race -modfile=build/frp-patched.mod ./...
 frpc-stcp-visitor-go/build/frp-v0.69.1-p6: go test -race ./client/...
 repository root: bash frpc-stcp-visitor-go/build-aar.sh
 repository root: ./gradlew :frpc-stcp-visitor:frpcInteropTest
-repository root: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
+repository root: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-On Windows, use `frpc-stcp-visitor-go/build-aar.ps1` and `gradlew.bat` as appropriate. The Go race gates require a supported CGO toolchain on native Windows, WSL2, native Linux, or the Ubuntu CI runner. WSL1 is not a valid substitute because its socket translation can allow duplicate loopback listener binds; the environment check fails before those tests with an explicit diagnostic. `frpcInteropTest` explicitly downloads only the hash-pinned official frp release asset for the host, keeps it in the Gradle cache, and runs outside release-signing environments; ordinary unit tests do not launch it. The complete Android gate validates Debug/GoMobile assembly plus bridge-free Canary/Kotlin and Kotlin Release-Like/Kotlin runtime classpaths and APKs; neither Kotlin verification APK is a publication artifact. Bridge validation must continue to cover checksum, Java API signature, provenance, expected ABIs, ELF machine type, 16 KiB `PT_LOAD` alignment, stripped status, and reproducibility. A bridge byte change requires a new bridge version; never publish different bytes under the same Maven coordinate.
+On Windows, use `frpc-stcp-visitor-go/build-aar.ps1` and `gradlew.bat` as appropriate. The Go race gates require a supported CGO toolchain on native Windows, WSL2, native Linux, or the Ubuntu CI runner. WSL1 is not a valid substitute because its socket translation can allow duplicate loopback listener binds; the environment check fails before those tests with an explicit diagnostic. `frpcInteropTest` explicitly downloads only the hash-pinned official frp release asset for the host, keeps it in the Gradle cache, and runs outside release-signing environments; ordinary unit tests do not launch it. The complete Android gate validates bridge-free formal Debug, Canary, and Kotlin Release-Like plus the symmetric GoMobile Release-Like boundary. For an emergency-path change, the protected manual `gomobile-emergency-release` workflow profile must additionally run `:app:testGoMobileEmergencyReleaseUnitTest` and the Release-signed `:app:assembleGoMobileEmergencyRelease`; do not attempt to make that signed build part of unsigned ordinary CI. Neither verification APK is a publication artifact. Historical machine evidence remains `authorizesKotlinDefault=false` because it records the pre-authorization evidence contract. Bridge validation must continue to cover checksum, Java API signature, provenance, expected ABIs, ELF machine type, 16 KiB `PT_LOAD` alignment, stripped status, and reproducibility. A bridge byte change requires a new bridge version; never publish different bytes under the same Maven coordinate.
 
 ## Sensitive Data and Fixtures
 

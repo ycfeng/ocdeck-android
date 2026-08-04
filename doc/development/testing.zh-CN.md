@@ -14,7 +14,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 | Go race tests | GoMobile wrapper、canonical STCP fixture oracle/check 与生成的 patched frp client 包。 |
 | 第三方与法律审计 | 固定版本、依赖清单、哈希、provenance、许可证和发布脚本引用。 |
 | Bridge 校验 | AAR 与必需的 sources JAR、checksum、Java API signature、bridge/frp provenance、四 ABI Go BuildInfo/module graph 证明、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态，以及完整制品/sidecar 集合在同一平台跨 checkout 的可复现性。 |
-| Android 构建 | App 的 Debug、内部 Kotlin Canary 与 GoMobile/Kotlin Release-Like 真机测试 variant 的单元测试和 APK 构建，以及 `:frpc-stcp-visitor` 单元测试。另有独立的签名 Kotlin-default dry-run 使用正式身份与证书，但永不可发布。 |
+| Android 构建 | App 的无 bridge 正式 Debug/Release、内部 Kotlin Canary 与 GoMobile/Kotlin Release-Like 真机测试 variant 的单元测试和 APK 构建，以及 `:frpc-stcp-visitor` 单元测试。正式 Kotlin Release 可发布；使用正式 identity/version/Release signer 的 GoMobile emergency 装配仅允许手动。 |
 | Android instrumentation 测试 | 覆盖 Popup 与 modal bottom sheet 独立 Compose 窗口根的本地化，以及 `:frpc-stcp-visitor` 中依次对真实 GoMobile 与 Kotlin backend 运行同一固定 frp 拓扑的 test-only harness。 |
 | 人工 UI/无障碍验证 | 紧凑屏幕、200% 字体、IME 遮挡、项目选择页与 Drawer 排序、项目文件选择、Provider auth/OAuth/Custom Provider 流程、TalkBack 语义/操作、浅色/深色主题和真实模型设置导航。 |
 | Release 制品校验 | 按 profile 校验 APK metadata、单 signer、预期证书指纹、ABI 隔离、`zipalign -P 16`、backend class/native 策略、内嵌法律文件、文件名和 checksum。GoMobile 将 `libgojni.so` 绑定到 AAR sidecar；Kotlin-default 拒绝 bridge class 和全部 `libgojni.so`，同时仍校验其他 native library。 |
@@ -188,7 +188,7 @@ OCDECK_FRP_APP_E2E_EXTERNAL_CONFIG_FILE="${TMPDIR:-/tmp}/opencode/<private-confi
 
 该任务目前是独立的手动/设备门禁，不属于普通 push 或 Pull Request CI。Clean exact 候选 `4b0df8af207b28846423902a61bf261501692101` 已在官方 Android 16KB x86_64 测试镜像和物理 `arm64-v8a` 设备上分别通过 `core`、`lifecycle` 与 `process`。另有一份已配置的 working-tree Canary 构建在显式 USB 物理 ARM 上、无 `adb reverse` 地通过全部 19 项 external `network` 检查，证明 validated Wi-Fi→蜂窝→Wi-Fi、精确断线 Store 保留、同一 visitor generation、两次严格增加的 control epoch、global/project SSE 恢复和 reconciliation。独立清理保留 target，只移除 test package 与私有进度文件，恢复两个网络开关，并确认无 reverse mapping。该未提交结果不冒充 exact-SHA 候选。性能、资源泄漏压力、soak、exact-candidate 重复与正式稳定发布周期仍是独立门禁，任何 suite 都不授权 Kotlin 默认装配。
 
-随后，clean exact 候选 `a3b10394ad575c2895aeb9f8980b2b120dccf320`（tree `afad377b2ad910e95bbbe3e70379c8e894ab85ce`）在同一台 API 31、4 KiB page 的物理 `arm64-v8a` 设备上通过完整 Kotlin Release-Like external 契约：17 个 instrumentation checks、两个 Host 断言、validated Wi-Fi→蜂窝→Wi-Fi 切换、target/test APK 字节一致，以及清理后原子发布 summary 均通过，并保持 `authorizesKotlinDefault=false`。Windows Host 所在代理会返回保留的 `198.18.0.0/15` Fake-IP，因此本次运行使用了 owner-only 临时 JDK hosts 文件，以 HTTPS DNS-over-HTTPS 获得的公网 A 记录填充，并在运行后删除。该覆盖只影响 Host 安装前解析；Android 仍通过每个 active validated Wi-Fi/蜂窝 `Network` 独立解析配置名称，要求所有结果均为公网地址，并继续以精确 leaf pin 作为身份边界。这关闭了单设备 exact external 执行缺口，但所需设备矩阵、fresh `k7-resource-v4` 证据、主设备一次 8 小时 soak、7 天观察和 Kotlin-default 显式授权仍待完成。
+随后，clean exact 候选 `a3b10394ad575c2895aeb9f8980b2b120dccf320`（tree `afad377b2ad910e95bbbe3e70379c8e894ab85ce`）在同一台 API 31、4 KiB page 的物理 `arm64-v8a` 设备上通过完整 Kotlin Release-Like external 契约：17 个 instrumentation checks、两个 Host 断言、validated Wi-Fi→蜂窝→Wi-Fi 切换、target/test APK 字节一致，以及清理后原子发布 summary 均通过，并保持 `authorizesKotlinDefault=false`。Windows Host 所在代理会返回保留的 `198.18.0.0/15` Fake-IP，因此本次运行使用了 owner-only 临时 JDK hosts 文件，以 HTTPS DNS-over-HTTPS 获得的公网 A 记录填充，并在运行后删除。该覆盖只影响 Host 安装前解析；Android 仍通过每个 active validated Wi-Fi/蜂窝 `Network` 独立解析配置名称，要求所有结果均为公网地址，并继续以精确 leaf pin 作为身份边界。这关闭了单设备 exact external 执行缺口。false 字段仍是正确机器 evidence；本次维护者指令另行构成 K7 Go 显式授权。扩展更多设备属于独立加固。
 
 ### 对称资源、压力、泄漏与 Soak Harness
 
@@ -217,7 +217,7 @@ Allowlist profile 为 `baseline`、`stress`、`leak` 与 `soak`。可选有界�
 
 App result schema 12 由 Host 在生成 summary schema 10 前校验；离线 validator 消费的 summary 不会重复写入该版本字段。
 
-前一段中的 `k7-resource-v3` 名称描述的是已被取代的历史验收策略。24 小时上限仍只用于诊断；当前 `k7-resource-v4` 不要求确认 lane 额外执行 soak，也不要求 24 小时验收 soak。
+前一段中的 `k7-resource-v3` 名称描述的是已被取代的历史验收策略。24 小时上限仍只用于诊断；当前 `k7-resource-v4` 只要求已完成的 8 小时验收 soak。
 
 已有证据对无需重新构建或连接设备即可复核：
 
@@ -226,11 +226,19 @@ App result schema 12 由 Host 在生成 summary schema 10 前校验；离线 val
   "-Pocdeck.frp.appResource.evidenceDirectory=<existing-directory>"
 ```
 
-`k7-resource-v4` 只接受 Host 校验 App result schema 12 后生成的 summary schema 10，并把 `baseline` 视为短时结构/安全 profile。每个通过的 non-functional result 都在设备内以 `(tid, /proc/self/task/<tid>/stat starttime)` 采集 `start`、首次成功且位于 snapshot/SSE/workload 前的 `visitorReady`、`postCleanup` 与 90 秒 `quiescence` 进程线程身份。输出只有固定 16 桶 presence histogram；TID、线程名、hash、stack、等待通道和命令行都不会离开设备。身份 union 上限为 16,384，桶 0 必须为 0，每个检查点的 resource `threadCount` 必须等于对应 bit 派生总数。诊断会重算 baseline survivors、warmup-created survivors 和 post-warmup-created survivors。对于任一 backend 持续至少 60 秒的 `stress`、`leak` 与 `soak` 证据对，Kotlin CPU 不超过 GoMobile 1.75 倍时正常通过；CPU 大于 1.75 倍且不超过 2.00 倍硬上限时，只有 wall 不超过 1.05 倍且纯最后四分之一窗口平均 PSS 不超过 GoMobile 1.00 倍才通过。独立硬上限仍为 wall 1.25 倍、PSS 1.25 倍再加 16 MiB。最后四分之一窗口平均 FD/线程数不得超过 256。对 `leak` 与 `soak`，两个 backend 最初到最后四分之一窗口的增长上限均为：PSS 8 MiB 或 15%，Java/native heap 各 8 MiB 或 25%，FD 4 个，线程 8 个。在 quiescence 中，两个 backend 相对 workload 前 start 的 FD 增量可到 8，其中超过 4 的部分输出 warning 而不直接令 pair 失败；Kotlin 线程增量不超过 8；GoMobile 线程增量可到 16，其中超过 8 的部分输出 warning。完整设备矩阵、重复执行、环境控制、主设备 8 小时 soak、7 天观察与回滚要求以成对的[发布检查清单](../release/checklist.zh-CN.md)为 canonical 依据。后文若出现“当前 v1”“当前 v2”或“当前 v3”措辞，仅记录旧运行当时的评估语境；当前合同是 v4。
+`k7-resource-v4` 只接受 Host 校验 App result schema 12 后生成的 summary schema 10，并把 `baseline` 视为短时结构/安全 profile。既有有界四检查点生命周期 histogram，以及 CPU/wall/PSS、FD/thread、增长与 quiescence 上限保持不变。已完成的 API 31 重复矩阵和主设备 8 小时 soak 继续作为 K7 资源 evidence。目标 ABI 物理加载与 API 36 16KB runtime 仍是发布门禁；默认切换后，K10 前仍要求一个完整稳定公开发布周期。后文若出现“当前 v1”“当前 v2”或“当前 v3”措辞，仅记录旧运行当时的评估语境；当前合同是 v4。
 
 开发候选筛选独立于单 pair 的 v4 validator。使用 `stress` 与 `leak` 的 Kotlin 进程绝对 CPU 比较候选和 retained baseline：任一 profile 不得退化超过 3%；至少一个 profile 改善不低于 5%，或者两个 candidate-to-baseline CPU ratio 的几何平均改善不低于 5%时才保留。正确性、wall、PSS、FD/线程、quiescence 与生命周期行为均不得退化。该规则只用于实验筛选，不授权 Kotlin 默认装配。
 
+紧随其后的 fresh v3/v4 证据定义当前状态。位于这些 fresh 结果之后的较长候选时间线仅作为历史证据保留；其中任何使用现在时的 v1/v2/v3 `No-Go` 措辞只描述当时的策略状态，已被 fresh v4 结果取代。
+
 Fresh exact 候选 `2f2082196b8924eb18ea8c8d3005aa00c14c6ce3`（tree `b638dda3a7cc544327b309b585079cd49ef49569`）在 v3 下完成 API 31 主设备短矩阵。`baseline` 和三组交替顺序 `stress` 均通过；`stress` CPU 为 1.807/1.826/1.846 倍，wall 为 0.975/0.968/1.007 倍，PSS 为 0.742/0.758/0.732 倍。三组 `leak` 的 CPU 为 1.680/1.376/1.654 倍，wall 为 0.963/0.786/0.975 倍，PSS 为 0.710/0.713/0.699 倍；但第一组 Kotlin quiescence FD 为 start +6，触发当时的硬门槛，后两组分别为 +2 和 +4。`d9e421c0295eb24772ef837c5a53dfb8ae9b31f2` 增加匿名类别诊断后，又连续运行三次 Kotlin-only leak，观察到 +4/+2/+4 FD，全部属于有界 `pipe` 类别，socket、普通 file、device、`anon_inode` 和 `memfd` 均为零增长。stable count、首尾 FD trend、全部 13 项功能检查、owner 清理和端口释放继续有效。这组证据推动 v4 引入 +5..+8 FD warning 区间，但不能被追认为 v4 通过；进入 8 小时 soak 前仍须生成 fresh exact v4 矩阵。
+
+Fresh exact 候选 `a226fdca6ebb9f41fd39b2b2c5e98a130d803cc4`（tree `82f36411098c4aa24c2537cb5cf064f183b8a5d7`）随后完成 API 31 主设备 `k7-resource-v4` 短矩阵。保留的 `baseline` pair 通过。三组交替顺序 `stress` 均独立通过，CPU 为 1.884/1.766/1.820 倍，wall 为 1.016/1.010/0.951 倍，PSS 为 0.761/0.732/0.739 倍。三组交替顺序 `leak` 也全部独立通过，CPU 为 1.708/1.735/1.693 倍，wall 为 0.982/0.980/0.976 倍，PSS 为 0.690/0.700/0.718 倍。每次 backend 运行都通过 13 项 `core` 检查、精确 commit/tree 与 clean-worktree 绑定，以及本地/已安装 target/test APK 字节身份。保留 warning 仅为 GoMobile 清理后线程残留；没有 FD warning 或 FD failure。
+
+首次默认 100,000 轮的 8 小时成对 soak 完成两个 backend scenario 及其功能/资源检查，但 GoMobile 完成 46,886 轮，Kotlin 完成 43,411 轮。聚合 validator 因 workload result 不一致而拒绝该 pair；这份证据继续作为失败尝试保留，绝不冒充验收通过。第二次 soak 将相同 8 小时时长的 workload 固定为 36,000 轮。GoMobile 完成后，runner 在 Kotlin 启动前退出；随后 Kotlin-only 恢复使用完全相同的候选、设备、profile、workload、时长、重连 cadence 与采样 cadence，并运行离线 pair validator。最终完整 pair 以 CPU 1.916 倍、wall 1.000 倍、PSS 0.742 倍通过；GoMobile cohort 为 `26/0/19`，Kotlin 为 `17/0/8`，仅保留预期的 GoMobile 线程 warning，全部 13 项功能检查通过；Kotlin 恢复加验证约耗时 8 小时 4 分钟。
+
+更高 `versionCode` 的 GoMobile emergency 路径也已使用正式 application identity 与 Release signer 完成演练。versionCode 8 的 bridge-free Kotlin 候选被原位升级为 versionCode 9 的 GoMobile build。升级保留 DataStore server 配置与用户名、保留 Keystore-backed credential reference；一次性 loopback 探针只记录 `auth-present=true`，未记录 header 值、密码、路径、正文或签名材料。reverse mapping 已移除、原输入法已恢复，演练安装包已卸载。该事实继续作为恢复 evidence，不声称独立负向安装门禁通过。本次维护者指令现已显式授权 K7；机器 evidence 按设计继续保持 `authorizesKotlinDefault=false`。
 
 Harness、Host 校验和两个 backend instrumentation variant 已实现并通过编译验证。在一台 API 31、4 KiB page 的物理 `arm64-v8a` 设备上，working-tree smoke 先让 GoMobile 与 Kotlin 均通过 `core`、`lifecycle`、`process`，以及同机有界 `baseline`、`stress`、`leak` 和 60 秒 `soak`，但不生成验收 summary。随后，clean exact 候选 `e429f360f38331875edb1483dc80a3e6062f5cc0`（tree `9df9e5def5c921b58813e68739444c81c5b91fc3`）在同一设备上为两个 backend 分别生成并保留了成对 schema-8 JSON summary，覆盖默认 5 轮 `baseline`；100 轮、concurrency 8、共 10 次重连的 `stress`；200 轮且每轮重连的 `leak`；以及 concurrency 4、每 25 轮重连和采样的 1 小时 `soak`。8 份 summary 均报告精确 clean 候选、本地与已安装 target/test APK 字节一致、预期的完成轮数/重连数/sample 数、清理成功和 `authorizesKotlinDefault=false`；原结构 cross-summary validator 对每一对都通过。后续应用量化策略时，`baseline` 通过，但 `stress` 因 Kotlin/GoMobile CPU 2.801 倍失败，`leak` 因 CPU 2.309 倍失败，1 小时 `soak` 因 CPU 2.524 倍失败。这些覆盖完整 scenario 的 CPU 总量仍是有效的历史 No-Go 输入；但旧 retention 算法在超过 254 个 sample 后没有保留真实尾窗口，因此旧长 soak 的 thread/PSS 趋势不能作为最终验收证据。当前 `k7-resource-v1` 会拒绝旧 schema 8，并要求新的 exact schema-9 证据对包含真实 head/tail 与 quiescence 证据。Kotlin PSS 仍较低，wall ratio 仍在策略范围内。在新 exact 候选通过所需矩阵前，CPU 结果构成明确的 K7 资源 No-Go；不得在看到结果后通过放宽阈值绕过。受保护 Release workflow [run 30320443107](https://github.com/ycfeng/ocdeck-android/actions/runs/30320443107) 另行在 `main` commit `7d52ec6b8a17b92ffa76dea913cc1b7f269cf5f5` 上通过正式签名、经 backend 校验的三 ABI Kotlin-default dry run，并跳过发布。因此签名打包已得到证明，但不能覆盖资源 No-Go，也不授权 Kotlin 默认装配。
 

@@ -136,12 +136,12 @@
 - 普通 Android 改动在仓库根目录运行：
 
 ```bash
-./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
+./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:verifyPureKotlinPackaging
 ```
 
 Windows 使用 `gradlew.bat`。
 
-- 修改 `frpc-stcp-visitor-go/`、`:frpc-stcp-visitor`、frp patch、bridge API/依赖或 bridge 版本时，还必须执行 CI 等价门禁：`go run ./cmd/preparefrp`；wrapper 与 patched frp client 的 `go test -race`；`build-aar.sh` 或 `build-aar.ps1`；`:frpc-stcp-visitor:frpcInteropTest`；`:frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`；`:frpc-stcp-visitor:testDebugUnitTest`；`:app:testDebugUnitTest`；`:app:testCanaryUnitTest`；`:app:testGoMobileReleaseUnitTest`；`:app:testKotlinReleaseUnitTest`；`:app:assembleDebug`；`:app:assembleCanary`；`:app:assembleGoMobileRelease`；`:app:assembleGoMobileReleaseAndroidTest`；`:app:assembleKotlinRelease`；`:app:assembleKotlinReleaseAndroidTest`；以及 `:app:verifyPureKotlinPackaging`。打包门禁要求 Canary 与 Kotlin Release-Like 的 runtime classpath 及全部 ABI APK 都排除 GoMobile bridge 和 `libgojni.so`。互操作任务只下载仓库固定并经哈希校验的官方 frp 二进制，且必须在任何发布签名 environment 之外运行。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节和 `BRIDGE_VERSION` 可以保持不变，但仍不能省略完整门禁；native/AAR 字节变化时必须递增 `BRIDGE_VERSION`。
+- 修改 `frpc-stcp-visitor-go/`、`:frpc-stcp-visitor`、frp patch、bridge API/依赖或 bridge 版本时，还必须执行保留的 CI 等价门禁：`go run ./cmd/preparefrp`；wrapper 与 patched frp client 的 `go test -race`；`build-aar.sh` 或 `build-aar.ps1`；`:frpc-stcp-visitor:frpcInteropTest`；`:frpc-stcp-visitor:checkGoMobileBridgeAar -PrequireGoMobileBridge=true`；`:frpc-stcp-visitor:testDebugUnitTest`；`:app:testDebugUnitTest`；`:app:testCanaryUnitTest`；`:app:testGoMobileReleaseUnitTest`；`:app:testGoMobileEmergencyReleaseUnitTest`；`:app:testKotlinReleaseUnitTest`；`:app:assembleDebug`；`:app:assembleCanary`；`:app:assembleGoMobileRelease`；`:app:assembleGoMobileReleaseAndroidTest`；`:app:assembleKotlinRelease`；`:app:assembleKotlinReleaseAndroidTest`；以及 `:app:verifyPureKotlinPackaging`。正式 Debug、Canary 与 Kotlin Release-Like 是纯 Kotlin 检查；`goMobileRelease` 是使用 Debug 签名的对称 GoMobile 验证边界。正式 application identity、Release 签名的 `:app:assembleGoMobileEmergencyRelease` 边界只能通过持有签名材料的受保护手动 `gomobile-emergency-release` Release profile 运行，并同时执行 `:app:testGoMobileEmergencyReleaseUnitTest`；它绝不是普通本地/CI 或稳定 tag 发布任务。打包门禁要求正式 Debug、Canary 与 Kotlin Release-Like 的 runtime classpath 及全部 ABI APK 都排除 GoMobile bridge 和 `libgojni.so`。互操作任务只下载仓库固定并经哈希校验的官方 frp 二进制，且必须在任何发布签名 environment 之外运行。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节和 `BRIDGE_VERSION` 可以保持不变，但仍不能省略完整门禁；native/AAR 字节变化时必须递增 `BRIDGE_VERSION`。
 - Bridge 门禁必须继续验证 checksum、Java API signature、bridge/frp provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和同输入可复现性。
 - 仅修改文档或社区治理文件时应运行 `python .github/scripts/audit-community.py`；只有改动影响代码、构建、发布或第三方校验时才增加更广泛测试。
 
@@ -153,6 +153,8 @@ Windows 使用 `gradlew.bat`。
 - 社区入口、文档路径、Release Notes、兼容性或弃用策略变化时，更新所有受影响的配对文件，并运行 `.github/scripts/audit-community.py`。
 - 新增安全规则或敏感字段时，同步更新两份 AGENTS、相关配对文档和实现测试。
 - `gradle.properties` 是应用发布版本的唯一来源。稳定 tag 使用 `vMAJOR.MINOR.PATCH`，必须与 `VERSION_NAME` 一致，并递增 `VERSION_CODE`。默认分支为 `main`。
+- 正式 `debug` 与 `release` 使用纯 Kotlin STCP backend，其 runtime classpath 与 APK 必须保持无 bridge。`canary` 与 `kotlinRelease` 继续作为 Kotlin 验证 variant，`goMobileRelease` 继续作为对称 GoMobile 验证 variant。稳定 tag 与发布固定使用 `kotlin-release` artifact profile。`goMobileEmergencyRelease` 保留正式 application identity 与 Release signer，但仅是手动 emergency profile，稳定 tag 绝不得发布该 profile。
+- GoMobile bridge、互操作、对称验证与 emergency 门禁保留至 K10；K10 定义为 Kotlin 成为正式默认后完成一个完整稳定公开发布周期。历史 K6V/K7 机器证据继续报告 `authorizesKotlinDefault=false`；该字段记录证据采集时的 contract，不得改写为追溯授权。
 - GitHub Release 只保留三个受支持 ABI 的 APK 和 `SHA256SUMS`；除非发布策略明确变化，否则不要增加 AAB 或 universal APK。GitHub 与未来 Google Play 包必须使用同一个 app-signing certificate。不得提交、缓存或上传 JKS/password/Base64 keystore 材料；发布流程必须校验固定的证书 SHA-256 指纹。
 - GoMobile bridge 字节变化时必须递增 `BRIDGE_VERSION`；不得在同一 Maven 坐标下发布不同字节。发布前除静态门禁外，还必须在设备上验证 native load、各目标 ABI、16 KiB page size 和真实 STCP 端到端连接。
 - 新增或升级依赖、音效、Gradle wrapper、frp upstream/patch 或分发资产时，必须同步更新 `THIRD_PARTY_NOTICES.txt`、`third_party/components.toml`、相关 `third_party/sources/*` 和许可证文本，并从本地实际字节重新计算哈希。

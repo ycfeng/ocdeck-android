@@ -32,29 +32,32 @@
 - [ ] 精确候选版本的 `:frpc-stcp-visitor:frpcInteropTest` 已使用固定官方 frp asset 通过，包括 wire v1/v2、四种 payload 模式、并发双向超窗口流、长期 global/project SSE、负例和重启/control epoch 恢复。
 - [ ] Bridge 可复现门禁已在同一主机平台构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，并隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 逐字节一致。
 - [ ] AAR checksum、精确 Java API、bridge/frp provenance、四 ABI BuildInfo module identity/version/sum、无本地路径与跨 ABI graph digest 证明、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
-- [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest`、`:app:verifyPureKotlinPackaging` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/GoMobile、Canary/Kotlin、GoMobile Release-Like/GoMobile 与 Kotlin Release-Like/Kotlin 选择，两个共享 Release-Like AndroidTest APK 均已编译，打包门禁确认两个 Kotlin runtime classpath 和全部 ABI APK 都排除 GoMobile bridge 与 `libgojni.so`。
+- [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testGoMobileEmergencyReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:testReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest`、`:app:assembleRelease`、`:app:assembleGoMobileEmergencyRelease`、`:app:verifyPureKotlinPackaging`、`:app:verifyReleasePackaging` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/Kotlin、Canary/Kotlin、正式 Release/Kotlin、GoMobile Release-Like/GoMobile、Kotlin Release-Like/Kotlin 与 GoMobile Emergency Release/GoMobile 选择，两个共享 Release-Like AndroidTest APK 均已编译，打包门禁已覆盖正式 Kotlin Release，并确认每个 Kotlin runtime classpath 和 ABI APK 都排除 GoMobile bridge 与 `libgojni.so`。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已对其精确完整 commit SHA 运行 `K6V Android STCP Interop`：可直接手动触发，首次引入时也可通过人工显式启用的 CI reusable bootstrap。API 26 x86_64 `compat` lane 精确通过 `success-v1-00`；API 36 x86_64 `full` lane 通过全部八个 wire/加密/压缩成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。Renderer preflight tests 已通过，fail-closed 双语报告与规范化 evidence 完整校验 suite/profile identity、参数、`gomobile,kotlin` 顺序、精确 checks、等价性和 `authorizesKotlinDefault=false`，而不是依赖 Gradle task success。否则本项明确记录为不适用。
 - [ ] 已审查 K6V 报告限制：模拟器证据不能替代分离的目标 ABI 真机与 16KB runtime lane、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。两个设备 lane 可以使用不同设备；无法获得物理 ARM 16KB 硬件记录为残余风险，而不是 K7 开发阻塞项。
-- [ ] Canary 与 Kotlin Release-Like APK 只作为无 bridge 验证输出，GoMobile Release-Like 只作为带 suffix、使用 Debug 证书的对比输出；三者均未暂存或发布。
+- [ ] Canary 与 Kotlin Release-Like APK 只作为无 bridge 验证输出，GoMobile Release-Like 只作为带 suffix、使用 Debug 证书的对比输出；三者均未暂存或发布，正式 Debug 与 Release 保持无 bridge 的 Kotlin 构建。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，exact-candidate App E2E artifact 已绑定干净的小写 commit/tree、本地与已安装 target/test APK SHA-256 身份、清理成功和 `authorizesKotlinDefault=false`。External 证据精确包含 17 个有序 instrumentation checks，以及 Host 断言 `configured_pinned_public_server` 与 `network_restored`。否则本项明确记录为不适用。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已在批准的设备矩阵上运行对称 GoMobile/Kotlin `baseline`、重连/并发 `stress`、`leak` 与长期 `soak` profile，并使用 Host 校验 App result schema 12 后生成的 summary schema 10 有界证据通过 `k7-resource-v4`；历史 schema-9 summary 仍可作为诊断输入，但不满足 v4 生命周期契约。否则本项明确记录为不适用。
-- [ ] 所选 allowlist profile 的签名制品校验已通过。公共检查覆盖 output metadata 与实际 APK manifest 的 application ID/版本、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、全部 native library、法律资产、文件名和 `SHA256SUMS`；GoMobile 还要求 bridge class 与 sidecar 绑定的 `libgojni.so`，Kotlin-default 则拒绝二者。
+- [ ] 所选 allowlist profile 的签名制品校验已通过。公共检查覆盖 output metadata 与实际 APK manifest 的 application ID/版本、单 signer、预期证书指纹、ABI 隔离、`apksigner`、`zipalign -P 16`、全部 native library、法律资产、文件名和 `SHA256SUMS`；`gomobile-emergency-release` 还要求 bridge class 与 sidecar 绑定的 `libgojni.so`，`kotlin-release` 则拒绝二者。
 
 ## K7 资源验收
 
 `k7-resource-v4` 是当前有版本号的 K7 资源策略。`:frpc-stcp-visitor:frpcValidateAppResourceEvidence` 可对已经生成的证据对执行该策略；`frpcAppResourceTest` 会先生成证据对，再应用同一策略。它只接受 Host 校验 App result schema 12 后生成的 summary schema 10；App schema 版本属于生成前提，不会作为 summary 字段重复写入。每个通过的 non-functional result 必须包含有界的 `proc-task-lifecycle-v1` 16 桶 presence histogram，覆盖 `start`、首次 `visitorReady`、`postCleanup` 和 90 秒 `quiescence`，且各检查点线程总数必须与 histogram 精确一致。证据不含线程 ID、名称、hash、stack、等待通道、命令行或其他线程身份。显式 runtime 诊断还可保留固定的 FD 匿名类别与聚合计数，但绝不保留 descriptor 编号、路径、endpoint 或原始符号链接目标；Host 会拒绝未知 runtime-count key 和负数值。历史 schema-9 summary 仍可作为诊断输入，但 v4 验收会 fail closed。策略通过仍只属于证据，绝不会把 `authorizesKotlinDefault` 设为 `true`。
 
-- [ ] API 31 主物理性能设备完整保留一组 `baseline`，以及 `stress`、`leak` 各三组成对证据，不得只挑选有利结果。重复 profile 通过 `ocdeck.frp.appResource.backendOrder` 依次使用 `gomobile,kotlin`、`kotlin,gomobile`、`gomobile,kotlin`。维护者可获得的最新 Android API 物理 ARM 设备为 `baseline`、`stress`、`leak` 各保留一组确认 pair。记录并保持充电状态、thermal 状态、电源模式、无线网络、后台负载和测试服务器位置可比。受 thermal throttling 或无关负载影响的运行必须在查看结果前记录拒绝原因，并完整重跑。
-- [ ] 批准的矩阵以既有 API 31、4 KiB 物理 `arm64-v8a` 设备作为主性能设备，并以维护者可获得的最新 Android API 物理 `arm64-v8a` 设备作为确认 lane。官方 API 36 16KB x86_64 lane 负责 page-size/runtime 安全，但 emulator CPU 数值不能替代真机性能。公开 ABI 加载和 external-network 覆盖继续由各自独立门禁约束，并披露残余风险。
-- [ ] 对任一 backend 持续至少 60 秒的 `stress`、`leak` 和 `soak` 证据对，Kotlin 进程 CPU 不超过 GoMobile 1.75 倍时正常通过。CPU 大于 1.75 倍且不超过 2.00 倍硬上限时，只有 wall duration 不超过 1.05 倍且纯最后四分之一窗口平均 PSS 不超过 GoMobile 1.00 倍才通过。独立的普通硬上限仍为 wall 1.25 倍、最后四分之一窗口平均 PSS 1.25 倍再加 16 MiB。`baseline` 仍是短时结构/安全 profile，不能单独用于比较授权。
-- [ ] 每份证据都使用 `head-tail-v1` 和计划 sample 的 1-based ordinal，证明精确保留最多最初 127 个与最新 127 个 sample；样本数量足够时两个窗口各精确包含 127 个，并带匹配的 observed/head/tail/dropped metadata。非 soak 运行完成全部配置 iterations，soak 完成正数且有界的前缀，reconnect 数精确，且成对 backend 的 workload result 完全一致。两个 backend 的最后四分之一窗口平均 FD 和线程数都不超过 256。对 `leak` 与 `soak`，最后四分之一减去最初四分之一的平均增长：PSS 不超过 8 MiB 或 15%，Java/native heap 各不超过 8 MiB 或 25%，FD 不超过 4，线程不超过 8。每个 non-functional workload 还必须在清理后静默 90 秒并记录 snapshot。相对 workload 前 start，两个 backend 的 FD 增量都不超过 8，其中超过 4 的增量必须作为 warning 保留并审查；Kotlin 线程增量不超过 8；GoMobile 线程增量不超过 16，其中超过 8 的增量必须作为 warning 保留并审查。每份保留证据对都必须通过，warning 必须审查，不能用 median 或平均值掩盖失败运行。
-- [ ] 仅 API 31 主性能设备完成一组 8 小时成对 soak。harness 仍允许最长 24 小时诊断，但 `k7-resource-v4` 不要求 24 小时验收运行，也不要求确认 lane 额外执行 soak。
-- [ ] K7 授权前，Kotlin 候选必须完成至少连续 7 天内部/Canary 观察，期间不触发资源、连接、安全或数据一致性回滚条件。Kotlin 成为正式默认后，K10 仍要求再完成一个完整稳定公开发布周期。
-- [ ] 已构建更高 `versionCode` 的 GoMobile emergency build 并覆盖安装 Kotlin 候选，确认 DataStore、Keystore 支持的 credential reference、服务器配置和更新身份保持兼容。维护者已记录回滚触发条件、负责人、响应目标与构建/签名/发布流程；回滚不依赖 Android downgrade 安装。
+- [x] 维护者已显式授权 K7，并将正式 Debug 与 Release 装配切换为纯 Kotlin backend。这是审查后的人工决定，不是任何 evidence artifact 的自动授权；全部历史证据仍保留 `authorizesKotlinDefault=false`，且不会因本清单记录而被追改。下文独立的不兼容 signer 与较低 `versionCode` 负向安装门禁仍然必须执行。
+
+- [x] 既有 API 31、4 KiB 物理 `arm64-v8a` 性能设备完整保留一组 `baseline`，以及 `stress`、`leak` 各三组成对证据，不得只挑选有利结果。重复 profile 通过 `ocdeck.frp.appResource.backendOrder` 依次使用 `gomobile,kotlin`、`kotlin,gomobile`、`gomobile,kotlin`。记录并保持充电状态、thermal 状态、电源模式、无线网络、后台负载和测试服务器位置可比。受 thermal throttling 或无关负载影响的运行必须在查看结果前记录拒绝原因，并完整重跑。
+- [x] 独立的官方 API 36 16KB x86_64 lane 覆盖 runtime 与 page-size 安全。它不能用 emulator CPU 数值替代 API 31 真机性能证据。公开 ABI 加载和 external-network 覆盖继续由各自独立门禁约束；无法获得物理 ARM 16KB 覆盖继续作为披露的残余风险，而不是额外 K7 门禁。
+- [x] 对任一 backend 持续至少 60 秒的 `stress`、`leak` 和 `soak` 证据对，Kotlin 进程 CPU 不超过 GoMobile 1.75 倍时正常通过。CPU 大于 1.75 倍且不超过 2.00 倍硬上限时，只有 wall duration 不超过 1.05 倍且纯最后四分之一窗口平均 PSS 不超过 GoMobile 1.00 倍才通过。独立的普通硬上限仍为 wall 1.25 倍、最后四分之一窗口平均 PSS 1.25 倍再加 16 MiB。`baseline` 仍是短时结构/安全 profile，不能单独用于比较授权。
+- [x] 每份证据都使用 `head-tail-v1` 和计划 sample 的 1-based ordinal，证明精确保留最多最初 127 个与最新 127 个 sample；样本数量足够时两个窗口各精确包含 127 个，并带匹配的 observed/head/tail/dropped metadata。非 soak 运行完成全部配置 iterations，soak 完成正数且有界的前缀，reconnect 数精确，且成对 backend 的 workload result 完全一致。两个 backend 的最后四分之一窗口平均 FD 和线程数都不超过 256。对 `leak` 与 `soak`，最后四分之一减去最初四分之一的平均增长：PSS 不超过 8 MiB 或 15%，Java/native heap 各不超过 8 MiB 或 25%，FD 不超过 4，线程不超过 8。每个 non-functional workload 还必须在清理后静默 90 秒并记录 snapshot。相对 workload 前 start，两个 backend 的 FD 增量都不超过 8，其中超过 4 的增量必须作为 warning 保留并审查；Kotlin 线程增量不超过 8；GoMobile 线程增量不超过 16，其中超过 8 的增量必须作为 warning 保留并审查。每份保留证据对都必须通过，warning 必须审查，不能用 median 或平均值掩盖失败运行。
+- [x] API 31 物理性能设备完成一组 8 小时成对 soak。harness 仍允许最长 24 小时诊断，但 `k7-resource-v4` 不要求 24 小时验收运行。
+- [x] 已构建更高 `versionCode` 的 GoMobile emergency build 并覆盖安装 Kotlin 候选，确认 DataStore、Keystore 支持的 credential reference、服务器配置和更新身份保持兼容。维护者已记录回滚触发条件、负责人、响应目标与构建/签名/发布流程；回滚不依赖 Android downgrade 安装。
+
+K10 继续阻塞，直到 Kotlin-default 完成一个完整稳定公开发布周期。
 
 ## 设备与连接门禁
 
-目标 ABI 真机 lane 与 16KB runtime lane 可以使用不同设备。官方 Android 16KB 测试镜像或真机可以提供 runtime page size、启动和适用互操作证据，但必须结合目标 ABI 真机加载以及静态对齐/打包门禁。物理 ARM 16KB 设备仍是理想的组合覆盖，而不是 K7 开发的前置条件。
+目标 ABI 真机 lane 与 API 36 16KB runtime lane 可以使用不同设备。官方 Android 16KB 测试镜像或真机可以提供 runtime page size、启动和适用互操作证据，但必须结合目标 ABI 真机加载以及静态对齐/打包门禁。缺少物理 ARM 16KB 覆盖继续作为披露的残余风险，而不是 K7 门禁。
 
 - [ ] 每个可获得真机的目标 ABI 都已首次安装对应签名 ABI APK，并成功启动。
 - [ ] 已从上一个真实公开版本执行兼容覆盖更新，并确认预期本地数据保留；对于首个公开版本，应明确记录为不适用，而不是推断通过。
@@ -78,15 +81,15 @@
 - [ ] 分支保护、`v*` tag 保护、可信且固定 SHA 的 action、默认只读权限和 immutable releases 已启用。
 - [ ] Tag commit 是精确候选 commit，并且是 `origin/main` 的祖先。
 
-## Dry Run
+## 手动签名运行
 
-- [ ] 需要签名 dry-run 时，从 `main` 运行 `workflow_dispatch`，并显式审查 `run_kotlin_default_release_dry_run` 的取值。
-- [ ] 普通 GoMobile dry run 使用 `false`；K7 打包评估使用 `true` 时只生成不可发布的 Kotlin-default artifact profile。
-- [ ] Dry-run 已上传所选签名制品和最终可审阅 `release-notes.md` artifact，并只保留三天。
-- [ ] 选择 Kotlin-default dry run 时，制品使用正式 application ID/版本/证书，通过 `verifyKotlinDefaultReleaseDryRunPackaging`，保持 `authorizesKotlinDefault=false`，且未被视为稳定周期或 backend 切换授权。
-- [ ] Dry-run 说明明确写明 GitHub 自动变更列表只在真实 tag 发布时追加。
+- [ ] 需要手动签名运行时，从 `main` 运行 `workflow_dispatch`，并显式审查 `artifact_profile` choice：正式纯 Kotlin profile 使用 `kotlin-release`，`gomobile-emergency-release` 只用于受保护的 emergency 演练。
+- [ ] 所选 profile 使用正式 application ID、稳定版本、Release signer 与证书；`kotlin-release` 通过 `verifyReleasePackaging`，`gomobile-emergency-release` 使用 `goMobileEmergencyRelease` 及 GoMobile 专用制品检查。
+- [ ] 手动运行已上传所选签名制品和最终可审阅 `release-notes.md` artifact，并只保留三天。
+- [ ] 历史 evidence 仍记录 `authorizesKotlinDefault=false`；当前 K7 切换只由上文记录的维护者显式决定授权，不追改或重新解释 evidence artifact。
+- [ ] 手动运行说明明确写明 GitHub 自动变更列表只在真实 tag 发布时追加。
 - [ ] 维护者已审查精确 APK 文件名、checksum、策划说明、兼容性声明、已知问题和法律/安全链接。
-- [ ] Dry-run 没有创建 GitHub Release。
+- [ ] 手动运行没有创建 GitHub Release。
 
 ## Tag 发布
 

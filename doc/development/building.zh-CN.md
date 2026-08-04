@@ -25,9 +25,9 @@ OC Deck 原创代码和文档使用仓库的 [MIT License](../../LICENSE)。第�
 
 将 `JAVA_HOME` 指向 JDK 21，并通过 `ANDROID_SDK_ROOT`、`ANDROID_HOME` 或常规且不提交的 `local.properties` 配置 Android SDK。Android Studio 的 Gradle JDK 应与命令行保持一致。
 
-## 不带 STCP 的 Debug 构建
+## 正式 Debug 构建
 
-未生成 GoMobile AAR 时 Debug 仍可编译。直连和 SSH 代码可以构建与测试，但 STCP 会在运行时明确报告 native bridge 不可用。
+正式 `debug` 构建选择 `KotlinFrpcStcpVisitorClient`。它不含 bridge，不需要生成 GoMobile AAR，并通过纯 Kotlin 实现支持 Direct、SSH 与 STCP。
 
 Windows：
 
@@ -43,7 +43,7 @@ macOS/Linux：
 
 ## 内部 Kotlin Canary 构建
 
-`canary` build type 继承 Debug 行为，但 App 在构建时会装配并实例化 `KotlinFrpcStcpVisitorClient`；`debug` 与 `release` 继续实例化 `GoMobileFrpcStcpVisitorClient`。两种 backend 之间没有用户可选设置、持久化 selector 或运行时 fallback。
+正式 `debug` 与 `release` 构建实例化 `KotlinFrpcStcpVisitorClient`。`canary` build type 继承 Debug 行为，并继续作为带 suffix 的 Kotlin 验证 variant。`kotlinRelease` 提供对应的 Release-Like Kotlin 验证身份；GoMobile 只保留在下文的对比与 emergency variant 中。两种 backend 之间没有用户可选设置、持久化 selector 或运行时 fallback。
 
 Windows：
 
@@ -87,17 +87,17 @@ macOS/Linux：
 - `OCDeck_<version>-kotlin-release_armeabi-v7a.apk`
 - `OCDeck_<version>-kotlin-release_x86_64.apk`
 
-该 variant 精确解析无 bridge 的 `:frpc-stcp-visitor` Kotlin Release-Like variant，因此其 runtime classpath 与 APK 会排除 GoMobile bridge 和 `libgojni.so`；`verifyKotlinReleasePackaging` 会强制执行这两项约束。该 variant 仅用于真机 Release 模式 class loading、STCP 恢复、性能与 soak 验证。其 Debug 测试签名有意与公开 App 身份和证书不兼容。CI 与 Release 自动化会把它构建为验证输出，但绝不暂存或发布。正式 `assembleRelease` 继续默认使用 GoMobile，并且仍是唯一可接受 Release 签名和公开发布的任务。
+该 variant 精确解析无 bridge 的 `:frpc-stcp-visitor` Kotlin Release-Like variant，因此其 runtime classpath 与 APK 会排除 GoMobile bridge 和 `libgojni.so`；`verifyKotlinReleasePackaging` 会强制执行这两项约束。该 variant 仅用于真机 Release 模式 class loading、STCP 恢复、性能与 soak 验证。其 Debug 测试签名有意与公开 App 身份和证书不兼容。CI 与 Release 自动化会把它构建为验证输出，但绝不暂存或发布。正式 `assembleRelease` 独立使用纯 Kotlin backend、公开身份、稳定版本和 Release signer。
 
 ## GoMobile Release-Like 真机构建
 
 对称的 `goMobileRelease` build type 同样继承 Release 配置，但继续使用 `GoMobileFrpcStcpVisitorClient`。它使用 application ID `io.github.ycfeng.ocdeck.gomobilerelease`、version name `<VERSION_NAME>-gomobile-release` 和 Android Debug 测试证书。它不可发布，只用于让 App E2E、性能、资源、压力、泄漏与 soak workload 在等价 Release-Like 配置下比较两个 backend。其 APK 与 Android-test 装配由[测试](testing.zh-CN.md)中记录的专用 App E2E/resource 任务驱动。
 
-## 签名 Kotlin-Default Release Dry Run
+## GoMobile Emergency Release 构建
 
-`kotlinDefaultReleaseDryRun` 是专门用于验证最终 Kotlin-default package 边界、且明确不可发布的 build type。与两个 Release-Like 真机身份不同，它没有 application-ID 或 version suffix：使用 `io.github.ycfeng.ocdeck`、稳定版本和正式 Release 证书。它选择 `KotlinFrpcStcpVisitorClient`，解析同名无 bridge library variant；`verifyKotlinDefaultReleaseDryRunPackaging` 会拒绝 GoMobile bridge runtime dependency 或任何 `libgojni.so` 条目。Release 签名配置缺失或不完整时会 fail closed，绝不回退到 Debug 证书。
+`goMobileEmergencyRelease` 是受保护的 emergency build type。它没有 application-ID 或 version suffix，使用 `io.github.ycfeng.ocdeck`、稳定版本和正式 Release 证书，并选择 `GoMobileFrpcStcpVisitorClient`。Release 签名配置缺失或不完整时会 fail closed，绝不回退到 Debug 证书。
 
-只通过手动触发的 Release workflow，并选择 `run_kotlin_default_release_dry_run=true` 来运行该 dry run。稳定 tag 始终选择 GoMobile release profile，publish job 也会显式拒绝 Kotlin dry-run profile。签名 dry-run APK 是短期内部证据，不得附加到 GitHub Release、重新分发，也不能被视为修改正式 backend 默认值的授权。
+该 variant 只允许通过受保护的 Release workflow 手动 dispatch，并选择 `artifact_profile=gomobile-emergency-release`。稳定 tag 始终选择 `kotlin-release`，且只有该 profile 可自动发布。Emergency profile 仅用于维护者控制的回滚或 emergency 演练，绝不会由 tag 触发运行选中。
 
 ## 固定 frp 互操作 Harness
 
@@ -154,13 +154,13 @@ bash .github/scripts/verify-bridge-reproducibility.sh
 Windows：
 
 ```powershell
-.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
+.\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
 macOS/Linux：
 
 ```bash
-./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
 当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.17-frp0.69.1-p6`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
@@ -174,7 +174,7 @@ VERSION_CODE=8
 VERSION_NAME=0.2.3
 ```
 
-本地 Release 构建要求先生成并校验 bridge，同时提供发布签名输入。使用 `signing.properties.example` 记录的配置键或等价环境变量。Keystore、密码、alias、证书材料和本机路径不得进入 Git、日志、shell 历史、截图或 artifact。Release 仍默认使用 GoMobile；CI 与 Release 自动化只把 Canary、Kotlin Release-Like、GoMobile Release-Like APK 和两个 Release-Like AndroidTest APK 构建为不使用 Release 签名的验证 variant。手动 workflow 还可以构建并保留三天使用正式签名、但不可发布的 Kotlin-default dry run。只有 GoMobile `assembleRelease` 输出具备发布资格。backend-aware release verifier 除了 output metadata 外，还会直接读取每个 APK manifest 中的 application ID 与版本，对两个签名 profile执行公共签名/ABI/对齐/法律/checksum 校验；GoMobile 会把 `libgojni.so` 绑定到 AAR sidecar，Kotlin profile 会拒绝 bridge class 与 `libgojni.so`，并继续校验所有其他 native library。
+本地正式 Release 构建需要发布签名输入，但不需要 GoMobile AAR。使用 `signing.properties.example` 记录的配置键或等价环境变量。Keystore、密码、alias、证书材料和本机路径不得进入 Git、日志、shell 历史、截图或 artifact。正式 Debug 与 Release 使用纯 Kotlin 且不含 bridge。Canary 与 Kotlin Release-Like 是 Kotlin 验证 variant；GoMobile Release-Like 是带 suffix、使用 Debug 签名的对称对比 variant。受保护的手动 workflow 还可以使用正式身份、稳定版本与 Release signer 构建 `goMobileEmergencyRelease`。稳定 tag 只选择 `kotlin-release` artifact profile 并运行 `verifyReleasePackaging`；`gomobile-emergency-release` 仅允许手动运行。backend-aware release verifier 除了 output metadata 外，还会直接读取每个 APK manifest 中的 application ID 与版本，对两个签名 profile 执行公共签名/ABI/对齐/法律/checksum 校验；emergency GoMobile 会把 `libgojni.so` 绑定到 AAR sidecar，正式 Kotlin profile 会拒绝 bridge class 与 `libgojni.so`，并继续校验所有其他 native library。
 
 公开工作流只生成以下签名 APK 和 `SHA256SUMS`：
 
@@ -188,8 +188,8 @@ VERSION_NAME=0.2.3
 
 - JDK 不一致可能导致 Gradle 或 Kotlin toolchain 失败。确认 `java -version` 和 Gradle 都使用 JDK 21。
 - Go 或 NDK 与 `bridge-versions.properties` 不一致时，bridge 构建会立即失败。
-- 只有未设置 `-PrequireGoMobileBridge=true` 的构建允许缺少 bridge。此时 GoMobile Debug 与 GoMobile Release-Like 的 STCP 路径不可用，而 Canary 与 Kotlin Release-Like 仍能在无 bridge 情况下构建和运行。完整等价 CI 门禁会为 GoMobile 路径校验 AAR，同时单独证明两个普通 Kotlin 验证 variant 都排除该依赖。
-- Backend 选择由 `BuildConfig`/factory 测试验证。打包隔离是另一项独立约束：Canary 与 Kotlin Release-Like 使用 `verifyPureKotlinPackaging`；正式签名 dry run 使用独立的 `verifyKotlinDefaultReleaseDryRunPackaging`，因此普通 CI 不需要签名材料。
+- 正式 Debug、Release 与 Kotlin 验证 variant 允许缺少 bridge；只有 GoMobile Release-Like 与 GoMobile Emergency Release 需要 bridge。完整等价 CI 门禁会为 GoMobile 路径校验 AAR，同时单独证明 Debug、Canary、Kotlin Release-Like 与正式 Release 都排除该依赖。
+- Backend 选择由 `BuildConfig`/factory 测试验证，其中 Debug 预期选择 Kotlin。打包隔离是另一项独立约束：普通 Kotlin variant 使用 `verifyPureKotlinPackaging`，正式签名 Kotlin Release 使用 `verifyReleasePackaging`。
 - Bridge 坐标未变化但生成 AAR 字节变化时，会因不可变性违规而被拒绝。
 - AAR 门禁通过但 APK native 字节绑定失败时，应确认 App 打包仍将已经 stripped 的 `libgojni.so` 排除在 Android Gradle Plugin 的 native strip transform 之外；不得降低字节绑定校验或替换 AAR hash。
 - Release 签名失败必须修复本机或 GitHub Environment 配置。不得为排错降低证书校验，也不得打印 secret。

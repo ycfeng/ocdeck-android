@@ -37,7 +37,8 @@ Select one expected label. These labels must be created and configured in GitHub
 - [ ] `:app:testDebugUnitTest` passed. / 已通过。
 - [ ] `:frpc-stcp-visitor:testDebugUnitTest` passed. / 已通过。
 - [ ] `:app:assembleDebug` passed. / 已通过。
-- [ ] When this change affects STCP backend selection/Kotlin implementation or variant automation, `:app:testCanaryUnitTest`, `:app:testKotlinReleaseUnitTest`, `:app:assembleCanary`, `:app:assembleKotlinRelease`, and `:app:verifyPureKotlinPackaging` passed; unrelated ordinary changes may mark this not applicable below. / 改动涉及 STCP backend 选择/Kotlin 实现或 variant 自动化时，已通过 Canary、Kotlin Release-Like 与纯 Kotlin 打包门禁；无关的普通改动可在下方说明不适用。
+- [ ] `:app:verifyPureKotlinPackaging` passed, proving formal Debug, Canary, and Kotlin Release-Like runtime/APK outputs are bridge-free. / 已通过，证明正式 Debug、Canary 与 Kotlin Release-Like 的 runtime/APK 输出无 bridge。
+- [ ] When this change affects formal Release or release automation, `:app:testReleaseUnitTest`, `:app:assembleRelease`, and `:app:verifyReleasePackaging` passed through the `kotlin-release` profile. / 改动涉及正式 Release 或发布自动化时，已通过 `kotlin-release` profile 的正式 Release 单测、构建与打包校验。
 - [ ] I listed any test not run and the reason below. / 我已在下方列出未运行的测试及原因。
 
 <!-- Commands run and results / 已运行命令与结果 -->
@@ -64,8 +65,10 @@ Select one expected label. These labels must be created and configured in GitHub
 - [ ] `go run ./cmd/preparefrp` passed in `frpc-stcp-visitor-go/`. / 已通过。
 - [ ] Wrapper and patched frp client `go test -race` gates passed. / wrapper 与 patched frp client 的竞态测试已通过。
 - [ ] `build-aar.sh` or `build-aar.ps1` passed. / 已通过。
-- [ ] The full Gradle gate passed: `:frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true`. / 已通过完整 Gradle 门禁。
+- [ ] The retained full Gradle gate passed: `:frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true`. / 已通过保留的完整 Gradle 门禁。
+- [ ] If the emergency path changed, the protected manual `gomobile-emergency-release` profile ran `:app:testGoMobileEmergencyReleaseUnitTest` and Release-signed `:app:assembleGoMobileEmergencyRelease`; it was not published. / emergency 路径变化时，受保护手动 profile 已运行 emergency 单测与 Release 签名构建，且未发布。
 - [ ] A bridge byte change uses a new bridge version and Maven coordinate. / bridge 字节变化已使用新的 bridge 版本与 Maven 坐标。
+- [ ] GoMobile retained gates remain intact through K10; historical evidence still reports `authorizesKotlinDefault=false`. / GoMobile 保留门禁持续到 K10；历史证据仍报告 `authorizesKotlinDefault=false`。
 
 ## Documentation and Third Parties / 文档与第三方
 
