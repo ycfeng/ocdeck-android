@@ -12,9 +12,10 @@ class FrpcStcpVisitorClientFactoryTest {
     @Test
     fun buildConfigSelectsBackendForCurrentVariant() {
         val expectedKotlinBackend = BuildConfig.BUILD_TYPE in setOf(
+            "debug",
             "canary",
             "kotlinRelease",
-            "kotlinDefaultReleaseDryRun",
+            "release",
         )
         assertEquals(expectedKotlinBackend, BuildConfig.USE_KOTLIN_FRPC_STCP_VISITOR)
 

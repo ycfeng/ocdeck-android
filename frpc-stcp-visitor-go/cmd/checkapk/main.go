@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	profileGoMobileRelease            = "gomobile-release"
-	profileKotlinDefaultReleaseDryRun = "kotlin-default-release-dry-run"
-	requiredPageAlignment             = 16 * 1024
-	maxNativeLibraryBytes             = 256 * 1024 * 1024
+	profileGoMobileEmergencyRelease = "gomobile-emergency-release"
+	profileKotlinRelease            = "kotlin-release"
+	requiredPageAlignment           = 16 * 1024
+	maxNativeLibraryBytes           = 256 * 1024 * 1024
 )
 
 var (
@@ -63,16 +63,16 @@ func main() {
 
 func run(args []string) (report, error) {
 	if len(args) == 0 {
-		return report{}, fmt.Errorf("usage: checkapk <%s|%s> <apk> <abi> [expected-libgojni-sha256]", profileGoMobileRelease, profileKotlinDefaultReleaseDryRun)
+		return report{}, fmt.Errorf("usage: checkapk <%s|%s> <apk> <abi> [expected-libgojni-sha256]", profileGoMobileEmergencyRelease, profileKotlinRelease)
 	}
 	profile := args[0]
 	switch profile {
-	case profileGoMobileRelease:
+	case profileGoMobileEmergencyRelease:
 		if len(args) != 4 {
 			return report{}, fmt.Errorf("usage: checkapk %s <apk> <abi> <expected-libgojni-sha256>", profile)
 		}
 		return inspectAPK(profile, args[1], args[2], args[3])
-	case profileKotlinDefaultReleaseDryRun:
+	case profileKotlinRelease:
 		if len(args) != 3 {
 			return report{}, fmt.Errorf("usage: checkapk %s <apk> <abi>", profile)
 		}
@@ -87,14 +87,14 @@ func inspectAPK(profile string, path string, abi string, expectedGoJNIHash strin
 	if !ok {
 		return report{}, fmt.Errorf("unsupported ABI %q", abi)
 	}
-	if profile == profileGoMobileRelease {
+	if profile == profileGoMobileEmergencyRelease {
 		if !isLowercaseSHA256(expectedGoJNIHash) {
 			return report{}, fmt.Errorf("expected libgojni SHA-256 must be 64 lowercase hexadecimal characters")
 		}
-	} else if profile != profileKotlinDefaultReleaseDryRun {
+	} else if profile != profileKotlinRelease {
 		return report{}, fmt.Errorf("unsupported artifact profile %q", profile)
 	} else if expectedGoJNIHash != "" {
-		return report{}, fmt.Errorf("Kotlin dry-run must not accept an expected libgojni SHA-256")
+		return report{}, fmt.Errorf("Kotlin release must not accept an expected libgojni SHA-256")
 	}
 
 	archive, err := zip.OpenReader(path)
@@ -124,8 +124,8 @@ func inspectAPK(profile string, path string, abi string, expectedGoJNIHash strin
 			return report{}, fmt.Errorf("APK contains unexpected native ABI entry %s", entry.Name)
 		}
 		if matches[2] == "libgojni.so" {
-			if profile == profileKotlinDefaultReleaseDryRun {
-				return report{}, fmt.Errorf("Kotlin dry-run APK contains forbidden %s", entry.Name)
+			if profile == profileKotlinRelease {
+				return report{}, fmt.Errorf("Kotlin release APK contains forbidden %s", entry.Name)
 			}
 			goJNICount++
 		}
@@ -136,7 +136,7 @@ func inspectAPK(profile string, path string, abi string, expectedGoJNIHash strin
 		libraries = append(libraries, library)
 	}
 
-	if profile == profileGoMobileRelease {
+	if profile == profileGoMobileEmergencyRelease {
 		if goJNICount != 1 {
 			return report{}, fmt.Errorf("APK must contain exactly one %s", goJNIPath)
 		}

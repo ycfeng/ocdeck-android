@@ -30,6 +30,13 @@ val releaseSigningProperties = Properties().apply {
         releaseSigningPropertiesFile.inputStream().use(::load)
     }
 }
+val bridgeVersionsFile = rootProject.file("frpc-stcp-visitor-go/bridge-versions.properties")
+val androidNdkVersion = Properties().apply {
+    bridgeVersionsFile.inputStream().use(::load)
+}.getProperty("NDK_VERSION")
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+    ?: throw GradleException("NDK_VERSION must be set in ${bridgeVersionsFile.path}")
 
 fun releaseSigningValue(name: String): String? =
     providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() }
@@ -61,8 +68,8 @@ val escapedProjectUrl = projectUrl.replace("\\", "\\\\").replace("\"", "\\\"")
 val generatedLegalTextDirectory = layout.buildDirectory.dir("generated/legalText")
 val generatedLegalAssetsDirectory = layout.buildDirectory.dir("generated/legalAssets")
 val thirdPartyLicenseDirectory = rootProject.layout.projectDirectory.dir("third_party/licenses")
-val ordinaryPureKotlinBuildTypes = listOf("canary", "kotlinRelease")
-val pureKotlinBuildTypes = ordinaryPureKotlinBuildTypes + "kotlinDefaultReleaseDryRun"
+val ordinaryPureKotlinBuildTypes = listOf("debug", "canary", "kotlinRelease")
+val pureKotlinBuildTypes = ordinaryPureKotlinBuildTypes + "release"
 val releaseLikeTestBuildTypes = listOf("goMobileRelease", "kotlinRelease")
 val goMobileBridgeGroup = "io.github.ycfeng.ocdeck"
 val goMobileBridgeModule = "frpc-stcp-visitor-gobridge"
@@ -123,6 +130,7 @@ android {
     namespace = "io.github.ycfeng.ocdeck"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
+    ndkVersion = androidNdkVersion
 
     defaultConfig {
         applicationId = "io.github.ycfeng.ocdeck"
@@ -131,7 +139,7 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
         buildConfigField("String", "PROJECT_URL", "\"$escapedProjectUrl\"")
-        buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "false")
+        buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -193,6 +201,7 @@ android {
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
             }
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
         }
         create("kotlinRelease") {
             initWith(getByName("release"))
@@ -210,13 +219,13 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "false")
         }
-        create("kotlinDefaultReleaseDryRun") {
+        create("goMobileEmergencyRelease") {
             initWith(getByName("release"))
             matchingFallbacks += "release"
             if (releaseSigningConfigured) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "true")
+            buildConfigField("boolean", "USE_KOTLIN_FRPC_STCP_VISITOR", "false")
         }
     }
 }
@@ -245,12 +254,12 @@ val validateReleaseSigning = tasks.register("validateReleaseSigning") {
 tasks.matching {
     it.name == "assembleRelease" || it.name == "bundleRelease" ||
         it.name == "packageRelease" || it.name == "signReleaseBundle" ||
-        it.name == "assembleKotlinDefaultReleaseDryRun" ||
-        it.name == "bundleKotlinDefaultReleaseDryRun" ||
-        it.name == "packageKotlinDefaultReleaseDryRun" ||
-        it.name == "packageKotlinDefaultReleaseDryRunBundle" ||
-        it.name == "packageKotlinDefaultReleaseDryRunUniversalApk" ||
-        it.name == "signKotlinDefaultReleaseDryRunBundle"
+        it.name == "assembleGoMobileEmergencyRelease" ||
+        it.name == "bundleGoMobileEmergencyRelease" ||
+        it.name == "packageGoMobileEmergencyRelease" ||
+        it.name == "packageGoMobileEmergencyReleaseBundle" ||
+        it.name == "packageGoMobileEmergencyReleaseUniversalApk" ||
+        it.name == "signGoMobileEmergencyReleaseBundle"
 }.configureEach {
     dependsOn(validateReleaseSigning)
 }
@@ -267,6 +276,9 @@ androidComponents {
     beforeVariants(selector().withBuildType("goMobileRelease")) { variantBuilder ->
         variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
         variantBuilder.deviceTests.getValue(DeviceTestBuilder.ANDROID_TEST_TYPE).enable = true
+    }
+    beforeVariants(selector().withBuildType("goMobileEmergencyRelease")) { variantBuilder ->
+        variantBuilder.hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = true
     }
     onVariants { variant ->
         variant.outputs.forEach { output ->

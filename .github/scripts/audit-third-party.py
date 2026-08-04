@@ -208,15 +208,14 @@ def audit_versions(
 
     bridge_build = read_text(ROOT / "frpc-stcp-visitor/build.gradle.kts")
     bridge_dependencies = re.findall(
-        r'^\s*(\w+)\("([^"]+):\$goMobileBridgeVersion"\)',
+        r'add\(\s*"(\w+RuntimeOnly)",\s*"([^"]+):\$goMobileBridgeVersion",\s*\)',
         bridge_build,
-        re.MULTILINE,
     )
     require_equal(
         bridge_dependencies,
         [
-            ("debugRuntimeOnly", f"{application_id}:{artifact_id}"),
-            ("releaseRuntimeOnly", f"{application_id}:{artifact_id}"),
+            ("goMobileReleaseRuntimeOnly", f"{application_id}:{artifact_id}"),
+            ("goMobileEmergencyReleaseRuntimeOnly", f"{application_id}:{artifact_id}"),
         ],
         "GoMobile bridge variant dependencies",
     )

@@ -17,6 +17,10 @@ val bridgeVersions = Properties().apply {
     bridgeVersionsFile.inputStream().use(::load)
 }
 val goMobileBridgeVersion = bridgeVersions.getProperty("BRIDGE_VERSION")
+val androidNdkVersion = bridgeVersions.getProperty("NDK_VERSION")
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+    ?: throw GradleException("NDK_VERSION must be set in ${bridgeVersionsFile.path}")
 val goMobileBridgeAar = rootProject.file(
     "frpc-stcp-visitor-go/build/repo/io/github/ycfeng/ocdeck/frpc-stcp-visitor-gobridge/" +
         "$goMobileBridgeVersion/frpc-stcp-visitor-gobridge-$goMobileBridgeVersion.aar",
@@ -60,6 +64,7 @@ android {
     namespace = "io.github.ycfeng.ocdeck.frpcstcpvisitor"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
+    ndkVersion = androidNdkVersion
 
     defaultConfig {
         minSdk = 26
@@ -83,7 +88,10 @@ android {
         create("kotlinRelease") {
             initWith(getByName("release"))
         }
-        create("kotlinDefaultReleaseDryRun") {
+        create("goMobileRelease") {
+            initWith(getByName("release"))
+        }
+        create("goMobileEmergencyRelease") {
             initWith(getByName("release"))
         }
     }
@@ -99,8 +107,14 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     if (goMobileBridgeAar.exists()) {
-        debugRuntimeOnly("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
-        releaseRuntimeOnly("io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion")
+        add(
+            "goMobileReleaseRuntimeOnly",
+            "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion",
+        )
+        add(
+            "goMobileEmergencyReleaseRuntimeOnly",
+            "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion",
+        )
     }
 
     testImplementation(libs.junit)
@@ -536,10 +550,6 @@ tasks.register("checkGoMobileBridgeAar") {
             "GoMobile STCP visitor Maven POM is missing license metadata."
         }
     }
-}
-
-tasks.matching { it.name == "preReleaseBuild" }.configureEach {
-    dependsOn("checkGoMobileBridgeAar")
 }
 
 if (providers.gradleProperty("requireGoMobileBridge").map(String::toBoolean).getOrElse(false)) {

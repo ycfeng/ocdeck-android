@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 5 ]]; then
-    printf 'usage: %s <gomobile-release|kotlin-default-release-dry-run> <version-name> <version-code> <expected-cert-sha256> <staging-directory>\n' "$0" >&2
+    printf 'usage: %s <kotlin-release|gomobile-emergency-release> <version-name> <version-code> <expected-cert-sha256> <staging-directory>\n' "$0" >&2
     exit 2
 fi
 
@@ -12,11 +12,11 @@ VERSION_CODE=$3
 EXPECTED_CERT_SHA256=$4
 STAGING_DIR=$5
 case "$PROFILE" in
-    gomobile-release)
+    kotlin-release)
         APK_VARIANT=release
         ;;
-    kotlin-default-release-dry-run)
-        APK_VARIANT=kotlinDefaultReleaseDryRun
+    gomobile-emergency-release)
+        APK_VARIANT=goMobileEmergencyRelease
         ;;
     *)
         printf 'release artifact verification failed: unsupported artifact profile: %s\n' "$PROFILE" >&2
@@ -36,6 +36,7 @@ APKSIGNER_JAR=${APKSIGNER_JAR:-}
 JAVA_COMMAND=${JAVA_COMMAND:-java}
 ZIPALIGN=${ZIPALIGN:-}
 APKANALYZER=${APKANALYZER:-}
+APKANALYZER_BATCH=${APKANALYZER_BATCH:-}
 BRIDGE_DEFINITION=io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor
 
 if [[ -z $APKSIGNER && -z $APKSIGNER_BATCH && -z $APKSIGNER_JAR ]]; then
@@ -58,13 +59,13 @@ if [[ -z $ZIPALIGN ]]; then
     done
 fi
 
-if [[ -z $APKANALYZER ]]; then
-    for candidate in "${ANDROID_SDK_PATH}/cmdline-tools/latest/bin/apkanalyzer"; do
-        if [[ -x $candidate ]]; then
-            APKANALYZER=$candidate
-            break
-        fi
-    done
+if [[ -z $APKANALYZER && -z $APKANALYZER_BATCH ]]; then
+    if [[ -x ${ANDROID_SDK_PATH}/cmdline-tools/latest/bin/apkanalyzer ]]; then
+        APKANALYZER=${ANDROID_SDK_PATH}/cmdline-tools/latest/bin/apkanalyzer
+    elif [[ -f ${ANDROID_SDK_PATH}/cmdline-tools/latest/bin/apkanalyzer.bat ]] &&
+        command -v cmd.exe >/dev/null && command -v wslpath >/dev/null; then
+        APKANALYZER_BATCH=${ANDROID_SDK_PATH}/cmdline-tools/latest/bin/apkanalyzer.bat
+    fi
 fi
 
 fail() {
@@ -92,6 +93,23 @@ run_apksigner() {
     else
         "$JAVA_COMMAND" -jar "$APKSIGNER_JAR" "$@"
     fi
+}
+
+run_apkanalyzer() {
+    if [[ -n $APKANALYZER ]]; then
+        "$APKANALYZER" "$@"
+        return
+    fi
+
+    local argument
+    local -a windows_arguments=()
+    for argument in "$@"; do
+        if [[ -e $argument ]]; then
+            argument=$(wslpath -m "$(realpath "$argument")")
+        fi
+        windows_arguments+=("$argument")
+    done
+    cmd.exe /d /c "$(wslpath -m "$APKANALYZER_BATCH")" "${windows_arguments[@]}"
 }
 
 validate_apk_metadata() {
@@ -160,7 +178,7 @@ apk_defines_bridge() {
     local apk_path=$1
     local output_file
     output_file=$(mktemp)
-    if ! "$APKANALYZER" dex packages --defined-only "$apk_path" >"$output_file"; then
+    if ! run_apkanalyzer dex packages --defined-only "$apk_path" >"$output_file"; then
         rm -f "$output_file"
         return 2
     fi
@@ -186,7 +204,7 @@ apk_manifest_value() {
     local attribute=$2
     local output_file
     output_file=$(mktemp)
-    if ! "$APKANALYZER" manifest "$attribute" "$apk_path" >"$output_file"; then
+    if ! run_apkanalyzer manifest "$attribute" "$apk_path" >"$output_file"; then
         rm -f "$output_file"
         return 2
     fi
@@ -227,9 +245,14 @@ else
     fi
 fi
 [[ -n $ZIPALIGN && -x $ZIPALIGN ]] || fail "zipalign not found under $BUILD_TOOLS_DIR"
-[[ -n $APKANALYZER && -x $APKANALYZER ]] || fail "apkanalyzer not found under ${ANDROID_SDK_PATH}/cmdline-tools/latest/bin"
+if [[ -n $APKANALYZER ]]; then
+    [[ -x $APKANALYZER ]] || fail "apkanalyzer not found: $APKANALYZER"
+else
+    [[ -n $APKANALYZER_BATCH && -f $APKANALYZER_BATCH ]] ||
+        fail "apkanalyzer not found under ${ANDROID_SDK_PATH}/cmdline-tools/latest/bin"
+fi
 [[ -f $APK_METADATA ]] || fail "APK metadata not found: $APK_METADATA"
-if [[ $PROFILE == gomobile-release ]]; then
+if [[ $PROFILE == gomobile-emergency-release ]]; then
     [[ -n $BRIDGE_VERSION ]] || fail "BRIDGE_VERSION is missing or duplicated"
     [[ -f $BRIDGE_NATIVE_REPORT ]] || fail "bridge native report not found: $BRIDGE_NATIVE_REPORT"
 fi
@@ -315,12 +338,12 @@ for row in "${APK_ROWS[@]}"; do
 
     apk_absolute_path=$(realpath "$apk_path")
     case "$PROFILE" in
-        gomobile-release)
+        gomobile-emergency-release)
             expected_native_sha=$(native_sha_for_abi "$abi") ||
                 fail "bridge native report does not contain ABI $abi"
             (
                 cd frpc-stcp-visitor-go
-                go run ./cmd/checkapk gomobile-release "$apk_absolute_path" "$abi" "$expected_native_sha" >/dev/null
+                go run ./cmd/checkapk gomobile-emergency-release "$apk_absolute_path" "$abi" "$expected_native_sha" >/dev/null
             ) || fail "$output_file native ELF or AAR byte binding verification failed"
             if apk_defines_bridge "$apk_path"; then
                 :
@@ -330,10 +353,10 @@ for row in "${APK_ROWS[@]}"; do
                 fail "$output_file does not define the GoMobile bridge class"
             fi
             ;;
-        kotlin-default-release-dry-run)
+        kotlin-release)
             (
                 cd frpc-stcp-visitor-go
-                go run ./cmd/checkapk kotlin-default-release-dry-run "$apk_absolute_path" "$abi" >/dev/null
+                go run ./cmd/checkapk kotlin-release "$apk_absolute_path" "$abi" >/dev/null
             ) || fail "$output_file native ELF verification or GoMobile exclusion failed"
             if apk_defines_bridge "$apk_path"; then
                 fail "$output_file unexpectedly defines the GoMobile bridge class"

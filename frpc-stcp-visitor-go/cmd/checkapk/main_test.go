@@ -15,8 +15,8 @@ func TestRunRejectsUnknownProfileAndWrongArity(t *testing.T) {
 	for _, args := range [][]string{
 		{},
 		{"unknown", "app.apk", "arm64-v8a"},
-		{profileGoMobileRelease, "app.apk", "arm64-v8a"},
-		{profileKotlinDefaultReleaseDryRun, "app.apk", "arm64-v8a", strings.Repeat("0", 64)},
+		{profileGoMobileEmergencyRelease, "app.apk", "arm64-v8a"},
+		{profileKotlinRelease, "app.apk", "arm64-v8a", strings.Repeat("0", 64)},
 	} {
 		if _, err := run(args); err == nil {
 			t.Fatalf("run(%q) unexpectedly succeeded", args)
@@ -26,7 +26,7 @@ func TestRunRejectsUnknownProfileAndWrongArity(t *testing.T) {
 
 func TestKotlinProfileAllowsNoNativeLibraries(t *testing.T) {
 	apk := writeTestAPK(t, nil)
-	result, err := inspectAPK(profileKotlinDefaultReleaseDryRun, apk, "arm64-v8a", "")
+	result, err := inspectAPK(profileKotlinRelease, apk, "arm64-v8a", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestKotlinProfileAllowsNoNativeLibraries(t *testing.T) {
 
 func TestKotlinProfileValidatesOtherNativeLibraries(t *testing.T) {
 	apk := writeTestAPK(t, []testZipEntry{{"lib/arm64-v8a/libother.so", minimalELF64(183, requiredPageAlignment)}})
-	result, err := inspectAPK(profileKotlinDefaultReleaseDryRun, apk, "arm64-v8a", "")
+	result, err := inspectAPK(profileKotlinRelease, apk, "arm64-v8a", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestKotlinProfileValidatesOtherNativeLibraries(t *testing.T) {
 
 func TestKotlinProfileRejectsGoJNI(t *testing.T) {
 	apk := writeTestAPK(t, []testZipEntry{{"lib/arm64-v8a/libgojni.so", minimalELF64(183, requiredPageAlignment)}})
-	if _, err := inspectAPK(profileKotlinDefaultReleaseDryRun, apk, "arm64-v8a", ""); err == nil {
+	if _, err := inspectAPK(profileKotlinRelease, apk, "arm64-v8a", ""); err == nil {
 		t.Fatal("Kotlin profile accepted libgojni.so")
 	}
 }
@@ -57,10 +57,10 @@ func TestGoMobileProfileRequiresMatchingGoJNI(t *testing.T) {
 	data := minimalELF64(183, requiredPageAlignment)
 	apk := writeTestAPK(t, []testZipEntry{{"lib/arm64-v8a/libgojni.so", data}})
 	hash := fmt.Sprintf("%x", sha256.Sum256(data))
-	if _, err := inspectAPK(profileGoMobileRelease, apk, "arm64-v8a", hash); err != nil {
+	if _, err := inspectAPK(profileGoMobileEmergencyRelease, apk, "arm64-v8a", hash); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := inspectAPK(profileGoMobileRelease, apk, "arm64-v8a", strings.Repeat("0", 64)); err == nil {
+	if _, err := inspectAPK(profileGoMobileEmergencyRelease, apk, "arm64-v8a", strings.Repeat("0", 64)); err == nil {
 		t.Fatal("GoMobile profile accepted the wrong libgojni hash")
 	}
 }
@@ -79,7 +79,7 @@ func TestProfilesRejectInvalidNativeLayout(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			apk := writeTestAPK(t, test.entries)
-			if _, err := inspectAPK(profileKotlinDefaultReleaseDryRun, apk, "arm64-v8a", ""); err == nil {
+			if _, err := inspectAPK(profileKotlinRelease, apk, "arm64-v8a", ""); err == nil {
 				t.Fatal("invalid native layout was accepted")
 			}
 		})
