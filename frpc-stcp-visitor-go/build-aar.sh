@@ -133,7 +133,7 @@ mkdir -p "$API_CHECK_DIR"
   cd "$API_CHECK_DIR"
   jar xf "$STAGED_AAR" classes.jar
 )
-javap -classpath "$API_CHECK_DIR/classes.jar" "$BRIDGE_CLASS" > "$STAGED_API"
+javap -classpath "$API_CHECK_DIR/classes.jar" "$BRIDGE_CLASS" | tr -d '\r' > "$STAGED_API"
 diff -u "$EXPECTED_API" "$STAGED_API"
 
 go run ./cmd/checkaar \
