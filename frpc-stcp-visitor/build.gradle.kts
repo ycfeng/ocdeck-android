@@ -115,6 +115,12 @@ dependencies {
             "goMobileEmergencyReleaseRuntimeOnly",
             "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion",
         )
+        if (providers.gradleProperty("requireGoMobileBridge").map(String::toBoolean).getOrElse(false)) {
+            add(
+                "androidTestRuntimeOnly",
+                "io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:$goMobileBridgeVersion",
+            )
+        }
     }
 
     testImplementation(libs.junit)
