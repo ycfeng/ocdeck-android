@@ -29,7 +29,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest` 覆盖不读取 `Throwable.message` 的语义分类，包括将 `KotlinFrpcStcpVisitorFailure` enum 映射为 App failure 和本地端口拒绝；带操作 fallback 的本地化资源映射、Repository 传播、response-too-large 行为，以及取消与 JVM `Error` 传播。
 - `BoundedSseReaderTest`、`OkHttpSseEventSourceFactoryTest`、`OpenCodeEventClientLifecycleTest`、`ProjectSnapshotCoordinatorTest` 覆盖显式 identity encoding、非 identity 零读取拒绝、所有换行与 EOF 状态、32 MiB 行/event 边界、无 body status/MIME 失败、取消、重试分类、关闭终态、每条连接独立认证但仅共享无认证 transport dispatcher/pool 的 client、匹配的 64-call dispatcher 与 fail-fast 准入上限及终态名额复用、owner/generation/source/transport 竞态、project/global 权威切换、有界重放和快照失败/恢复。
 - `FrpcStcpReadinessRetryClassifierTest` 与 `GoMobileFrpcStcpVisitorClientTest` 覆盖 readiness 瞬时/永久失败、入站策略失败、typed unavailable/API mismatch bridge 错误、安全 bridge 摘要、API v2 JSON、revision/control epoch、`WaitVisitorReady`，以及反射取消/JVM `Error` 传播。
-- `FrpcStcpVisitorClientFactoryTest` 在每个已启用的 App 单元测试 variant 中运行，验证 Debug 与 GoMobile Release-Like 选择 `GoMobileFrpcStcpVisitorClient`，Canary、Kotlin Release-Like 与正式签名 Kotlin-default dry run 选择 `KotlinFrpcStcpVisitorClient`，且显式 factory 可构造任一 backend，不存在运行时 fallback。
+- `FrpcStcpVisitorClientFactoryTest` 在每个已启用的 App 单元测试 variant 中运行，验证 Debug、Canary 与 Kotlin Release-Like 选择 `KotlinFrpcStcpVisitorClient`，GoMobile Release-Like 与 GoMobile Emergency Release 选择 `GoMobileFrpcStcpVisitorClient`，且显式 factory 可构造任一 backend，不存在运行时 fallback。
 - `FrpcStcpVisitorManagerTest` 覆盖共享 generation/lease/readiness 行为、分离的冷启动 10 秒等价预算与更长同 generation epoch-refresh native 预算、可重试 native/application timeout 的 generation 保留、成功/失败/超时/取消时 readiness health-probe owner 均被关闭，以及将 `BindException` 和类型化 Kotlin bind failure 转换为 `LocalPortInUse`、有界前序 generation bind 重试，并确认非 bind 类型即使 message 含有类似 bind 的文字也不会被误判。
 - `OpenCodeConnectionClientTest` 与 `ServerRepositoryConnectionCacheTest` 覆盖自持有 client 和 single-API health client 的幂等清理；按服务器重复和并发复用 REST/OAuth/session-message client；服务器间隔离；已提交与被拒绝的配置变更；STCP control epoch 替换且不缓存一次性 readiness health evidence；以及 transport 最多重新捕获三次后返回类型化持续抖动失败。
 - `DefaultNetworkMonitorTest` 与 `AppConnectionCoordinatorTest` 覆盖默认网络 identity 去重且不记录或持久化、当前网络丢失通知、陈旧丢失拒绝、不含身份的 callback/dispatch 与恢复计数、backend 失效合并、活动 flight 陈旧结果抑制、并发切网后精确一次合并 server follow-up，以及当前恢复检查失败后最多一次有界 follow-up。
@@ -69,7 +69,7 @@ macOS/Linux：
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
 ```
 
-这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建内部或 Release-Like variant。修改 STCP backend 选择、纯 Kotlin backend、共享 STCP manager 集成、共享 Release-Like instrumentation 或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest` 与 `:app:verifyPureKotlinPackaging`。两个 AndroidTest assembly 会分别为两种 backend 编译并打包共享 Release-Like 测试源码与 manifest。打包任务会解析两个 Kotlin runtime classpath 并检查每个 ABI APK，拒绝 GoMobile bridge module 或任何 `libgojni.so` 条目。下方完整 bridge/等价 CI 门禁始终运行这组扩展验证。
+这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建内部或 Release-Like variant。修改 STCP backend 选择、纯 Kotlin backend、共享 STCP manager 集成、共享 Release-Like instrumentation 或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testGoMobileEmergencyReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest` 与 `:app:verifyPureKotlinPackaging`。两个 AndroidTest assembly 会分别为两种 backend 编译并打包共享 Release-Like 测试源码与 manifest。打包任务会解析两个 Kotlin runtime classpath 并检查每个 ABI APK，拒绝 GoMobile bridge module 或任何 `libgojni.so` 条目。下方完整 bridge/等价 CI 门禁始终运行这组扩展验证。
 
 开发期间可按测试类运行聚焦测试，例如：
 
@@ -290,7 +290,7 @@ python3 .github/scripts/audit-community.py
 python3 .github/scripts/audit-third-party.py
 bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
 bash .github/scripts/verify-bridge-reproducibility.sh
-./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
+./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
 Go race detector 需要 CGO 与受支持的 C 编译器。如果 Windows 上没有该工具链，必须在 WSL2、原生 Linux 或 GitHub Actions Ubuntu runner 中运行两组 Go race tests；Windows 普通 Go 测试不能替代 race 门禁。WSL1 的 socket 翻译可能允许重复绑定 loopback listener，使 listener ownership/bind conflict 断言失真，因此不支持作为该门禁环境。环境检查会明确拒绝 WSL1，而不是弱化或跳过这些测试。PowerShell 默认也不会在 native 进程失败时停止，因此下面使用一个小型 fail-fast wrapper。
@@ -320,14 +320,14 @@ Invoke-NativeChecked { python .github/scripts/audit-community.py }
 Invoke-NativeChecked { python .github/scripts/audit-third-party.py }
 Invoke-NativeChecked { .\gradlew.bat --no-daemon :frpc-stcp-visitor:frpcInteropTest }
 Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
-Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true }
+Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true }
 ```
 
 可复现脚本要求干净 checkout。它们会在当前主机平台构建当前 checkout，以及位于不同绝对路径的 detached worktree；两个构建分别隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较完整的 AAR、必需 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 集合。脚本会删除临时 checkout 与 cache，但保留当前 checkout 中的主构建输出供 Gradle 门禁使用。这不代表 Windows 与 Linux 之间的字节一致性声明。CI 与 Release 使用 shell 脚本；Windows 开发者可运行对应 PowerShell 脚本。
 
 固定 Go、x/mobile、Android API 与 NDK 版本必须来自 `bridge-versions.properties`。
 
-修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行固定 frp 互操作任务与完整 bridge 门禁，不能只运行 Android 单元测试。Android 门禁会验证 Debug/GoMobile、Canary/Kotlin、GoMobile Release-Like/GoMobile 与 Kotlin Release-Like/Kotlin 的选择和装配，编译并打包两个共享 Release-Like AndroidTest variant，并验证两个普通 Kotlin variant 的无 bridge runtime/APK 打包。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行固定 frp 互操作任务与完整 bridge 门禁，不能只运行 Android 单元测试。Android 门禁会验证 Debug/Kotlin、Canary/Kotlin、Kotlin Release-Like/Kotlin、GoMobile Release-Like/GoMobile 与 GoMobile Emergency Release/GoMobile 的选择和装配，编译并打包两个共享 Release-Like AndroidTest variant，并验证普通 Kotlin variant 的无 bridge runtime/APK 打包。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
 
 ## 安全与边界测试
 
