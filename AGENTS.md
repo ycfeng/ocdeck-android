@@ -41,6 +41,9 @@ Any change to `AGENTS.md` or `AGENTS.zh-CN.md`, including a change explicitly re
 - Stage and commit only changes related to the current task. Do not include unrelated user work unless explicitly requested.
 - Do not commit files matched by `.gitignore`, and do not use `git add -f` or `git add --force`, unless the user explicitly names the ignored file. A request to commit "all changes" is not sufficient authorization.
 - Never revert, overwrite, or clean unrelated worktree changes. If concurrent changes directly conflict with the task, stop and ask how to proceed.
+- Treat every pre-existing, concurrent, or ownership-uncertain worktree change, including untracked files and edits in files also touched by the current task, as user or other-agent work. Do not infer that a change is temporary, accidental, or safe to remove merely because it is unrelated to the task, absent from the plan, or discovered during review or testing.
+- Revert, delete, overwrite, or clean up a worktree change only when the current session demonstrably created that exact change and removing it is required for the current task, or when the user explicitly authorizes it. If ownership or separation is uncertain, preserve the change; if it directly conflicts with the task, stop and ask.
+- Static review, diff cleanup, scope reduction, and keeping commits focused determine what may be staged or committed; they never authorize removing existing worktree changes.
 - Never commit, log, paste, or document real credentials, signing material, private project content, prompts, or raw sensitive responses.
 
 ## Architecture Boundaries
