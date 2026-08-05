@@ -120,8 +120,8 @@ kotlin {
 应用版本集中在根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=9
-VERSION_NAME=0.3.0
+VERSION_CODE=10
+VERSION_NAME=0.4.0
 ```
 
 `VERSION_NAME` 使用稳定 SemVer，正式 tag 必须精确为 `v${VERSION_NAME}`；`VERSION_CODE` 必须高于上一稳定 tag。CI 不从 tag 或 run number 动态覆盖源码版本，避免本地构建、设置页展示、APK文件名和发布记录出现漂移。
@@ -248,7 +248,7 @@ frpc-stcp-visitor-go/
 
 `frpc-stcp-visitor-go/` 保存真实 frp GoMobile wrapper 源码。`bridge-versions.properties` 固定 bridge、Go、x/mobile 和 Android API 版本；禁止在构建脚本中使用 `gomobile@latest`。基础 frp 固定为 `github.com/fatedier/frp@v0.69.1`，`cmd/preparefrp` 校验上游 module sum、zip SHA 和待修改文件 SHA 后应用 `downstream/frp-v0.69.1-p6/` 中的最小补丁，不直接修改 Go module cache。补丁修复动态 visitor 配置与 Control 安装的竞态、传播真实 listener bind 状态、暴露 config revision、control epoch 和阻塞式 `WaitVisitorReady`，增加窄 TLS config 定制 hook 供 wrapper 在发送认证数据前执行可选的精确叶证书 pin，使 STCP visitor 关闭时关闭和等待 accept loop、活动 relay、outbound visitor connection 与 manager keeper，使 client Control 关闭等待 heartbeat、dispatcher、controller、已跟踪的 work-connection handler 和 pending work connection，并暴露不含身份的聚合 owner lifecycle 计数用于有界 runtime 诊断。
 
-`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，将内嵌文本 metadata 的换行符统一为 LF，并发布已规范化的文本 sidecar；要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.18-frp0.69.1-p6` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
+`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，将内嵌文本 metadata 的换行符统一为 LF，并发布已规范化的文本 sidecar；要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
 
 `cmd/checkaar` 会读取四个 ABI library 的 Go BuildInfo，校验固定 Go identity 以及稳定的 module identity、version 与 sum，拒绝本地 module identity 和内嵌的仓库/cache 路径，并要求各 ABI 使用同一个 canonical module graph digest。Schema 2 内嵌 bridge provenance 与外部 native sidecar 会绑定 module graph digest 和无本地路径证明。AAR 的 `META-INF/OCDECK/` 还会内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表；`cmd/checkaar` 还会校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。
 
@@ -433,6 +433,7 @@ Json {
 - 会话列表：`GET /session?directory=...&workspace=...&roots=true&limit=...`，为 Store 会话窗口重新获取有序前缀。
 - 会话 metadata：`GET /session/{sessionID}`，用于补取当前窗口外路由目标及其有界父链。
 - 会话创建：`POST /session`
+- 会话分叉：`POST /session/{sessionID}/fork?directory=...&workspace=...`，body 为 `messageID`；从所选消息之前的历史创建新的根会话。
 - 会话消息：`GET /session/{sessionID}/message?limit=200&before={cursor?}`，使用共享 REST OkHttp client 的专用 transport，读取 `X-Next-Cursor`，绕过 Retrofit converter/错误体缓存；非 2xx 不读取 body，每页 encoded response-body octets 限制为 64 MiB，2xx 再使用计数 InputStream + 宽容 `Json.decodeFromStream` 执行每页独立 64 MiB decoded-entity 边界和 EOF 验证。
 - 发送 prompt：`POST /session/{sessionID}/prompt_async`
 - 中止：`POST /session/{sessionID}/abort`
@@ -445,7 +446,7 @@ Json {
 已接入与后续扩展 API：
 
 - Diff：`GET /vcs/diff?mode=git&directory=...`、`GET /session/{sessionID}/diff?directory=...`
-- Session 管理：rename、share、archive、delete、fork、summarize、children、todo；revert/unrevert 已接入 legacy `POST /session/{sessionID}/revert|unrevert`，使用编码后的 directory header。
+- Session 管理：rename、archive、delete、fork 已接入；share、summarize、children、todo 仍属于扩展工作。Fork 是保留的本地 Composer 内置命令，不是已加载的服务端命令。其非幂等 Retrofit 请求使用 one-shot body，并关闭连接重试和重定向，禁止任何自动重放；它与 send/abort/revert/unrevert 共用 prompt operation gate，在写入 Store 前验证响应确实标识不同的新会话，并通过 application-scoped 一次性内存交接传递受限的所选消息草稿，随后使用普通导航和 REST/SSE 加载。ViewModel 跨配置变更持有已确认目标，并在主线程之外执行有界附件/上下文草稿校验。Revert/unrevert 使用 legacy `POST /session/{sessionID}/revert|unrevert` 和编码后的 directory header。
 - 文件：`/file`、`/file/content`、`/find/file`。当前已接入项目文件树、搜索和只读预览；`/file/content` 先经过通用的 16 MiB encoded response-body 和 decoded Retrofit 边界，再在反序列化前保留 reader 层 decoded `ResponseBody` 复验，避免在 UI 限制生效前加载任意大响应。
 - Provider 管理：instance-scoped `GET /provider`、`GET /provider/auth` 以及有状态 OAuth authorize/callback 可带可选 `directory/workspace`；server-global root-control 操作为 `PUT/DELETE /auth/{providerID}`、`GET/PATCH /global/config` 和 `POST /global/dispose`。OAuth authorize/callback 保持相同 scope 与原始 method index，不自动重试；长 auto callback 使用专用有界 client。
 - config、session status、MCP、LSP、plugin 状态已接入；PTY/terminal、worktree 等仍待实现。

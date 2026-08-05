@@ -15,7 +15,8 @@ class SessionOperationCoordinatorTest {
         val gate = PromptOperationGate(pathNormalizer)
         val promptGateway = RecordingPromptGateway()
         val revertGateway = RecordingRevertGateway()
-        val coordinator = SessionOperationCoordinator(promptGateway, revertGateway, gate, pathNormalizer)
+        val forkGateway = RecordingForkGateway()
+        val coordinator = SessionOperationCoordinator(promptGateway, revertGateway, forkGateway, gate, pathNormalizer)
         val lease = checkNotNull(gate.tryAcquire("server", "E:/Repo", "ses_1", "D:/Workspace"))
 
         val result = coordinator.revert(
@@ -37,9 +38,11 @@ class SessionOperationCoordinatorTest {
         val operations = mutableListOf<String>()
         val promptGateway = RecordingPromptGateway(operations)
         val revertGateway = RecordingRevertGateway(operations)
+        val forkGateway = RecordingForkGateway(operations)
         val coordinator = SessionOperationCoordinator(
             promptGateway,
             revertGateway,
+            forkGateway,
             PromptOperationGate(pathNormalizer),
             pathNormalizer,
         )
@@ -54,6 +57,58 @@ class SessionOperationCoordinatorTest {
 
         assertTrue(result.isSuccess)
         assertEquals(listOf("abort:E:/Repo", "revert:E:/Repo"), operations)
+    }
+
+    @Test
+    fun heldSessionLeaseRejectsForkWithoutCallingGateway() = runTest {
+        val pathNormalizer = PathNormalizer()
+        val gate = PromptOperationGate(pathNormalizer)
+        val forkGateway = RecordingForkGateway()
+        val coordinator = SessionOperationCoordinator(
+            RecordingPromptGateway(),
+            RecordingRevertGateway(),
+            forkGateway,
+            gate,
+            pathNormalizer,
+        )
+        val lease = checkNotNull(gate.tryAcquire("server", "E:/Repo", "ses_1", "D:/Workspace"))
+
+        val result = coordinator.fork(
+            serverId = "server",
+            directory = "e:\\repo\\",
+            sessionId = "ses_1",
+            messageId = "msg_1",
+            workspace = "d:\\workspace\\",
+        )
+
+        assertTrue(result.exceptionOrNull() is PromptOperationInProgressException)
+        assertTrue(forkGateway.operations.isEmpty())
+        lease.close()
+    }
+
+    @Test
+    fun forkNormalizesDirectoryAndWorkspaceUnderSharedGate() = runTest {
+        val pathNormalizer = PathNormalizer()
+        val operations = mutableListOf<String>()
+        val forkGateway = RecordingForkGateway(operations)
+        val coordinator = SessionOperationCoordinator(
+            RecordingPromptGateway(),
+            RecordingRevertGateway(),
+            forkGateway,
+            PromptOperationGate(pathNormalizer),
+            pathNormalizer,
+        )
+
+        val result = coordinator.fork(
+            serverId = "server",
+            directory = "E:\\Repo\\",
+            sessionId = "ses_1",
+            messageId = "msg_1",
+            workspace = "D:\\Workspace\\",
+        )
+
+        assertTrue(result.isSuccess)
+        assertEquals(listOf("fork:E:/Repo:D:/Workspace:msg_1"), operations)
     }
 
     private class RecordingPromptGateway(
@@ -129,6 +184,21 @@ class SessionOperationCoordinatorTest {
             sessionId: String,
             workspace: String?,
         ): Result<OpenCodeSession> = Result.success(session(sessionId))
+    }
+
+    private class RecordingForkGateway(
+        val operations: MutableList<String> = mutableListOf(),
+    ) : SessionForkGateway {
+        override suspend fun forkSession(
+            serverId: String,
+            directory: String,
+            sessionId: String,
+            messageId: String,
+            workspace: String?,
+        ): Result<OpenCodeSession> {
+            operations += "fork:$directory:$workspace:$messageId"
+            return Result.success(session("ses_fork"))
+        }
     }
 
     private companion object {

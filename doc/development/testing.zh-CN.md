@@ -26,7 +26,7 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 
 - `RetrofitInboundResponsePolicyTest` 与 `EncodedResponseLimitInterceptorTest` 验证每个 `OpenCodeApi` 方法声明 `BOUNDED` 或 `EMPTY_SUCCESS`；缺少策略时在网络请求前失败；encoded/decoded 已声明、未知和低报长度都在 `max + 1` 执行各自 16 MiB 边界；真实 OkHttp gzip chain 在 Bridge 解码前执行 encoded 上限；非 2xx 与成功 Unit body 不读取即关闭；`/file/content` 保持延迟读取；没有 Retrofit `Invocation` 的请求绕过 Retrofit interceptor。
 - `SessionMessagesTransportTest`、`SessionMessagesResponseReaderTest`、`InMemoryOpenCodeStoreRevisionTest`、`SessionMessageJumpTest`、`FileContentResponseReaderTest` 覆盖 cursor query/header、旧页合并、重叠刷新保留 cursor、不相交刷新补齐断层、cursor compare-and-set 与循环拒绝、第一页请求逆序完成时最后 generation 获胜、`(createdAt, id)` 同时间排序、第一页覆盖窗口删除校准、session 删除后的 cursor 与待处理 generation 清理、空投影时间线加载与跳转控件可用性、无 body 的非 2xx 失败、OkHttp callback 线程 direct decode、encoded/decoded 精确/未知/低报长度、EOF 验证、取消与 callback race、session messages 每页独立 64 MiB 边界，以及 `/file/content` reader 层 decoded 纵深防御。
-- `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest` 覆盖不读取 `Throwable.message` 的语义分类，包括将 `KotlinFrpcStcpVisitorFailure` enum 映射为 App failure 和本地端口拒绝；带操作 fallback 的本地化资源映射、Repository 传播、response-too-large 行为，以及取消与 JVM `Error` 传播。
+- `OpenCodeFailureTest`、`ErrorUiTextTest`、`OpenCodeRepositoryFailureHandlingTest` 覆盖不读取 `Throwable.message` 的语义分类，包括将 `KotlinFrpcStcpVisitorFailure` enum 映射为 App failure 和本地端口拒绝；带操作 fallback 的本地化资源映射、Repository 传播、规范化 fork directory/workspace/body 映射、拒绝缺失或未变化的 fork session ID、response-too-large 行为，以及取消与 JVM `Error` 传播。
 - `BoundedSseReaderTest`、`OkHttpSseEventSourceFactoryTest`、`OpenCodeEventClientLifecycleTest`、`ProjectSnapshotCoordinatorTest` 覆盖显式 identity encoding、非 identity 零读取拒绝、所有换行与 EOF 状态、32 MiB 行/event 边界、无 body status/MIME 失败、取消、重试分类、关闭终态、每条连接独立认证但仅共享无认证 transport dispatcher/pool 的 client、匹配的 64-call dispatcher 与 fail-fast 准入上限及终态名额复用、owner/generation/source/transport 竞态、project/global 权威切换、有界重放和快照失败/恢复。
 - `FrpcStcpReadinessRetryClassifierTest` 与 `GoMobileFrpcStcpVisitorClientTest` 覆盖 readiness 瞬时/永久失败、入站策略失败、typed unavailable/API mismatch bridge 错误、安全 bridge 摘要、API v2 JSON、revision/control epoch、`WaitVisitorReady`，以及反射取消/JVM `Error` 传播。
 - `FrpcStcpVisitorClientFactoryTest` 在每个已启用的 App 单元测试 variant 中运行，验证 Debug、Canary 与 Kotlin Release-Like 选择 `KotlinFrpcStcpVisitorClient`，GoMobile Release-Like 与 GoMobile Emergency Release 选择 `GoMobileFrpcStcpVisitorClient`，且显式 factory 可构造任一 backend，不存在运行时 fallback。
@@ -47,10 +47,12 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 - `NotificationAlertPolicyTest`、`NotificationChannelMigrationPolicyTest`、`OpenCodeNotificationAudioAttributesTest` 与 `SessionVisibilityRegistryTest` 覆盖单事件唯一声音所有者、App/系统设置独立、系统显式声音/静音优先级、legacy 到 v2 迁移决策、notification audio usage 和前台 destination 可见性。
 - `SessionComposerAgentResolverTest`、`SessionModelPreferenceResolverTest` 与 `SessionComposerRouteSelectionTest` 覆盖按服务端顺序过滤 Build/Plan 及回退、初始模型/Variant 校验与切换回退，以及只对新会话接受项目首页轻量 Composer 路由选择。
 - `ComposerParameterPickerScrollTest` 覆盖跨 provider 标题的模型 lazy-list 索引、带“默认”前缀的 Variant 索引、选择不存在时的行为，以及基于实测 item 与 viewport 的居中偏移。
-- `LocalizedWindowTest` 是 Android instrumentation 测试：它为父组合提供与 Activity 不同的 locale，验证 Popup 与 modal bottom sheet 的资源使用父组合 locale，并验证已打开的 Popup 会随语言切换更新。
+- `LocalizedWindowTest` 是 Android instrumentation 测试：它为父组合提供与 Activity 不同的 locale，验证 Popup 与 modal bottom sheet 的资源使用父组合 locale，并验证已打开的 Popup 会随语言切换更新。`SessionMessageMetaTextTest` 验证只有发生省略的消息 metadata 才获得可展开操作，并验证完整文字 Popup 的打开、状态语义与关闭。
 - `ProjectFilePathNormalizerTest`、`ProjectFileUrlBuilderTest` 与 `ProjectFileAbsolutePathTest` 覆盖相对路径平台语义、遍历/绝对路径拒绝、POSIX/Windows 盘符/UNC `file://` 与展示路径构造、UTF-8 百分号编码、往返和项目根包含关系。`ProjectFilePanelCopyMenuTest` 覆盖文件/目录长按菜单、三种复制值以及选择模式长按不改变选择。
-- `PromptSendStateMachineTest`、`OpenCodePromptSenderTest` 与 `PromptRequestDtoSerializationTest` 覆盖纯项目上下文发送、上下文终检与去重、普通/已加载命令透传、乐观 `file://` parts、新 session 消息移动和线缆序列化。
-- `UserMessagePartsTest` 与 `SessionRevertProjectionTest` 区分本地 `data:` 附件、独立项目上下文和评论 backing file，并只在数量上限内恢复当前项目上下文。
+- `PromptSendStateMachineTest`、`OpenCodePromptSenderTest`、`SessionOperationCoordinatorTest` 与 `PromptRequestDtoSerializationTest` 覆盖纯项目上下文发送、上下文终检与去重、普通/已加载命令透传、在 optimistic 或网络工作前拦截保留的 `/fork`、乐观 `file://` parts、新 session 消息移动、fork 请求序列化，以及 send/abort/revert/unrevert/fork 共用的 fail-fast gate。
+- `OpenCodeApiRetryPolicyTest` 验证非幂等 fork endpoint 会选择受保护的 CallFactory、普通 Retrofit 请求继续使用共享默认策略，并验证防重放包装会在不改变请求字节的前提下把 body 标记为 one-shot。
+- `UserMessagePartsTest` 与 `SessionRevertProjectionTest` 区分本地 `data:` 附件、独立项目上下文和评论 backing file，只在数量上限内恢复当前项目上下文，把 fork 候选过滤为最新优先、非 optimistic、带非 synthetic/非 ignored 可见文本的用户消息，并限制候选/预览的输入扫描量。
+- `SessionComposerDraftHandoffStoreTest` 覆盖规范化 server/directory/workspace/session 隔离、单次消费，以及不暴露 prompt、路径和选择值的结构化摘要。
 - `ProviderSettingsParsingTest` 与 `ProviderCapabilityRefreshTest` 覆盖可能含密钥的 Provider/auth payload 的即时安全投影、权威已加载状态、原始 auth method index 与条件、安全 OAuth URL，以及通过当前 SSE authority lease 刷新 capability。
 - `ProviderSettingsViewModelTest` 覆盖项目感知动态 API/OAuth 输入、明文 HTTP 冻结确认、mutation single-flight、OAuth code/callback scope、无 secret 状态摘要、reload 与 capability calibration。
 - `CustomProviderValidationTest`、`OpenCodeProviderRepositoryCustomTest` 与 `CustomProviderFormViewModelTest` 覆盖模型/Header 精确上限与超限校验、添加操作容量状态与 no-op 反馈保留、安全 global-config 投影、disabled/auth/enable 事务顺序、partial/unknown outcome、先停用后清理 auth、deep-merge 防伪删除、持久化标识不可变和 secret 清除。
@@ -60,13 +62,13 @@ OC Deck 使用多个相互独立的门禁。通过一个层级不代表其他层
 Windows：
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
+.\gradlew.bat :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:verifyPureKotlinPackaging
 ```
 
 macOS/Linux：
 
 ```bash
-./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug
+./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:verifyPureKotlinPackaging
 ```
 
 这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建内部或 Release-Like variant。修改 STCP backend 选择、纯 Kotlin backend、共享 STCP manager 集成、共享 Release-Like instrumentation 或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testGoMobileEmergencyReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest` 与 `:app:verifyPureKotlinPackaging`。两个 AndroidTest assembly 会分别为两种 backend 编译并打包共享 Release-Like 测试源码与 manifest。打包任务会解析两个 Kotlin runtime classpath 并检查每个 ABI APK，拒绝 GoMobile bridge module 或任何 `libgojni.so` 条目。下方完整 bridge/等价 CI 门禁始终运行这组扩展验证。

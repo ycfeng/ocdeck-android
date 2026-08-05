@@ -23,15 +23,15 @@
 
 正式 `debug` 与 `release` 选择纯 Kotlin 且不含 bridge。内部 `canary` 与 `kotlinRelease` 是 Kotlin 验证 variant；`goMobileRelease` 是对称的 GoMobile 验证 variant。Canary 使用带 suffix 的 Debug 身份；两个 Release-Like variant 继承 Release 配置，分别使用 `.kotlinrelease`/`-kotlin-release` 与 `.gomobilerelease`/`-gomobile-release`，并使用 Android Debug 测试证书。CI 与 Release 自动化可以构建这些验证 variant，但绝不应用 Release 签名，也不会暂存或发布其 APK。`goMobileEmergencyRelease` 与它们分离：它选择 GoMobile，使用正式 application ID、稳定版本和 Release signer，并且只能通过受保护的手动 emergency profile 运行。
 
-应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.3.0` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
+应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.4.0` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
 
 ## 2. 版本规则
 
 应用版本的唯一源码位于根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=9
-VERSION_NAME=0.3.0
+VERSION_CODE=10
+VERSION_NAME=0.4.0
 ```
 
 要求：

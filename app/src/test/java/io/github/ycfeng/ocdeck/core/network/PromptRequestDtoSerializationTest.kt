@@ -115,4 +115,15 @@ class PromptRequestDtoSerializationTest {
         assertEquals("msg_fixture_001", root.getValue("messageID").jsonPrimitive.content)
         assertFalse(root.containsKey("partID"))
     }
+
+    @Test
+    fun serializesForkRequestWithOnlyRedactedMessageId() {
+        val request = ForkSessionRequestDto(messageID = "msg_fixture_001")
+        val root = json.parseToJsonElement(json.encodeToString(request)).jsonObject
+
+        assertEquals(setOf("messageID"), root.keys)
+        assertEquals("msg_fixture_001", root.getValue("messageID").jsonPrimitive.content)
+        assertFalse(request.toString().contains("msg_fixture_001"))
+        assertTrue(request.toString().contains("<redacted>"))
+    }
 }

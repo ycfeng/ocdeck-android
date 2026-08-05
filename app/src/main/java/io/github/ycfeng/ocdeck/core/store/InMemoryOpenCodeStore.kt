@@ -1134,7 +1134,7 @@ private fun OpenCodeMessagePart.withHistoricalFallback(historical: OpenCodeMessa
     opencodeComment = opencodeComment ?: historical.opencodeComment,
 )
 
-private fun List<OpenCodeMessagePart>.renderText(): String = filter { it.type == "text" && !it.synthetic }
+private fun List<OpenCodeMessagePart>.renderText(): String = filter { it.type == "text" && !it.synthetic && !it.ignored }
     .mapNotNull(OpenCodeMessagePart::text)
     .joinToString("\n")
 

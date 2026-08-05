@@ -23,15 +23,15 @@ The workflow does not create a universal APK, AAB, or Play upload artifact. GitH
 
 Formal `debug` and `release` select pure Kotlin and are bridge-free. The internal `canary` and `kotlinRelease` builds are Kotlin verification variants; `goMobileRelease` is the symmetric GoMobile verification variant. Canary uses its suffixed Debug identity, while the two Release-Like variants inherit Release configuration, use `.kotlinrelease`/`-kotlin-release` or `.gomobilerelease`/`-gomobile-release`, and use the Android Debug test certificate. CI and Release automation may build these verification variants, but never apply Release signing or stage or publish their APKs. `goMobileEmergencyRelease` is separate: it selects GoMobile with the formal application ID, stable version, and Release signer, and is available only through the protected manual emergency profile.
 
-The application ID is `io.github.ycfeng.ocdeck`, version `0.3.0` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
+The application ID is `io.github.ycfeng.ocdeck`, version `0.4.0` has a minimum Android API level of 26, and OC Deck is an independent community client. Release notes must state that users provide their own reachable OpenCode Server and that pre-1.0 behavior and compatibility may change.
 
 ## 2. Version Rules
 
 The only source of the application version is root `gradle.properties`:
 
 ```properties
-VERSION_CODE=9
-VERSION_NAME=0.3.0
+VERSION_CODE=10
+VERSION_NAME=0.4.0
 ```
 
 Requirements:

@@ -136,6 +136,24 @@ class OpenCodePromptSenderTest {
     }
 
     @Test
+    fun forkBuiltInNeverRoutesThroughPromptOrServerCommand() = runTest {
+        val fixture = fixture()
+        val capabilities = capabilities(
+            commands = listOf(
+                OpenCodeCommand("fork", "fork", "Fork", "server"),
+                OpenCodeCommand("review", "review", "Review", "server"),
+            ),
+        )
+
+        assertFailure<PromptBuiltInCommandException>(
+            fixture.send(sessionId = "ses_fork", text = "  /fork\tignored", capabilities = capabilities),
+        )
+
+        fixture.assertNoGatewayCalls()
+        assertTrue(fixture.project().messagesBySession.values.flatten().isEmpty())
+    }
+
+    @Test
     fun contextOnlyPromptNormalizesAndPublishesProjectFilePart() = runTest {
         val fixture = fixture()
         val context = ProjectFileContext("prt_context", "src\\Main.kt")

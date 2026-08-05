@@ -22,9 +22,20 @@ interface SessionRevertGateway {
     ): Result<OpenCodeSession>
 }
 
+interface SessionForkGateway {
+    suspend fun forkSession(
+        serverId: String,
+        directory: String,
+        sessionId: String,
+        messageId: String,
+        workspace: String? = null,
+    ): Result<OpenCodeSession>
+}
+
 class SessionOperationCoordinator(
     private val promptGateway: PromptGateway,
     private val revertGateway: SessionRevertGateway,
+    private val forkGateway: SessionForkGateway,
     private val operationGate: PromptOperationGate,
     private val pathNormalizer: PathNormalizer,
 ) {
@@ -60,6 +71,22 @@ class SessionOperationCoordinator(
             serverId = serverId,
             directory = normalized,
             sessionId = sessionId,
+            workspace = normalizedWorkspace,
+        )
+    }
+
+    suspend fun fork(
+        serverId: String,
+        directory: String,
+        sessionId: String,
+        messageId: String,
+        workspace: String? = null,
+    ): Result<OpenCodeSession> = withSessionLease(serverId, directory, sessionId, workspace) { normalized, normalizedWorkspace ->
+        forkGateway.forkSession(
+            serverId = serverId,
+            directory = normalized,
+            sessionId = sessionId,
+            messageId = messageId,
             workspace = normalizedWorkspace,
         )
     }

@@ -95,6 +95,7 @@ class AppViewModelProvider(private val container: AppContainer) {
                 recentProjectRecorder = container.recentProjectRecorder,
                 promptSender = container.promptSender,
                 sessionOperationCoordinator = container.sessionOperationCoordinator,
+                sessionComposerDraftHandoffStore = container.sessionComposerDraftHandoffStore,
                 sessionVisibilityRegistry = container.sessionVisibilityRegistry,
                 pathNormalizer = container.pathNormalizer,
                 projectFilePathNormalizer = container.projectFilePathNormalizer,

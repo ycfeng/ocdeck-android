@@ -355,11 +355,57 @@ class SessionRevertProjectionTest {
         assertEquals(true, draft.hasRecoverableContent)
     }
 
+    @Test
+    fun forkableMessagesAreNewestFirstAndRequireVisibleUserText() {
+        val messages = listOf(
+            forkTextMessage("msg_100", role = "user", text = "first"),
+            forkTextMessage("msg_200", role = "assistant", text = "assistant"),
+            forkTextMessage("msg_300", role = "user", text = "synthetic", synthetic = true),
+            forkTextMessage("msg_400", role = "user", text = "ignored", ignored = true),
+            forkTextMessage("msg_500", role = "user", text = "   "),
+            forkTextMessage("msg_600", role = "user", text = "optimistic", optimistic = true),
+            forkTextMessage("msg_700", role = "user", text = "latest"),
+        )
+
+        assertEquals(listOf("msg_700", "msg_100"), forkableUserMessages(messages).map { it.id })
+    }
+
+    @Test
+    fun forkTextInspectionStopsAtTheConfiguredInputBound() {
+        val leadingWhitespace = " ".repeat(4_096)
+
+        assertEquals(false, (leadingWhitespace + "hidden").hasVisibleForkText())
+        assertEquals("visible text trailing", "  visible\n\ttext  trailing".toForkPreview())
+        assertEquals("", leadingWhitespace.toForkPreview())
+    }
+
     private fun message(id: String, role: String, text: String) = OpenCodeMessage(
         id = id,
         sessionId = "ses_1",
         role = role,
         text = text,
+    )
+
+    private fun forkTextMessage(
+        id: String,
+        role: String,
+        text: String,
+        synthetic: Boolean = false,
+        ignored: Boolean = false,
+        optimistic: Boolean = false,
+    ) = message(id, role, text).copy(
+        isOptimistic = optimistic,
+        parts = listOf(
+            OpenCodeMessagePart(
+                id = "prt_$id",
+                messageId = id,
+                sessionId = "ses_1",
+                type = "text",
+                text = text,
+                synthetic = synthetic,
+                ignored = ignored,
+            ),
+        ),
     )
 
     private fun filePart(id: String, dataUrl: String) = OpenCodeMessagePart(

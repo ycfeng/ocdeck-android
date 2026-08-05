@@ -260,9 +260,21 @@
     <string name="prompt_error_outcome_uncertain">请求结果不确定，但消息可能已由服务端接收，请先检查会话后再重试</string>
     <string name="session_load_messages_failed">加载消息失败</string>
     <string name="session_load_metadata_failed">加载会话信息失败</string>
+    <string name="a11y_show_full_message_metadata">显示完整消息信息</string>
     <string name="session_reset_to_here">重置到此点</string>
     <string name="session_reset_failed">重置消息失败</string>
     <string name="session_restore_failed">恢复消息失败</string>
+    <string name="session_fork_failed">分叉会话失败</string>
+    <string name="session_fork_outcome_uncertain">请求结果不确定，服务端可能已创建分叉会话。请检查会话列表后再重试。</string>
+    <string name="session_fork_sheet_title">从消息分叉</string>
+    <string name="session_fork_sheet_subtitle">选择一条用户消息。新会话会复制该消息之前的历史。</string>
+    <string name="session_fork_search_placeholder">搜索用户消息</string>
+    <string name="session_fork_no_messages">没有可分叉的用户消息</string>
+    <string name="session_fork_confirm_title">确认分叉会话</string>
+    <string name="session_fork_confirm_message">将复制该消息之前的历史，并把该消息恢复到新会话输入框。是否继续？</string>
+    <string name="session_fork_confirm">创建分叉会话</string>
+    <string name="session_fork_confirming">正在创建...</string>
+    <string name="a11y_fork_from_message">从此消息分叉</string>
     <plurals name="session_revert_dock_summary">
         <item quantity="other">%1$d 条已回滚消息</item>
     </plurals>
@@ -357,6 +369,7 @@
     <string name="command_share_description">分享会话</string>
     <string name="command_model_description">切换模型</string>
     <string name="command_agent_description">切换 Agent</string>
+    <string name="command_fork_description">从之前的消息创建新会话</string>
     <string name="attachment_title">附加文件</string>
     <string name="attachment_subtitle">可从手机添加本地附件，或从当前服务端项目添加文件上下文。</string>
     <string name="attachment_local_title">从手机选择</string>
