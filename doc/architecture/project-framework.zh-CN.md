@@ -433,6 +433,7 @@ Json {
 - 会话列表：`GET /session?directory=...&workspace=...&roots=true&limit=...`，为 Store 会话窗口重新获取有序前缀。
 - 会话 metadata：`GET /session/{sessionID}`，用于补取当前窗口外路由目标及其有界父链。
 - 会话创建：`POST /session`
+- 会话分叉：`POST /session/{sessionID}/fork?directory=...&workspace=...`，body 为 `messageID`；从所选消息之前的历史创建新的根会话。
 - 会话消息：`GET /session/{sessionID}/message?limit=200&before={cursor?}`，使用共享 REST OkHttp client 的专用 transport，读取 `X-Next-Cursor`，绕过 Retrofit converter/错误体缓存；非 2xx 不读取 body，每页 encoded response-body octets 限制为 64 MiB，2xx 再使用计数 InputStream + 宽容 `Json.decodeFromStream` 执行每页独立 64 MiB decoded-entity 边界和 EOF 验证。
 - 发送 prompt：`POST /session/{sessionID}/prompt_async`
 - 中止：`POST /session/{sessionID}/abort`
@@ -445,7 +446,7 @@ Json {
 已接入与后续扩展 API：
 
 - Diff：`GET /vcs/diff?mode=git&directory=...`、`GET /session/{sessionID}/diff?directory=...`
-- Session 管理：rename、share、archive、delete、fork、summarize、children、todo；revert/unrevert 已接入 legacy `POST /session/{sessionID}/revert|unrevert`，使用编码后的 directory header。
+- Session 管理：rename、archive、delete、fork 已接入；share、summarize、children、todo 仍属于扩展工作。Fork 是保留的本地 Composer 内置命令，不是已加载的服务端命令。其非幂等 Retrofit 请求使用 one-shot body，并关闭连接重试和重定向，禁止任何自动重放；它与 send/abort/revert/unrevert 共用 prompt operation gate，在写入 Store 前验证响应确实标识不同的新会话，并通过 application-scoped 一次性内存交接传递受限的所选消息草稿，随后使用普通导航和 REST/SSE 加载。ViewModel 跨配置变更持有已确认目标，并在主线程之外执行有界附件/上下文草稿校验。Revert/unrevert 使用 legacy `POST /session/{sessionID}/revert|unrevert` 和编码后的 directory header。
 - 文件：`/file`、`/file/content`、`/find/file`。当前已接入项目文件树、搜索和只读预览；`/file/content` 先经过通用的 16 MiB encoded response-body 和 decoded Retrofit 边界，再在反序列化前保留 reader 层 decoded `ResponseBody` 复验，避免在 UI 限制生效前加载任意大响应。
 - Provider 管理：instance-scoped `GET /provider`、`GET /provider/auth` 以及有状态 OAuth authorize/callback 可带可选 `directory/workspace`；server-global root-control 操作为 `PUT/DELETE /auth/{providerID}`、`GET/PATCH /global/config` 和 `POST /global/dispose`。OAuth authorize/callback 保持相同 scope 与原始 method index，不自动重试；长 auto callback 使用专用有界 client。
 - config、session status、MCP、LSP、plugin 状态已接入；PTY/terminal、worktree 等仍待实现。

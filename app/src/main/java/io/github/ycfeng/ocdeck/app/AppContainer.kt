@@ -21,6 +21,7 @@ import io.github.ycfeng.ocdeck.core.security.SecureCredentialStore
 import io.github.ycfeng.ocdeck.core.sound.OpenCodeSoundPlayer
 import io.github.ycfeng.ocdeck.core.store.InMemoryOpenCodeStore
 import io.github.ycfeng.ocdeck.core.store.OpenCodeEventReducer
+import io.github.ycfeng.ocdeck.core.store.SessionComposerDraftHandoffStore
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFilePathNormalizer
 import io.github.ycfeng.ocdeck.data.opencode.OpenCodeRepository
@@ -157,6 +158,7 @@ class AppContainer(context: Context) {
         onDefaultNetworkChanged = appConnectionCoordinator::onDefaultNetworkChanged,
     ).also(DefaultNetworkMonitor::start)
     val promptOperationGate = PromptOperationGate(pathNormalizer)
+    val sessionComposerDraftHandoffStore = SessionComposerDraftHandoffStore(pathNormalizer)
     val promptSender = OpenCodePromptSender(
         gateway = openCodeRepository,
         store = openCodeStore,
@@ -167,6 +169,7 @@ class AppContainer(context: Context) {
     val sessionOperationCoordinator = SessionOperationCoordinator(
         promptGateway = openCodeRepository,
         revertGateway = openCodeRepository,
+        forkGateway = openCodeRepository,
         operationGate = promptOperationGate,
         pathNormalizer = pathNormalizer,
     )

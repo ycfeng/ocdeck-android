@@ -119,6 +119,7 @@ data class OpenCodeMessagePart(
     val type: String,
     val text: String?,
     val synthetic: Boolean,
+    val ignored: Boolean = false,
     val filename: String? = null,
     val mime: String? = null,
     val url: String? = null,
@@ -134,7 +135,8 @@ data class OpenCodeMessagePart(
 ) {
     override fun toString(): String =
         "OpenCodeMessagePart(id=$REDACTED, messageId=$REDACTED, sessionId=$REDACTED, type=$type, " +
-            "textPresent=${text != null}, synthetic=$synthetic, filename=${redactedIfPresent(filename)}, " +
+            "textPresent=${text != null}, synthetic=$synthetic, ignored=$ignored, " +
+            "filename=${redactedIfPresent(filename)}, " +
             "mimePresent=${mime != null}, url=${redactedIfPresent(url)}, toolPresent=${tool != null}, " +
             "stateStatusPresent=${stateStatus != null}, toolInputCount=${toolInput.size}, " +
             "toolInputJsonPresent=${toolInputJson != null}, toolMetadataCount=${toolMetadata.size}, " +

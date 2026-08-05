@@ -245,7 +245,7 @@ Android 建议：用 `EditProjectScreen` 或 `ModalBottomSheet`，颜色做横�
 
 助手消息 meta 中的耗时需与 Web 口径一致：按同一 user turn 计算，从 user message 的 `time.created` 到该 user message parent 下所有 assistant message 的最大 `time.completed`；秒数格式化按四舍五入。无法关联 user turn 时，才回退为单条 assistant message 的 `completed - created`。
 
-Android 建议：消息列表使用 `LazyColumn(reverseLayout = false)`，消息 action 在长按、更多菜单或正文下方操作区中展示，复制使用 Android Clipboard。会话正文按“逐条消息”启用文字选择：用户消息正文用 Compose 文本选择，助手 Markdown 段落用可选择 `TextView`，代码块用 Compose 选择容器；角色、模型、状态和时间不进入选择范围，避免复制噪声。异常提示文本使用独立选择容器，且当消息正文为空时“复制回复”复制异常提示。保留“复制消息/复制回复”整条复制作为兜底。在消息视口右下角叠放两个 48dp 跳转控件：一个定位到真正的第一条用户消息，另一个定位到最新消息或正在显示的思考项；手动到达当前已加载顶部时取一页更早消息，点击第一条用户消息控件时先取完所有剩余历史再定位。控件须位于 Composer、各类 Dock 和 IME 上方，并通过足够的底部滚动留白保证最后一项可完全露出。平台文字选择 ActionMode 激活时，控件以短暂淡出加缩放动画隐藏；退出选择后恢复显示，且不得强制把列表补滚到底部。用户消息的 `重置到此点` 对应 `POST /session/{sessionID}/revert`。agent/助手回复正文使用 Markdown 渲染，至少覆盖段落、列表、链接、行内代码和代码块；行内代码按 Web 端使用透明背景的青色等宽高亮文字，不做灰底 chip；fenced code block 使用接近 Web 的浅色背景、1dp 边框、等宽字体、横向滚动和语法高亮；用户消息仍按普通文本展示，避免输入内容被误解释。
+Android 建议：消息列表使用 `LazyColumn(reverseLayout = false)`，消息 action 在长按、更多菜单或正文下方操作区中展示，复制使用 Android Clipboard。会话正文按“逐条消息”启用文字选择：用户消息正文用 Compose 文本选择，助手 Markdown 段落用可选择 `TextView`，代码块用 Compose 选择容器；角色、模型、状态和时间不进入选择范围，避免复制噪声。消息 metadata 保持单行；只有实际出现省略号时，点击其 48dp 目标才打开可聚焦、受屏幕约束的锚定 Popup，以自动换行方式显示完整文字。再次点击、点击外部或按系统返回键均关闭 Popup。异常提示文本使用独立选择容器，且当消息正文为空时“复制回复”复制异常提示。保留“复制消息/复制回复”整条复制作为兜底。在消息视口右下角叠放两个 48dp 跳转控件：一个定位到真正的第一条用户消息，另一个定位到最新消息或正在显示的思考项；手动到达当前已加载顶部时取一页更早消息，点击第一条用户消息控件时先取完所有剩余历史再定位。控件须位于 Composer、各类 Dock 和 IME 上方，并通过足够的底部滚动留白保证最后一项可完全露出。平台文字选择 ActionMode 激活时，控件以短暂淡出加缩放动画隐藏；退出选择后恢复显示，且不得强制把列表补滚到底部。用户消息的 `重置到此点` 对应 `POST /session/{sessionID}/revert`。agent/助手回复正文使用 Markdown 渲染，至少覆盖段落、列表、链接、行内代码和代码块；行内代码按 Web 端使用透明背景的青色等宽高亮文字，不做灰底 chip；fenced code block 使用接近 Web 的浅色背景、1dp 边框、等宽字体、横向滚动和语法高亮；用户消息仍按普通文本展示，避免输入内容被误解释。
 
 会话历史 `GET /session/{sessionID}/message` 固定按 `limit=200` 分页；响应的 `X-Next-Cursor` 作为下一页更早历史的 `before`，无 cursor 表示历史完整。Store 按会话保存该状态，并把旧页前插合并，不能替换较新的 REST、SSE 或乐观数据。刷新后的第一页若与上一次第一页的 message id 有重叠，则保留已加载历史的最旧 cursor；若两页不相交，则从刷新响应的新 cursor 重新推进，让后续加载补齐中间断层，即使因此需要重新获取旧页。更早页响应只有在其请求的 `before` 仍等于 Store 当前最旧 cursor 时才应用；响应重复当前 cursor 或返回已消费 cursor 时直接失败，且不修改消息或 cursor 状态。该 transport 不经过 Retrofit converter 或 Retrofit 的错误体交付路径，而由 `ServerConnection` 中与普通 REST 共享同一个认证、超时、重定向、脱敏和 encoded-body 限制配置的 OkHttp client 直接构造每页请求。非 2xx 响应不读取 body，立即关闭并抛出只包含状态码的类型化 HTTP 异常。Network interceptor 对每一页在 HTTP transfer framing 之后、`Content-Encoding` 解码之前的 encoded response-body octets 执行 64 MiB 上限；2xx 响应再在 OkHttp callback 线程使用独立的 64 MiB decoded-entity 计数/限流 `InputStream`，通过应用统一的宽容 `Json.decodeFromStream` 直接解码 DTO，并在解码结束后继续经同一 limiter 消费到 EOF。未知长度、低报长度、尾随数据和无限流都在对应上限的第 `max + 1` 字节失败；协程取消会立即取消 Call 并关闭正在阻塞读取的 body，取消导致的 I/O 异常不能替换 `CancellationException`。这些逐页上限不等于累计历史、DTO、字符串、Base64 和 UI 映射的实际 heap 峰值，也不代表其他 REST 大响应已完成审计。
 
@@ -597,6 +597,8 @@ Android 建议：模型设置页为 provider 分组列表，开关状态立即�
 
 Android 建议：命令面板优先使用 composer 上方内联建议面板，支持搜索、键盘上下选择和触摸选择；候选较多或需要复杂筛选时再使用受屏幕约束的 bottom sheet。选择命令后填入 chip 或文本，只有匹配已加载 `/command` 数据的命令才可分流到 command API。
 
+原生端 `/fork` 是保留的客户端内置命令，与已加载的 `/command` 数据保持分离；同名服务端命令不会展示，直接提交 `/fork` 也会在 prompt 发送前被拦截。它会打开可搜索、受屏幕约束的 bottom sheet，只列出当前已加载、位于活动分支、非 optimistic 且含普通可见文本的用户消息；候选可见性判断和 200 字符预览都采用有界输入扫描。打开或在 sheet 中选择消息不会调用 Repository；通过正常时间线分页加载过的旧消息会自动进入候选。符合条件的用户消息还会在复制按钮左侧显示同一 fork 操作，助手消息不显示。两个入口在调用 Repository 前统一进入同一个确认 Dialog；确认文案说明服务端复制所选消息之前的历史，并由 Android 把所选消息恢复到新会话 composer。ViewModel 会跨配置变更保留已选目标，并在主线程之外执行有界附件/项目上下文恢复校验。请求进行时 Dialog 会阻止重复确认、系统 Back 和遮罩关闭。
+
 ### 13.3 @ mention
 
 输入 `@` 后只显示 agent mention 候选：`@explore`、`@general`。这不是文件引用。文件上下文主要通过“附加文件”或 `/open` 命令进入。
@@ -852,7 +854,7 @@ Android 建议：`SessionDetailScreen` bottomBar 中按 Question 优先、Permis
 | GET | `/session/{sessionID}/message/{messageID}` | 单条消息 |
 | DELETE | `/session/{sessionID}/message/{messageID}` | 删除消息 |
 | DELETE | `/session/{sessionID}/message/{messageID}/part/{partID}` | 删除消息 part |
-| POST | `/session/{sessionID}/fork` | fork 会话，body `messageID` |
+| POST | `/session/{sessionID}/fork` | 从 `messageID` 之前的历史创建新的根会话；所选用户消息由一次性内存交接恢复到目标 composer |
 | POST | `/session/{sessionID}/abort` | 中止运行 |
 | POST | `/session/{sessionID}/init` | 初始化 AGENTS.md 流程 |
 | POST | `/session/{sessionID}/share` | 分享 |
@@ -1069,8 +1071,9 @@ Repository 调用使用 `OpenCodeFailure` 分类失败，SSE 状态保存 `SseFa
 | 会话详情 | 已具备 | 显示标题、消息、上下文用量和会话菜单 |
 | 项目文件 | 已具备 | 文件面板、目录懒加载、搜索、有界文本/图片/不可预览状态、预览，以及最多 10 个完整文件的 Composer 上下文选择均已具备 |
 | 更改审查 | 部分完成 | 会话详情 Changes tab 可显示 Git/session diff；独立 Review route 仍为占位 |
-| Composer | 主体具备 | slash/@/本机附件/项目文件上下文/agent/model/variant、纯上下文发送、Store 权威 capability 校验、已加载命令分流、附件/上下文终检和 send/abort/revert single-flight 已具备；Shell mode 未实现 |
+| Composer | 主体具备 | slash/@/本机附件/项目文件上下文/agent/model/variant、纯上下文发送、Store 权威 capability 校验、已加载命令分流、附件/上下文终检和 send/abort/revert/fork single-flight 已具备；Shell mode 未实现 |
 | 会话重置 | 已具备 | 支持 revert/unrevert、逐步/全部恢复、新分支消息投影、纯附件或纯项目上下文重置，以及可恢复内容完整性检查 |
+| 会话分叉 | 已具备 | `/fork` 与符合条件的用户消息操作共用可搜索选择器和确认流程；服务端从此前历史创建新的根会话，一次性有界草稿交接恢复所选 prompt，不克隆 Store 历史，也不创建 optimistic 消息 |
 | 新会话 | 已具备 | 复用 `SessionDetailScreen` 的 `"new"` 状态，首次发送才创建 session |
 | 设置 | 部分完成 | 通用、后台、服务器、Provider、自定义 Provider、模型均为单列路由；完整快捷键和部分 Web 设置未完成 |
 | Server | 主体具备 | 直连/SSH/STCP 互斥、STCP readiness、类型化永久 bridge 启动失败、SSH 认证前 host key 校验、Server URL 约束和私钥 256 KiB 边界已实现 |

@@ -110,6 +110,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
@@ -251,8 +252,19 @@ fun SessionDetailScreen(
     var sessionMenuExpanded by remember { mutableStateOf(false) }
     var sessionDialog by remember { mutableStateOf<SessionDialog?>(null) }
     var renameTitle by remember { mutableStateOf("") }
+    var forkSheetVisible by rememberSaveable(state.currentSessionId) { mutableStateOf(false) }
+    var forkSearchQuery by rememberSaveable(state.currentSessionId) { mutableStateOf("") }
+    var forkTargetFromSheet by rememberSaveable(state.currentSessionId) { mutableStateOf(false) }
+    var forkRequestObserved by rememberSaveable(state.currentSessionId) { mutableStateOf(false) }
     var hasPositionedInitialMessages by remember(state.currentSessionId) { mutableStateOf(false) }
     var jumpToFirstUserPending by remember(state.currentSessionId) { mutableStateOf(false) }
+    val openForkSheet: () -> Unit = {
+        viewModel.clearForkTarget()
+        forkTargetFromSheet = false
+        forkRequestObserved = false
+        forkSheetVisible = true
+        forkSearchQuery = ""
+    }
 
     LaunchedEffect(state.currentSessionId, latestVisibleMessageId, showAssistantThinking) {
         latestMessageItemIndex?.let { targetIndex ->
@@ -295,6 +307,19 @@ fun SessionDetailScreen(
 
     LaunchedEffect(isTextSelectionActive) {
         if (isTextSelectionActive) messageListState.stopScroll()
+    }
+
+    LaunchedEffect(state.isForkActionInProgress, state.forkTargetMessage) {
+        if (state.isForkActionInProgress) {
+            forkRequestObserved = true
+        } else if (forkRequestObserved) {
+            if (state.forkTargetMessage == null) {
+                forkSheetVisible = false
+                forkSearchQuery = ""
+                forkTargetFromSheet = false
+            }
+            forkRequestObserved = false
+        }
     }
 
     Scaffold(
@@ -388,6 +413,8 @@ fun SessionDetailScreen(
                         onModelSelected = viewModel::selectModel,
                         onVariantSelected = viewModel::selectVariant,
                         onSlashCommandSelected = viewModel::applySlashCommand,
+                        forkAvailable = state.forkableMessages.isNotEmpty(),
+                        onForkSelected = openForkSheet,
                         onMentionSelected = viewModel::applyMention,
                         onAttachFromPhone = {
                             val start = viewModel.beginReadingAttachments()
@@ -416,7 +443,7 @@ fun SessionDetailScreen(
                         onRemoveProjectFileContext = viewModel::removeProjectFileContext,
                         onOpenProviders = onOpenProviders,
                         onOpenModels = onOpenModels,
-                        onSubmit = { viewModel.submit(onSessionMaterialized) },
+                        onSubmit = { viewModel.submit(onSessionMaterialized, openForkSheet) },
                     )
                 }
             }
@@ -494,6 +521,7 @@ fun SessionDetailScreen(
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
                         items(visibleMessages, key = { it.id }) { message ->
+                            val forkVisible = state.forkableMessages.any { it.id == message.id }
                             SessionMessageCard(
                                 message = message,
                                 sessions = state.project.sessions,
@@ -501,7 +529,14 @@ fun SessionDetailScreen(
                                 turnDurationMillis = assistantTurnDurationMillis[message.id],
                                 isActiveAssistantMessage = message.id == activeAssistantMessageId,
                                 resetEnabled = resetMessagesEnabled,
+                                forkVisible = forkVisible,
+                                forkEnabled = forkVisible && !state.isForkActionInProgress,
                                 onResetToMessage = viewModel::resetToMessage,
+                                onFork = {
+                                    forkTargetFromSheet = false
+                                    forkRequestObserved = false
+                                    viewModel.selectForkTarget(message)
+                                },
                                 onOpenSession = onOpenSession,
                             )
                         }
@@ -591,6 +626,66 @@ fun SessionDetailScreen(
             },
         )
         null -> Unit
+    }
+
+    if (forkSheetVisible) {
+        LocalizedModalBottomSheet(
+            onDismissRequest = {
+                if (!state.isForkActionInProgress && state.forkTargetMessage == null) {
+                    forkSheetVisible = false
+                    forkSearchQuery = ""
+                    forkTargetFromSheet = false
+                    viewModel.clearForkTarget()
+                }
+            },
+            containerColor = OpenCodePalette.Canvas,
+        ) {
+            ForkMessageSheet(
+                messages = state.forkableMessages,
+                query = forkSearchQuery,
+                onQueryChange = { forkSearchQuery = it },
+                onSelect = { message ->
+                    forkTargetFromSheet = true
+                    forkRequestObserved = false
+                    viewModel.selectForkTarget(message)
+                },
+            )
+        }
+    }
+
+    val confirmedForkTarget = state.forkTargetMessage
+    if (confirmedForkTarget != null) {
+        OpenCodeConfirmDialog(
+            title = stringResource(R.string.session_fork_confirm_title),
+            message = stringResource(R.string.session_fork_confirm_message),
+            confirmText = stringResource(R.string.session_fork_confirm),
+            isConfirming = state.isForkActionInProgress,
+            errorMessage = state.forkError?.asString(),
+            confirmingText = stringResource(R.string.session_fork_confirming),
+            onDismiss = {
+                if (!state.isForkActionInProgress) {
+                    viewModel.clearForkTarget()
+                    if (!forkTargetFromSheet) forkSheetVisible = false
+                }
+            },
+            onConfirm = {
+                viewModel.forkSelectedMessage(
+                    onForked = { forkedSessionId ->
+                        forkSheetVisible = false
+                        forkSearchQuery = ""
+                        forkTargetFromSheet = false
+                        forkRequestObserved = false
+                        onOpenSession(forkedSessionId)
+                    },
+                    onOutcomeUncertain = {
+                        forkSheetVisible = false
+                        forkSearchQuery = ""
+                        forkTargetFromSheet = false
+                        forkRequestObserved = false
+                    },
+                )
+            },
+        )
     }
 }
 
@@ -2506,6 +2601,8 @@ private fun BottomComposer(
     onModelSelected: (OpenCodeModel) -> Unit,
     onVariantSelected: (String?) -> Unit,
     onSlashCommandSelected: (OpenCodeCommand) -> Unit,
+    forkAvailable: Boolean,
+    onForkSelected: () -> Unit,
     onMentionSelected: (OpenCodeAgent) -> Unit,
     onAttachFromPhone: () -> Unit,
     onAttachFromProject: () -> Unit,
@@ -2531,9 +2628,9 @@ private fun BottomComposer(
     val activeToken = value.substringAfterLast(' ')
     val showCommandSuggestions = commandQuery != null
     val showMentionSuggestions = !showCommandSuggestions && activeToken.startsWith("@")
-    val suggestions = remember(commands, agents, commandQuery, activeToken, showMentionSuggestions) {
+    val suggestions = remember(commands, agents, commandQuery, activeToken, showMentionSuggestions, forkAvailable) {
         when {
-            commandQuery != null -> commandSuggestions(commands, commandQuery)
+            commandQuery != null -> commandSuggestions(commands, commandQuery, includeFork = forkAvailable)
             showMentionSuggestions -> mentionSuggestions(agents, activeToken.removePrefix("@"))
             else -> emptyList()
         }
@@ -2598,6 +2695,10 @@ private fun BottomComposer(
                 showCommands = showCommandSuggestions,
                 maxHeight = maxSuggestionPanelHeight,
                 onSlashCommandSelected = onSlashCommandSelected,
+                onForkSelected = {
+                    dismissedSuggestionValue = value
+                    onForkSelected()
+                },
                 onMentionSelected = onMentionSelected,
             )
         }
@@ -3047,6 +3148,7 @@ private fun InlineSuggestionPanel(
     showCommands: Boolean,
     maxHeight: androidx.compose.ui.unit.Dp,
     onSlashCommandSelected: (OpenCodeCommand) -> Unit,
+    onForkSelected: () -> Unit,
     onMentionSelected: (OpenCodeAgent) -> Unit,
 ) {
     if (suggestions.isEmpty()) return
@@ -3074,6 +3176,11 @@ private fun InlineSuggestionPanel(
                             title = "/${suggestion.command.name}",
                             subtitle = suggestion.command.description ?: suggestion.command.source ?: stringResource(R.string.composer_command_fallback),
                             onClick = { onSlashCommandSelected(suggestion.command) },
+                        )
+                        ComposerSuggestion.Fork -> SuggestionRow(
+                            title = "/fork",
+                            subtitle = stringResource(R.string.command_fork_description),
+                            onClick = onForkSelected,
                         )
                         is ComposerSuggestion.Mention -> SuggestionRow(
                             title = "@${agentDisplayName(suggestion.agent.id)}",
@@ -3106,6 +3213,118 @@ private fun SuggestionRow(
         }
     }
 }
+
+@Composable
+private fun ForkMessageSheet(
+    messages: List<OpenCodeMessage>,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onSelect: (OpenCodeMessage) -> Unit,
+) {
+    val maxHeight = LocalConfiguration.current.screenHeightDp.dp * 0.8f
+    val filteredMessages = remember(messages, query) {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isEmpty()) {
+            messages
+        } else {
+            messages.filter { message ->
+                forkMessagePreview(message).contains(normalizedQuery, ignoreCase = true)
+            }
+        }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = maxHeight)
+            .padding(horizontal = 20.dp, vertical = 10.dp)
+            .navigationBarsPadding()
+            .imePadding(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.session_fork_sheet_title),
+            style = MaterialTheme.typography.titleLarge,
+            color = OpenCodePalette.Text,
+        )
+        Text(
+            text = stringResource(R.string.session_fork_sheet_subtitle),
+            style = MaterialTheme.typography.bodySmall,
+            color = OpenCodePalette.MutedText,
+        )
+        OpenCodePlainTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            placeholder = stringResource(R.string.session_fork_search_placeholder),
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.CenterStart,
+            singleLine = true,
+        )
+        HorizontalDivider(color = OpenCodePalette.Border)
+        when {
+            filteredMessages.isEmpty() -> Text(
+                text = stringResource(R.string.session_fork_no_messages),
+                modifier = Modifier.padding(vertical = 16.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = OpenCodePalette.MutedText,
+            )
+            else -> LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(bottom = 12.dp),
+            ) {
+                items(filteredMessages, key = { it.id }) { message ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 56.dp)
+                            .clickable(role = Role.RadioButton) { onSelect(message) },
+                        shape = RoundedCornerShape(8.dp),
+                        color = OpenCodePalette.Panel,
+                        border = BorderStroke(1.dp, OpenCodePalette.Border),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Text(
+                                text = forkMessagePreview(message),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = OpenCodePalette.Text,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            formatClockTime(message.createdAt)?.let { time ->
+                                Text(
+                                    text = time,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = OpenCodePalette.MessageMeta,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun forkMessagePreview(message: OpenCodeMessage): String = message.parts
+    .asSequence()
+    .filter { part ->
+        part.type.equals("text", ignoreCase = true) &&
+            !part.synthetic &&
+            !part.ignored &&
+            part.text?.hasVisibleForkText() == true
+    }
+    .mapNotNull(OpenCodeMessagePart::text)
+    .firstOrNull()
+    .orEmpty()
+    .toForkPreview()
 
 @Composable
 private fun AttachmentChoiceSheet(
@@ -3186,7 +3405,10 @@ private fun SessionMessageCard(
     turnDurationMillis: Long?,
     isActiveAssistantMessage: Boolean,
     resetEnabled: Boolean,
+    forkVisible: Boolean,
+    forkEnabled: Boolean,
     onResetToMessage: (OpenCodeMessage) -> Unit,
+    onFork: () -> Unit,
     onOpenSession: (String) -> Unit,
 ) {
     val isUser = message.role.equals("user", ignoreCase = true)
@@ -3286,7 +3508,10 @@ private fun SessionMessageCard(
             copied = copied,
             resetVisible = resetVisible,
             resetEnabled = resetVisible && resetEnabled,
+            forkVisible = forkVisible,
+            forkEnabled = forkEnabled,
             onReset = { onResetToMessage(message) },
+            onFork = onFork,
             onCopy = {
                 scope.launch {
                     clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("OpenCode message", copyText)))
@@ -4475,10 +4700,13 @@ private fun MessageMetaRow(
     copied: Boolean,
     resetVisible: Boolean,
     resetEnabled: Boolean,
+    forkVisible: Boolean,
+    forkEnabled: Boolean,
     onReset: () -> Unit,
+    onFork: () -> Unit,
     onCopy: () -> Unit,
 ) {
-    if (metaItems.isEmpty() && !copyEnabled && !resetVisible) return
+    if (metaItems.isEmpty() && !copyEnabled && !resetVisible && !forkVisible) return
     val metaText = metaItems.joinToString(" · ")
     Row(
         modifier = Modifier.fillMaxWidth(if (isUser) 0.82f else 0.96f),
@@ -4499,6 +4727,15 @@ private fun MessageMetaRow(
                     contentDescription = stringResource(R.string.session_reset_to_here),
                     enabled = resetEnabled,
                     onClick = onReset,
+                )
+            }
+            if (forkVisible) {
+                MessageActionButton(
+                    iconRes = R.drawable.ic_opencode_fork,
+                    contentDescription = stringResource(R.string.a11y_fork_from_message),
+                    enabled = forkEnabled,
+                    iconSize = 22.dp,
+                    onClick = onFork,
                 )
             }
             MessageCopyButton(
@@ -4522,20 +4759,77 @@ private fun MessageMetaRow(
 }
 
 @Composable
-private fun MessageMetaText(
+internal fun MessageMetaText(
     text: String,
     modifier: Modifier = Modifier,
     textAlign: TextAlign? = null,
 ) {
-    Text(
-        text = text,
-        modifier = modifier,
-        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-        color = OpenCodePalette.MessageMeta,
-        textAlign = textAlign,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-    )
+    var isEllipsized by remember(text) { mutableStateOf(false) }
+    var expanded by remember(text) { mutableStateOf(false) }
+    val popupOffsetY = with(LocalDensity.current) { MessageMetaPopupOffsetY.roundToPx() }
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val popupWidth = (screenWidth - MessageMetaPopupReservedWidth)
+        .coerceIn(MessageMetaPopupMinWidth, MessageMetaPopupMaxWidth)
+    val showFullTextLabel = stringResource(R.string.a11y_show_full_message_metadata)
+
+    LaunchedEffect(isEllipsized) {
+        if (!isEllipsized) expanded = false
+    }
+
+    Box(
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .then(
+                if (isEllipsized) {
+                    Modifier
+                        .expandableStateSemantics(expandable = true, expanded = expanded)
+                        .clickable(
+                            onClickLabel = showFullTextLabel,
+                            role = Role.Button,
+                        ) { expanded = !expanded }
+                } else {
+                    Modifier
+                },
+            ),
+        contentAlignment = if (textAlign == TextAlign.End) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+            color = OpenCodePalette.MessageMeta,
+            textAlign = textAlign,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { result -> isEllipsized = result.isLineEllipsized(0) },
+        )
+
+        if (expanded && isEllipsized) {
+            LocalizedPopup(
+                alignment = if (textAlign == TextAlign.End) Alignment.TopEnd else Alignment.TopStart,
+                offset = IntOffset(0, popupOffsetY),
+                onDismissRequest = { expanded = false },
+                properties = PopupProperties(focusable = true),
+            ) {
+                Surface(
+                    modifier = Modifier.width(popupWidth),
+                    shape = RoundedCornerShape(6.dp),
+                    color = OpenCodePalette.Panel,
+                    border = BorderStroke(1.dp, OpenCodePalette.Border),
+                    shadowElevation = 8.dp,
+                ) {
+                    Text(
+                        text = text,
+                        modifier = Modifier
+                            .heightIn(max = MessageMetaPopupMaxHeight)
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                        color = OpenCodePalette.Text,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -4568,6 +4862,7 @@ private fun MessageActionButton(
     iconRes: Int,
     contentDescription: String,
     enabled: Boolean,
+    iconSize: Dp = 16.dp,
     onClick: () -> Unit,
 ) {
     Box(
@@ -4587,7 +4882,7 @@ private fun MessageActionButton(
                     painter = painterResource(iconRes),
                     contentDescription = null,
                     tint = if (enabled) OpenCodePalette.MessageMeta else OpenCodePalette.MessageMeta.copy(alpha = 0.38f),
-                    modifier = Modifier.size(16.dp),
+                    modifier = Modifier.size(iconSize),
                 )
             }
         }
@@ -4625,6 +4920,7 @@ private enum class SessionDialog {
 
 private sealed interface ComposerSuggestion {
     data class Command(val command: OpenCodeCommand) : ComposerSuggestion
+    data object Fork : ComposerSuggestion
     data class Mention(val agent: OpenCodeAgent) : ComposerSuggestion
 }
 
@@ -4651,6 +4947,11 @@ private val ContextUsagePopupWidth = 360.dp
 private val ContextUsagePopupMaxHeight = 560.dp
 private val ContextUsagePopupOffsetY = 48.dp
 private val ContextUsagePopupScreenMargin = 12.dp
+private val MessageMetaPopupMinWidth = 160.dp
+private val MessageMetaPopupMaxWidth = 280.dp
+private val MessageMetaPopupMaxHeight = 192.dp
+private val MessageMetaPopupOffsetY = 44.dp
+private val MessageMetaPopupReservedWidth = 72.dp
 private val ComposerInputMinimumHeight = 89.dp
 private val ComposerAttachmentStripMaxHeight = 80.dp
 private val ComposerTextInputMaxHeight = 224.dp
@@ -4670,10 +4971,22 @@ internal fun slashCommandQueryOrNull(value: String): String? {
     return commandInput.removePrefix("/").takeIf { query -> query.none(Char::isWhitespace) }
 }
 
-private fun commandSuggestions(commands: List<OpenCodeCommand>, query: String): List<ComposerSuggestion> = commands
-        .distinctBy { it.name }
-        .filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
-        .map { ComposerSuggestion.Command(it) }
+private fun commandSuggestions(
+    commands: List<OpenCodeCommand>,
+    query: String,
+    includeFork: Boolean,
+): List<ComposerSuggestion> = buildList {
+    if (includeFork && (query.isBlank() || "fork".contains(query, ignoreCase = true))) {
+        add(ComposerSuggestion.Fork)
+    }
+    addAll(
+        commands
+            .distinctBy { it.name }
+            .filterNot { it.name.equals("fork", ignoreCase = true) }
+            .filter { query.isBlank() || it.name.contains(query, ignoreCase = true) }
+            .map { ComposerSuggestion.Command(it) },
+    )
+}
 
 @Composable
 private fun ContextToolSummary.localizedLabel(): String = buildList {

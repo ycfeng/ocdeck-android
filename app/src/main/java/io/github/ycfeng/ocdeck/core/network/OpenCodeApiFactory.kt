@@ -4,8 +4,15 @@ import io.github.ycfeng.ocdeck.core.security.Redactor
 import io.github.ycfeng.ocdeck.data.server.ServerConfig
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Call
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
+import okio.BufferedSink
 import retrofit2.Retrofit
+import retrofit2.Invocation
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -91,12 +98,61 @@ class OpenCodeApiFactory(
         }
         .build()
 
-    private fun createApi(baseUrl: String, client: OkHttpClient): OpenCodeApi = Retrofit.Builder()
-        .baseUrl(baseUrl.asRetrofitBaseUrl())
-        .client(client)
-        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+    private fun createApi(baseUrl: String, client: OkHttpClient): OpenCodeApi {
+        val noRetryClient = client.newBuilder()
+            .retryOnConnectionFailure(false)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .addInterceptor(PreventRequestReplayInterceptor())
+            .build()
+        return Retrofit.Builder()
+            .baseUrl(baseUrl.asRetrofitBaseUrl())
+            .callFactory(RetrofitRequestPolicyCallFactory(client, noRetryClient))
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+            .create(OpenCodeApi::class.java)
+    }
+}
+
+internal class RetrofitRequestPolicyCallFactory(
+    private val defaultFactory: Call.Factory,
+    private val noRetryFactory: Call.Factory,
+) : Call.Factory {
+    override fun newCall(request: Request): Call {
+        val method = request.tag(Invocation::class.java)?.method()
+        val factory = if (method?.isAnnotationPresent(DisableAutomaticRetry::class.java) == true) {
+            noRetryFactory
+        } else {
+            defaultFactory
+        }
+        return factory.newCall(request)
+    }
+}
+
+internal class PreventRequestReplayInterceptor : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response = chain.proceed(chain.request().preventReplay())
+}
+
+internal fun Request.preventReplay(): Request {
+    val currentBody = body ?: return this
+    if (currentBody.isOneShot()) return this
+    return newBuilder()
+        .method(method, OneShotRequestBody(currentBody))
         .build()
-        .create(OpenCodeApi::class.java)
+}
+
+private class OneShotRequestBody(
+    private val delegate: RequestBody,
+) : RequestBody() {
+    override fun contentType() = delegate.contentType()
+
+    override fun contentLength(): Long = delegate.contentLength()
+
+    override fun isDuplex(): Boolean = delegate.isDuplex()
+
+    override fun isOneShot(): Boolean = true
+
+    override fun writeTo(sink: BufferedSink) = delegate.writeTo(sink)
 }
 
 internal class OpenCodeConnectionClient(

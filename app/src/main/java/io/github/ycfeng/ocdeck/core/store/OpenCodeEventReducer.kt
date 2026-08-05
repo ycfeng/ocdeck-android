@@ -411,6 +411,7 @@ private fun JsonObject.toPart(redactor: Redactor): OpenCodeMessagePart? {
         type = string("type") ?: "unknown",
         text = string("text"),
         synthetic = boolean("synthetic") ?: false,
+        ignored = boolean("ignored") ?: false,
         filename = string("filename"),
         mime = string("mime"),
         url = string("url"),
@@ -466,7 +467,7 @@ private fun JsonObject.stringArray(name: String): List<String> = (this[name] as?
     ?.mapNotNull { it.jsonPrimitive.contentOrNull?.takeIf(String::isNotBlank) }
     .orEmpty()
 
-private fun List<OpenCodeMessagePart>.renderText(): String = filter { it.type == "text" && !it.synthetic }
+private fun List<OpenCodeMessagePart>.renderText(): String = filter { it.type == "text" && !it.synthetic && !it.ignored }
     .mapNotNull { it.text }
     .joinToString("\n")
 

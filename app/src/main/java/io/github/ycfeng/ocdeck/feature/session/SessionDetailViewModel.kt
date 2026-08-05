@@ -7,11 +7,15 @@ import io.github.ycfeng.ocdeck.R
 import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityLease
 import io.github.ycfeng.ocdeck.core.navigation.SessionVisibilityRegistry
 import io.github.ycfeng.ocdeck.core.network.GlobalConnectionLease
+import io.github.ycfeng.ocdeck.core.network.OpenCodeFailure
+import io.github.ycfeng.ocdeck.core.network.OpenCodeFailureClassifier
 import io.github.ycfeng.ocdeck.core.network.OpenCodeEventClient
 import io.github.ycfeng.ocdeck.core.network.ProjectConnectionLease
 import io.github.ycfeng.ocdeck.core.store.InMemoryOpenCodeStore
 import io.github.ycfeng.ocdeck.core.store.MessagePageApplyResult
 import io.github.ycfeng.ocdeck.core.store.OpenCodeProjectState
+import io.github.ycfeng.ocdeck.core.store.SessionComposerDraftHandoff
+import io.github.ycfeng.ocdeck.core.store.SessionComposerDraftHandoffStore
 import io.github.ycfeng.ocdeck.core.util.LatestRequestGate
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
 import io.github.ycfeng.ocdeck.core.util.ProjectFilePathNormalizer
@@ -58,6 +62,7 @@ import io.github.ycfeng.ocdeck.domain.prompt.PromptVariantUnavailableException
 import io.github.ycfeng.ocdeck.domain.prompt.ProjectFileContext
 import io.github.ycfeng.ocdeck.domain.prompt.ProjectFileContextLimits
 import io.github.ycfeng.ocdeck.domain.prompt.SessionOperationCoordinator
+import io.github.ycfeng.ocdeck.domain.prompt.isForkBuiltInInvocation
 import io.github.ycfeng.ocdeck.feature.composer.findModel
 import io.github.ycfeng.ocdeck.feature.composer.resolveComposerAgent
 import io.github.ycfeng.ocdeck.feature.composer.selectPromptModel
@@ -66,6 +71,7 @@ import io.github.ycfeng.ocdeck.feature.composer.toComposerAgentOrNull
 import io.github.ycfeng.ocdeck.ui.text.UiText
 import io.github.ycfeng.ocdeck.ui.text.toErrorUiText
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -74,6 +80,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 class SessionDetailViewModel(
@@ -87,6 +94,7 @@ class SessionDetailViewModel(
     private val recentProjectRecorder: RecentProjectRecorder,
     private val promptSender: OpenCodePromptSender,
     private val sessionOperationCoordinator: SessionOperationCoordinator,
+    private val sessionComposerDraftHandoffStore: SessionComposerDraftHandoffStore,
     sessionVisibilityRegistry: SessionVisibilityRegistry,
     pathNormalizer: PathNormalizer,
     private val projectFilePathNormalizer: ProjectFilePathNormalizer,
@@ -111,6 +119,9 @@ class SessionDetailViewModel(
         ),
     )
     private val refreshGate = LatestRequestGate()
+    private val forkRequestGate = LatestRequestGate()
+    @Volatile
+    private var destinationVisible = false
     private lateinit var projectConnectionLease: ProjectConnectionLease
     private lateinit var globalConnectionLease: GlobalConnectionLease
     private var olderMessagesJob: Job? = null
@@ -142,6 +153,7 @@ class SessionDetailViewModel(
         )
 
     init {
+        restoreForkDraftIfAvailable(workspace = null)
         recentProjectRecorder.recordAdd(serverId, normalizedDirectory)
         projectConnectionLease = eventClient.connectProject(serverId, normalizedDirectory)
         globalConnectionLease = eventClient.connectGlobal(serverId)
@@ -153,6 +165,8 @@ class SessionDetailViewModel(
     }
 
     fun onDestinationVisibilityChanged(visible: Boolean) {
+        destinationVisible = visible
+        if (!visible) forkRequestGate.begin()
         sessionVisibilityLease.setDestinationVisible(visible)
     }
 
@@ -313,6 +327,129 @@ class SessionDetailViewModel(
         startOlderMessagesLoad(loadAll = true, onComplete = onComplete)
     }
 
+    fun selectForkTarget(message: OpenCodeMessage) {
+        val state = uiState.value
+        if (
+            state.currentSessionId == OpenCodePromptSender.NEW_SESSION_ID ||
+            state.isChildSession ||
+            state.isForkActionInProgress
+        ) return
+        val currentMessage = state.forkableMessages.firstOrNull { it.id == message.id } ?: return
+        localState.update { it.copy(forkTargetMessage = currentMessage, forkError = null) }
+    }
+
+    fun clearForkTarget() {
+        localState.update { local ->
+            if (local.isForkActionInProgress) local else local.copy(forkTargetMessage = null, forkError = null)
+        }
+    }
+
+    fun forkSelectedMessage(
+        onForked: (String) -> Unit,
+        onOutcomeUncertain: () -> Unit,
+    ) {
+        val state = uiState.value
+        val selectedMessage = localState.value.forkTargetMessage ?: return
+        if (
+            state.currentSessionId == OpenCodePromptSender.NEW_SESSION_ID ||
+            state.isChildSession ||
+            state.isForkActionInProgress
+        ) return
+        val currentMessage = state.forkableMessages.firstOrNull { it.id == selectedMessage.id } ?: return
+
+        val sourceSessionId = state.currentSessionId
+        val workspace = state.project.workspace
+        val requestId = forkRequestGate.begin()
+        val selectedAgent = state.selectedAgent
+        val selectedModel = state.selectedModel
+        val selectedVariant = state.selectedVariant
+        localState.update {
+            it.copy(
+                isForkActionInProgress = true,
+                forkTargetMessage = currentMessage,
+                forkError = null,
+            )
+        }
+        viewModelScope.launch {
+            val draft = withContext(Dispatchers.Default) {
+                currentMessage.toSessionRevertDraft(normalizedDirectory, projectFileUrlBuilder)
+            }
+            draft.failure?.let { failure ->
+                localState.update {
+                    it.copy(isForkActionInProgress = false, forkError = failure.toUiText())
+                }
+                return@launch
+            }
+            if (!draft.hasRecoverableContent) {
+                localState.update {
+                    it.copy(
+                        isForkActionInProgress = false,
+                        forkError = UiText.Resource(R.string.session_fork_failed),
+                    )
+                }
+                return@launch
+            }
+            val handoff = SessionComposerDraftHandoff(
+                text = draft.text,
+                attachments = draft.attachments,
+                projectFileContexts = draft.projectFileContexts,
+                selectedAgentId = selectedAgent,
+                selectedModel = selectedModel,
+                selectedVariant = selectedVariant,
+            )
+            sessionOperationCoordinator.fork(
+                serverId = serverId,
+                directory = normalizedDirectory,
+                sessionId = sourceSessionId,
+                messageId = currentMessage.id,
+                workspace = workspace,
+            ).onSuccess { forkedSession ->
+                store.upsertSession(serverId, normalizedDirectory, forkedSession, workspace)
+                val ownsNavigation = forkRequestGate.isCurrent(requestId) &&
+                    destinationVisible &&
+                    localState.value.currentSessionId == sourceSessionId
+                localState.update {
+                    it.copy(
+                        isForkActionInProgress = false,
+                        forkTargetMessage = null,
+                        forkError = null,
+                    )
+                }
+                if (ownsNavigation) {
+                    sessionComposerDraftHandoffStore.put(
+                        serverId = serverId,
+                        directory = normalizedDirectory,
+                        workspace = workspace,
+                        sessionId = forkedSession.id,
+                        draft = handoff,
+                    )
+                    onForked(forkedSession.id)
+                }
+            }.onFailure { throwable ->
+                if (throwable is CancellationException) throw throwable
+                if (throwable.hasUncertainForkOutcome()) {
+                    localState.update {
+                        it.copy(
+                            isForkActionInProgress = false,
+                            forkTargetMessage = null,
+                            forkError = null,
+                            error = UiText.Resource(R.string.session_fork_outcome_uncertain),
+                        )
+                    }
+                    refresh()
+                    if (forkRequestGate.isCurrent(requestId) && destinationVisible) onOutcomeUncertain()
+                } else {
+                    localState.update {
+                        it.copy(
+                            isForkActionInProgress = false,
+                            forkError = throwable.toPromptUiText(R.string.session_fork_failed),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun startOlderMessagesLoad(
         loadAll: Boolean,
         onComplete: ((Boolean) -> Unit)? = null,
@@ -446,7 +583,10 @@ class SessionDetailViewModel(
         }
     }
 
-    fun submit(onSessionMaterialized: (String) -> Unit) {
+    fun submit(
+        onSessionMaterialized: (String) -> Unit,
+        onForkRequested: () -> Unit,
+    ) {
         if (localState.value.isReadingAttachments || localState.value.isSending) return
         val state = uiState.value
         if (
@@ -457,6 +597,10 @@ class SessionDetailViewModel(
             state.isRevertActionInProgress ||
             state.isRevertBranchCommitting
         ) return
+        if (state.composer.isForkBuiltInInvocation()) {
+            onForkRequested()
+            return
+        }
         val action = stateMachine.evaluate(
             PromptSendInput(
                 text = state.composer,
@@ -932,6 +1076,7 @@ class SessionDetailViewModel(
         projectResult.onSuccess { snapshot ->
             val applied = store.applyProjectSnapshotIfRevision(snapshot, expectedProjectRevision)
             val currentProject = store.currentProject(serverId, normalizedDirectory)
+            restoreForkDraftIfAvailable(currentProject.workspace)
             sessionsForModelResolution = currentProject.sessions
             capabilitiesForModelResolution = currentProject.promptCapabilities
             if (!applied) store.setProjectLoading(serverId, normalizedDirectory, isLoading = false)
@@ -1203,6 +1348,14 @@ class SessionDetailViewModel(
             revert = currentSession?.revert,
             branchStartMessageId = activeBranchStartMessageId,
         )
+        val forkableMessages = if (isChildSession) {
+            emptyList()
+        } else {
+            forkableUserMessages(messageProjection.visibleMessages)
+        }
+        val forkTargetMessage = local.forkTargetMessage?.takeIf { target ->
+            local.isForkActionInProgress || forkableMessages.any { it.id == target.id }
+        }
         val isGitProject = project?.vcs.equals("git", ignoreCase = true)
         val availableReviewModes = if (isGitProject) {
             listOf(ReviewMode.Git, ReviewMode.Turn)
@@ -1226,6 +1379,7 @@ class SessionDetailViewModel(
             childTitle = childTitle,
             messages = currentMessages,
             visibleMessages = messageProjection.visibleMessages,
+            forkableMessages = forkableMessages,
             revertedUserMessages = messageProjection.revertedUserMessages,
             revert = currentSession?.revert,
             agents = agents,
@@ -1266,6 +1420,9 @@ class SessionDetailViewModel(
             isPermissionActionInProgress = local.isPermissionActionInProgress,
             isSessionActionInProgress = local.isSessionActionInProgress,
             isRevertActionInProgress = local.isRevertActionInProgress,
+            isForkActionInProgress = local.isForkActionInProgress,
+            forkTargetMessage = forkTargetMessage,
+            forkError = local.forkError,
             isRevertBranchCommitting = isRevertBranchCommitting,
             isUpdatingProjectName = local.isUpdatingProjectName,
             projectNameError = local.projectNameError,
@@ -1278,6 +1435,33 @@ class SessionDetailViewModel(
         sessionVisibilityLease.release()
         projectConnectionLease.release()
         globalConnectionLease.release()
+    }
+
+    private fun restoreForkDraftIfAvailable(workspace: String?) {
+        val local = localState.value
+        if (local.currentSessionId == OpenCodePromptSender.NEW_SESSION_ID || local.forkDraftRestored) return
+        val draft = sessionComposerDraftHandoffStore.consume(
+            serverId = serverId,
+            directory = normalizedDirectory,
+            workspace = workspace,
+            sessionId = local.currentSessionId,
+        ) ?: return
+        localState.update { current ->
+            if (current.forkDraftRestored || current.currentSessionId != local.currentSessionId) {
+                current
+            } else {
+                current.copy(
+                    composer = draft.text,
+                    attachments = draft.attachments,
+                    projectFileContexts = draft.projectFileContexts,
+                    selectedAgentOverride = draft.selectedAgentId.toComposerAgentOrNull(),
+                    selectedModel = draft.selectedModel,
+                    selectedVariant = draft.selectedVariant,
+                    modelPreferenceRestored = false,
+                    forkDraftRestored = true,
+                )
+            }
+        }
     }
 }
 
@@ -1297,6 +1481,10 @@ private data class SessionLocalState(
     val isPermissionActionInProgress: Boolean = false,
     val isSessionActionInProgress: Boolean = false,
     val isRevertActionInProgress: Boolean = false,
+    val isForkActionInProgress: Boolean = false,
+    val forkTargetMessage: OpenCodeMessage? = null,
+    val forkError: UiText? = null,
+    val forkDraftRestored: Boolean = false,
     val revertBranchStartMessageId: String? = null,
     val isUpdatingProjectName: Boolean = false,
     val projectNameError: UiText? = null,
@@ -1321,6 +1509,9 @@ private data class SessionLocalState(
             "isPermissionActionInProgress=$isPermissionActionInProgress, " +
             "isSessionActionInProgress=$isSessionActionInProgress, " +
             "isRevertActionInProgress=$isRevertActionInProgress, " +
+            "isForkActionInProgress=$isForkActionInProgress, forkTargetPresent=${forkTargetMessage != null}, " +
+            "forkErrorPresent=${forkError != null}, " +
+            "forkDraftRestored=$forkDraftRestored, " +
             "revertBranchStartMessageId=${redactedIfPresent(revertBranchStartMessageId)}, " +
             "isUpdatingProjectName=$isUpdatingProjectName, projectNameErrorPresent=${projectNameError != null}, " +
             "errorPresent=${error != null}, modelPreferenceRestored=$modelPreferenceRestored, " +
@@ -1364,6 +1555,7 @@ data class SessionDetailUiState(
     val childTitle: String?,
     val messages: List<OpenCodeMessage>,
     val visibleMessages: List<OpenCodeMessage>,
+    val forkableMessages: List<OpenCodeMessage>,
     val revertedUserMessages: List<OpenCodeMessage>,
     val revert: OpenCodeSessionRevert?,
     val agents: List<OpenCodeAgent>,
@@ -1396,6 +1588,9 @@ data class SessionDetailUiState(
     val isPermissionActionInProgress: Boolean,
     val isSessionActionInProgress: Boolean,
     val isRevertActionInProgress: Boolean,
+    val isForkActionInProgress: Boolean,
+    val forkTargetMessage: OpenCodeMessage?,
+    val forkError: UiText?,
     val isRevertBranchCommitting: Boolean,
     val isUpdatingProjectName: Boolean,
     val projectNameError: UiText?,
@@ -1411,6 +1606,7 @@ data class SessionDetailUiState(
             "parentSessionId=${redactedIfPresent(parentSessionId)}, parentTitlePresent=${parentTitle != null}, " +
             "childTitlePresent=${childTitle != null}, messageCount=${messages.size}, " +
             "visibleMessageCount=${visibleMessages.size}, revertedUserMessageCount=${revertedUserMessages.size}, " +
+            "forkableMessageCount=${forkableMessages.size}, " +
             "revertPresent=${revert != null}, agentCount=${agents.size}, modelCount=${models.size}, " +
             "commandCount=${commands.size}, composerLength=${composer.length}, attachmentCount=${attachments.size}, " +
             "projectFileContextCount=${projectFileContexts.size}, " +
@@ -1427,6 +1623,8 @@ data class SessionDetailUiState(
             "isPermissionActionInProgress=$isPermissionActionInProgress, " +
             "isSessionActionInProgress=$isSessionActionInProgress, " +
             "isRevertActionInProgress=$isRevertActionInProgress, " +
+            "isForkActionInProgress=$isForkActionInProgress, forkTargetPresent=${forkTargetMessage != null}, " +
+            "forkErrorPresent=${forkError != null}, " +
             "isRevertBranchCommitting=$isRevertBranchCommitting, " +
             "isUpdatingProjectName=$isUpdatingProjectName, projectNameErrorPresent=${projectNameError != null}, " +
             "submitAction=$submitAction, errorPresent=${error != null})"
@@ -1641,6 +1839,18 @@ private fun Throwable.toPromptUiText(@StringRes fallback: Int): UiText = when (t
     is PromptProjectContextInvalidException -> UiText.Resource(R.string.project_file_context_invalid)
     is PromptSendOutcomeUncertainException -> UiText.Resource(R.string.prompt_error_outcome_uncertain)
     else -> toErrorUiText(fallback)
+}
+
+private fun Throwable.hasUncertainForkOutcome(): Boolean = when (val failure = OpenCodeFailureClassifier.classify(this)) {
+    is OpenCodeFailure.HttpStatus -> failure.code == 408 || failure.code >= 500
+    OpenCodeFailure.NetworkUnavailable,
+    OpenCodeFailure.Timeout,
+    OpenCodeFailure.InvalidResponse,
+    OpenCodeFailure.ResponseTooLarge,
+    OpenCodeFailure.TransportChanged,
+    OpenCodeFailure.Unknown,
+    -> true
+    is OpenCodeFailure.OperationRejected -> false
 }
 
 private fun SessionRevertDraftFailure.toUiText(): UiText = when (this) {

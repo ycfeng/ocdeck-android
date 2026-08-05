@@ -46,6 +46,58 @@ internal fun projectSessionMessages(
     )
 }
 
+internal fun OpenCodeMessage.isForkableUserMessage(): Boolean =
+    role.equals("user", ignoreCase = true) &&
+        !isOptimistic &&
+        parts.any { part ->
+            part.type == "text" &&
+                !part.synthetic &&
+                !part.ignored &&
+                part.text?.hasVisibleForkText() == true
+        }
+
+internal fun forkableUserMessages(messages: List<OpenCodeMessage>): List<OpenCodeMessage> =
+    messages.asReversed().filter(OpenCodeMessage::isForkableUserMessage)
+
+internal fun String.hasVisibleForkText(maxScanLength: Int = ForkTextScanLimit): Boolean {
+    if (maxScanLength <= 0) return false
+    var scanned = 0
+    for (character in this) {
+        if (scanned >= maxScanLength) break
+        scanned += 1
+        if (!character.isWhitespace() && !Character.isSpaceChar(character)) return true
+    }
+    return false
+}
+
+internal fun String.toForkPreview(
+    maxLength: Int = ForkPreviewMaxLength,
+    maxScanLength: Int = ForkTextScanLimit,
+): String {
+    if (maxLength <= 0 || maxScanLength <= 0) return ""
+    val result = StringBuilder(minOf(length, maxLength))
+    var pendingSpace = false
+    var scanned = 0
+    for (character in this) {
+        if (scanned >= maxScanLength || result.length >= maxLength) break
+        scanned += 1
+        if (character.isWhitespace() || Character.isSpaceChar(character)) {
+            if (result.isNotEmpty()) pendingSpace = true
+            continue
+        }
+        if (pendingSpace) {
+            if (result.length + 2 > maxLength) return result.toString()
+            result.append(' ')
+            pendingSpace = false
+        }
+        result.append(character)
+    }
+    return result.toString()
+}
+
+private const val ForkTextScanLimit = 4_096
+private const val ForkPreviewMaxLength = 200
+
 internal data class SessionRevertDraft(
     val text: String,
     val attachments: List<PromptAttachment>,

@@ -15,6 +15,10 @@ import retrofit2.http.Query
 import retrofit2.http.Streaming
 import retrofit2.http.PUT
 
+@Target(AnnotationTarget.FUNCTION)
+@Retention(AnnotationRetention.RUNTIME)
+internal annotation class DisableAutomaticRetry
+
 interface OpenCodeApi {
     @RetrofitInboundResponse(mode = RetrofitInboundResponseMode.BOUNDED)
     @GET("global/health")
@@ -157,6 +161,16 @@ interface OpenCodeApi {
         @Query("directory") directory: String,
         @Query("workspace") workspace: String? = null,
     ): Boolean
+
+    @RetrofitInboundResponse(mode = RetrofitInboundResponseMode.BOUNDED)
+    @DisableAutomaticRetry
+    @POST("session/{sessionID}/fork")
+    suspend fun forkSession(
+        @Path("sessionID") sessionId: String,
+        @Query("directory") directory: String,
+        @Query("workspace") workspace: String? = null,
+        @Body body: ForkSessionRequestDto,
+    ): SessionDto
 
     @RetrofitInboundResponse(mode = RetrofitInboundResponseMode.BOUNDED)
     @POST("session/{sessionID}/revert")
@@ -561,7 +575,14 @@ data class RevertSessionRequestDto(
     val partID: String? = null,
 ) {
     override fun toString(): String =
-        "RevertSessionRequestDto(messageID=$REDACTED, partID=${redactedIfPresent(partID)})"
+            "RevertSessionRequestDto(messageID=$REDACTED, partID=${redactedIfPresent(partID)})"
+}
+
+@Serializable
+data class ForkSessionRequestDto(
+    val messageID: String,
+) {
+    override fun toString(): String = "ForkSessionRequestDto(messageID=$REDACTED)"
 }
 
 @Serializable
@@ -752,6 +773,7 @@ data class MessagePartDto(
     val type: String,
     val text: String? = null,
     val synthetic: Boolean? = null,
+    val ignored: Boolean? = null,
     val filename: String? = null,
     val mime: String? = null,
     val url: String? = null,
@@ -761,7 +783,8 @@ data class MessagePartDto(
 ) {
     override fun toString(): String =
         "MessagePartDto(id=$REDACTED, messageID=$REDACTED, sessionID=$REDACTED, type=$type, " +
-            "textPresent=${text != null}, synthetic=$synthetic, filename=${redactedIfPresent(filename)}, " +
+            "textPresent=${text != null}, synthetic=$synthetic, ignored=$ignored, " +
+            "filename=${redactedIfPresent(filename)}, " +
             "mimePresent=${mime != null}, url=${redactedIfPresent(url)}, toolPresent=${tool != null}, " +
             "statePresent=${state != null}, metadataPresent=${metadata != null})"
 }

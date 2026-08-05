@@ -6,6 +6,7 @@ import io.github.ycfeng.ocdeck.core.network.CreateSessionRequestDto
 import io.github.ycfeng.ocdeck.core.network.ActiveSessionMessagesRequest
 import io.github.ycfeng.ocdeck.core.network.FileContentDto
 import io.github.ycfeng.ocdeck.core.network.FileEntryDto
+import io.github.ycfeng.ocdeck.core.network.ForkSessionRequestDto
 import io.github.ycfeng.ocdeck.core.network.InboundPayloadTooLargeException
 import io.github.ycfeng.ocdeck.core.network.MessagePartDto
 import io.github.ycfeng.ocdeck.core.network.MessageWithPartsDto
@@ -85,6 +86,7 @@ import io.github.ycfeng.ocdeck.domain.prompt.PromptAttachment
 import io.github.ycfeng.ocdeck.domain.prompt.PromptGateway
 import io.github.ycfeng.ocdeck.domain.prompt.ProjectFileContext
 import io.github.ycfeng.ocdeck.domain.prompt.SessionRevertGateway
+import io.github.ycfeng.ocdeck.domain.prompt.SessionForkGateway
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -118,7 +120,7 @@ class OpenCodeRepository(
     private val json: Json,
     private val redactor: Redactor,
     private val fileContentDispatcher: CoroutineDispatcher = Dispatchers.IO,
-) : PromptGateway, SessionRevertGateway, ProjectSnapshotLoader, SessionListWindowLoader {
+) : PromptGateway, SessionRevertGateway, SessionForkGateway, ProjectSnapshotLoader, SessionListWindowLoader {
     private val promptCapabilityRevision = AtomicLong()
     private val projectFileUrlBuilder = ProjectFileUrlBuilder(pathNormalizer, projectFilePathNormalizer)
 
@@ -608,6 +610,27 @@ class OpenCodeRepository(
         ).toDomain(normalized)
     }
 
+    override suspend fun forkSession(
+        serverId: String,
+        directory: String,
+        sessionId: String,
+        messageId: String,
+        workspace: String?,
+    ): Result<OpenCodeSession> = catching {
+        requireOperation(sessionId.isNotBlank())
+        requireOperation(messageId.isNotBlank())
+        val normalized = pathNormalizer.normalize(directory)
+        val api = serverRepository.getConnection(serverId).api
+        val forkedSession = api.forkSession(
+            sessionId = sessionId,
+            directory = normalized,
+            workspace = workspace,
+            body = ForkSessionRequestDto(messageID = messageId),
+        ).toDomain(normalized)
+        if (forkedSession.id.isBlank() || forkedSession.id == sessionId) invalidResponse()
+        forkedSession
+    }
+
     override suspend fun unrevertSession(
         serverId: String,
         directory: String,
@@ -994,6 +1017,7 @@ class OpenCodeRepository(
         type = type,
         text = text,
         synthetic = synthetic ?: false,
+        ignored = ignored ?: false,
         filename = filename,
         mime = mime,
         url = url,
@@ -1088,7 +1112,7 @@ private fun ProjectFileContext.toPromptPartDto(
     filename = filename,
 )
 
-private fun List<OpenCodeMessagePart>.renderText(): String = filter { it.type == "text" && !it.synthetic }
+private fun List<OpenCodeMessagePart>.renderText(): String = filter { it.type == "text" && !it.synthetic && !it.ignored }
     .mapNotNull { it.text }
     .joinToString("\n")
 

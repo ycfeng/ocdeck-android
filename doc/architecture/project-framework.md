@@ -433,6 +433,7 @@ Primary path APIs:
 - Session list: `GET /session?directory=...&workspace=...&roots=true&limit=...`, refetching an ordered prefix for the Store-backed session window.
 - Session metadata: `GET /session/{sessionID}`, used to supplement a route outside the current window and its bounded parent chain.
 - Session creation: `POST /session`
+- Session fork: `POST /session/{sessionID}/fork?directory=...&workspace=...`, with body `messageID`; creates a new root session from history before the selected message.
 - Session messages: `GET /session/{sessionID}/message?limit=200&before={cursor?}`, using a specialized transport on the shared REST OkHttp client. It reads `X-Next-Cursor`, bypasses Retrofit converter/error-body caching, reads no non-2xx body, limits each page's encoded response-body octets to 64 MiB, and performs a separate per-page 64 MiB decoded-entity boundary plus EOF verification through a counting `InputStream` and lenient `Json.decodeFromStream` for 2xx.
 - Prompt send: `POST /session/{sessionID}/prompt_async`
 - Abort: `POST /session/{sessionID}/abort`
@@ -445,7 +446,7 @@ Primary path APIs:
 Integrated and extension APIs:
 
 - Diff: `GET /vcs/diff?mode=git&directory=...`, `GET /session/{sessionID}/diff?directory=...`
-- Session management: rename, share, archive, delete, fork, summarize, children, todo. Revert/unrevert are integrated through legacy `POST /session/{sessionID}/revert|unrevert` using an encoded directory header.
+- Session management: rename, archive, delete, and fork are integrated; share, summarize, children, and todo remain extension work. Fork is a reserved local Composer built-in, not a loaded server command. Its non-idempotent Retrofit request uses a one-shot body, disables connection retry and redirects, and must not be replayed automatically. It shares the prompt operation gate with send/abort/revert/unrevert, validates that the response identifies a distinct new session before writing it to the Store, and passes the bounded selected-message draft through an application-scoped one-shot in-memory handoff before normal navigation and REST/SSE loading. The ViewModel owns the confirmed target across configuration changes, and performs bounded attachment/context draft validation off the main thread. Revert/unrevert use legacy `POST /session/{sessionID}/revert|unrevert` with an encoded directory header.
 - Files: `/file`, `/file/content`, `/find/file`. Project tree, search, and read-only preview are integrated. `/file/content` passes the common 16 MiB encoded response-body and decoded Retrofit boundaries, then retains a reader-level decoded `ResponseBody` check before deserialization so UI limits cannot be bypassed by an arbitrarily large response.
 - Provider management: instance-scoped `GET /provider` and `GET /provider/auth`, plus stateful OAuth authorize/callback, accept optional `directory/workspace`. Server-global root-control operations are `PUT/DELETE /auth/{providerID}`, `GET/PATCH /global/config`, and `POST /global/dispose`. OAuth authorize/callback preserve the same scope and original method index, are not automatically retried, and long auto callbacks use the dedicated bounded client.
 - Config, session status, MCP, LSP, and plugin status are integrated; PTY/terminal and worktree remain unimplemented.

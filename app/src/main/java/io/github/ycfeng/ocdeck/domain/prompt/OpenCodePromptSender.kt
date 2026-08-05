@@ -48,6 +48,9 @@ class OpenCodePromptSender(
         if (action != PromptSendAction.SendPrompt) {
             return Result.failure(IllegalStateException("Prompt is empty"))
         }
+        if (text.isForkBuiltInInvocation()) {
+            return Result.failure(PromptBuiltInCommandException())
+        }
 
         val normalized = pathNormalizer.normalize(directory)
         val normalizedWorkspace = normalizeOptionalPromptWorkspace(workspace, pathNormalizer)
@@ -385,6 +388,13 @@ private fun String.trimPromptWhitespace(): String = trim(Char::isPromptWhitespac
 
 private fun Char.isPromptWhitespace(): Boolean = isWhitespace() || Character.isSpaceChar(this)
 
+internal fun String.isForkBuiltInInvocation(): Boolean {
+    val commandInput = trimStart(Char::isPromptWhitespace)
+    val tokenEnd = commandInput.indexOfFirst(Char::isPromptWhitespace)
+    val token = if (tokenEnd == -1) commandInput else commandInput.substring(0, tokenEnd)
+    return token == "/fork"
+}
+
 sealed class PromptSendException(message: String) : IllegalStateException(message)
 
 class PromptCapabilitiesNotLoadedException : PromptSendException("Prompt capabilities are not loaded")
@@ -400,6 +410,8 @@ class PromptAgentUnavailableException : PromptSendException("The selected prompt
 class PromptVariantUnavailableException : PromptSendException("The selected prompt variant is unavailable")
 
 class PromptOperationInProgressException : PromptSendException("Another prompt operation is already in progress")
+
+class PromptBuiltInCommandException : PromptSendException("A client built-in command must be handled before prompt sending")
 
 class PromptAttachmentCountLimitException : PromptSendException("Prompt attachment count exceeds the allowed limit")
 

@@ -1,6 +1,7 @@
 package io.github.ycfeng.ocdeck.data.opencode
 
 import io.github.ycfeng.ocdeck.core.network.MaxFileContentDecodedResponseBytes
+import io.github.ycfeng.ocdeck.core.network.ForkSessionRequestDto
 import io.github.ycfeng.ocdeck.core.network.OpenCodeApi
 import io.github.ycfeng.ocdeck.core.network.OpenCodeFailure
 import io.github.ycfeng.ocdeck.core.network.OpenCodeRequestException
@@ -8,6 +9,7 @@ import io.github.ycfeng.ocdeck.core.network.PathInfoDto
 import io.github.ycfeng.ocdeck.core.network.ProjectDto
 import io.github.ycfeng.ocdeck.core.network.RetrofitInboundResponseTooLargeException
 import io.github.ycfeng.ocdeck.core.network.SessionStatusDto
+import io.github.ycfeng.ocdeck.core.network.SessionDto
 import io.github.ycfeng.ocdeck.core.security.Redactor
 import io.github.ycfeng.ocdeck.core.store.SessionListWindowState
 import io.github.ycfeng.ocdeck.core.util.PathNormalizer
@@ -158,6 +160,61 @@ class OpenCodeRepositoryFailureHandlingTest {
         }
     }
 
+    @Test
+    fun forkSessionNormalizesDirectoryAndMapsResponse() = runTest {
+        var capturedSessionId: String? = null
+        var capturedDirectory: String? = null
+        var capturedWorkspace: String? = null
+        var capturedBody: ForkSessionRequestDto? = null
+        val repository = repository(
+            fakeApi(forkSession = { sessionId, directory, workspace, body ->
+                capturedSessionId = sessionId
+                capturedDirectory = directory
+                capturedWorkspace = workspace
+                capturedBody = body
+                SessionDto(id = "ses_fork", directory = directory, title = "Forked")
+            }),
+        )
+
+        val session = repository.forkSession(
+            serverId = SERVER_ID,
+            directory = "E:\\Repo\\",
+            sessionId = "ses_source",
+            messageId = "msg_target",
+            workspace = "workspace-1",
+        ).getOrThrow()
+
+        assertEquals("ses_source", capturedSessionId)
+        assertEquals("E:/Repo", capturedDirectory)
+        assertEquals("workspace-1", capturedWorkspace)
+        assertEquals("msg_target", capturedBody?.messageID)
+        assertEquals("ses_fork", session.id)
+        assertEquals("Forked", session.title)
+        assertEquals("E:/Repo", session.normalizedDirectory)
+    }
+
+    @Test
+    fun forkSessionRejectsMissingOrUnchangedSessionId() = runTest {
+        listOf("", "ses_source").forEach { responseId ->
+            val repository = repository(
+                fakeApi(forkSession = { _, directory, _, _ ->
+                    SessionDto(id = responseId, directory = directory, title = "Forked")
+                }),
+            )
+
+            val failure = repository.forkSession(
+                serverId = SERVER_ID,
+                directory = DIRECTORY,
+                sessionId = "ses_source",
+                messageId = "msg_target",
+                workspace = null,
+            ).exceptionOrNull()
+
+            assertTrue(failure is OpenCodeRequestException)
+            assertEquals(OpenCodeFailure.InvalidResponse, (failure as OpenCodeRequestException).failure)
+        }
+    }
+
     private fun repository(
         api: OpenCodeApi,
         fileContentDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -171,6 +228,9 @@ class OpenCodeRepositoryFailureHandlingTest {
     )
 
     private fun fakeApi(
+        forkSession: (String, String, String?, ForkSessionRequestDto) -> SessionDto = { _, _, _, _ ->
+            throw UnsupportedOperationException("forkSession")
+        },
         currentProject: () -> ProjectDto = {
             ProjectDto(id = "project", worktree = DIRECTORY, name = "Project")
         },
@@ -191,6 +251,12 @@ class OpenCodeRepositoryFailureHandlingTest {
                 "getProviders", "getAgents", "getCommands", "getMcps", "getLsps", "getConfig" -> emptyJson
                 "getPermissions", "getQuestions" -> emptyList<Any>()
                 "getFileContent" -> fileContent()
+                "forkSession" -> forkSession(
+                    args?.get(0) as String,
+                    args[1] as String,
+                    args[2] as String?,
+                    args[3] as ForkSessionRequestDto,
+                )
                 else -> throw UnsupportedOperationException(method.name)
             }
         }
