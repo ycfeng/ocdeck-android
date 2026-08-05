@@ -4,7 +4,7 @@
 
 OC Deck 是一款 OpenCode 原生 Android 客户端，用于连接你自行运行或信任的 [OpenCode Server](https://opencode.ai/docs/server/)。注意：OC Deck 不是 OpenCode 项目或 Anomaly 官方开发、背书或关联的产品。
 
-> **Pre-1.0 提醒：** 当前版本为 `0.3.0`，仍在快速开发中。功能、存储格式、网络行为和兼容性可能变化。请备份重要工作，不要把 OC Deck 作为访问服务器的唯一方式。
+> **Pre-1.0 提醒：** 当前版本为 `0.4.0`，仍在快速开发中。功能、存储格式、网络行为和兼容性可能变化。请备份重要工作，不要把 OC Deck 作为访问服务器的唯一方式。
 
 ## 使用要求
 
@@ -15,7 +15,7 @@ OC Deck 是一款 OpenCode 原生 Android 客户端，用于连接你自行运�
 ## 当前功能
 
 - 支持直连 HTTP(S)、SSH 本地转发和内置 frpc STCP visitor 的多服务器配置
-- 支持项目选择、最近项目、会话列表与详情、重命名/归档/删除、revert/unrevert 和异步 prompt
+- 支持项目选择、最近项目、会话列表与详情、重命名/归档/删除、fork、revert/unrevert 和异步 prompt
 - 支持全局与项目 SSE、自动重连和 REST 快照校准
 - 支持 Provider 目录与搜索、动态 API/OAuth 认证、断开、capability 刷新，以及在 OpenCode Server 上分阶段持久化自定义 Provider
 - 支持 Slash command、agent mention、agent/model/variant 选择器、手机本地附件和服务端项目文件上下文选择
@@ -85,7 +85,7 @@ macOS/Linux：
 
 ## 截图
 
-当前 `0.3.0` 项目门面中的截图均已审查，仅使用构造的演示数据，不包含真实服务器、项目、会话或凭据信息。
+当前 `0.4.0` 项目门面中的截图均已审查，仅使用构造的演示数据，不包含真实服务器、项目、会话或凭据信息。
 
 | 浅色主题 | 深色主题 |
 | --- | --- |

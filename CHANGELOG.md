@@ -13,9 +13,22 @@ OC Deck 的重要变化记录在本文件中。项目遵循 [Keep a Changelog](h
 
 ## [Unreleased] / 未发布
 
+No changes have been assigned after `0.4.0`. / `0.4.0` 之后尚无已分配变更。
+
+## [0.4.0] - 2026-08-05
+
+### Added / 新增
+
+- Added the Session fork workflow. The retained client-side `/fork` command and eligible user-message actions open a searchable message picker, create a new root session through `POST /session/{sessionID}/fork`, and restore the selected prompt into the new Composer through a one-time in-memory handoff without copying message history into the Android Store. / 新增 Session fork 工作流。保留的客户端 `/fork` 命令与符合条件的用户消息操作会打开可搜索的消息选择器，通过 `POST /session/{sessionID}/fork` 创建新的根会话，并使用一次性内存交接将所选 prompt 恢复到新 Composer，而不会把消息历史复制到 Android Store。
+
 ### Changed / 变更
 
-- No changes have been assigned after `0.3.0`. / `0.3.0` 之后尚无已分配变更。
+- Session fork now shares the fail-fast session-operation gate with send, abort, revert, and unrevert. Its non-idempotent request is one-shot, with automatic retries and redirects disabled to prevent replay. / Session fork 现在与 send、abort、revert 和 unrevert 共用 fail-fast 会话操作门禁。其非幂等请求按 one-shot 执行，并禁用自动重试与重定向以避免重放。
+- Incremented the retained immutable GoMobile bridge coordinate to `0.3.19-frp0.69.1-p6` because the AAR embeds the `0.4.0` legal inventory. The versioned Go module identity is now `v0.3.19`; Go source, Go, x/mobile, upstream frp, Android API, NDK, and the p6 patch set are unchanged from `0.3.18`, but the complete artifact set is rebuilt and revalidated under the new coordinate. / 由于 AAR 内嵌 `0.4.0` 法律清单，将保留的不可变 GoMobile bridge 坐标提升为 `0.3.19-frp0.69.1-p6`。版本化 Go module identity 现为 `v0.3.19`；Go 源码、Go、x/mobile、上游 frp、Android API、NDK 和 p6 patch set 相对 `0.3.18` 保持不变，但完整制品集合会在新坐标下重新构建并校验。
+
+### Fixed / 修复
+
+- Updated the reset action to use the intended reset icon. / reset 操作现使用预期的 reset 图标。
 
 ## [0.3.0] - 2026-08-04
 

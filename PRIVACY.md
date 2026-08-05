@@ -2,9 +2,9 @@
 
 [简体中文](PRIVACY.zh-CN.md)
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
-This document describes the current OC Deck `0.3.0` codebase. It is not a promise that every future build, distribution channel, OpenCode Server, model provider, Android device, or network operator behaves the same way.
+This document describes the current OC Deck `0.4.0` codebase. It is not a promise that every future build, distribution channel, OpenCode Server, model provider, Android device, or network operator behaves the same way.
 
 ## OC Deck Services and Telemetry
 

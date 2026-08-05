@@ -120,8 +120,8 @@ kotlin {
 应用版本集中在根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=9
-VERSION_NAME=0.3.0
+VERSION_CODE=10
+VERSION_NAME=0.4.0
 ```
 
 `VERSION_NAME` 使用稳定 SemVer，正式 tag 必须精确为 `v${VERSION_NAME}`；`VERSION_CODE` 必须高于上一稳定 tag。CI 不从 tag 或 run number 动态覆盖源码版本，避免本地构建、设置页展示、APK文件名和发布记录出现漂移。
@@ -248,7 +248,7 @@ frpc-stcp-visitor-go/
 
 `frpc-stcp-visitor-go/` 保存真实 frp GoMobile wrapper 源码。`bridge-versions.properties` 固定 bridge、Go、x/mobile 和 Android API 版本；禁止在构建脚本中使用 `gomobile@latest`。基础 frp 固定为 `github.com/fatedier/frp@v0.69.1`，`cmd/preparefrp` 校验上游 module sum、zip SHA 和待修改文件 SHA 后应用 `downstream/frp-v0.69.1-p6/` 中的最小补丁，不直接修改 Go module cache。补丁修复动态 visitor 配置与 Control 安装的竞态、传播真实 listener bind 状态、暴露 config revision、control epoch 和阻塞式 `WaitVisitorReady`，增加窄 TLS config 定制 hook 供 wrapper 在发送认证数据前执行可选的精确叶证书 pin，使 STCP visitor 关闭时关闭和等待 accept loop、活动 relay、outbound visitor connection 与 manager keeper，使 client Control 关闭等待 heartbeat、dispatcher、controller、已跟踪的 work-connection handler 和 pending work connection，并暴露不含身份的聚合 owner lifecycle 计数用于有界 runtime 诊断。
 
-`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，将内嵌文本 metadata 的换行符统一为 LF，并发布已规范化的文本 sidecar；要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.18-frp0.69.1-p6` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
+`build-aar.ps1` / `build-aar.sh` 使用固定工具链，并先运行 `cmd/preparemoduleproxy`，通过本地 `GOPROXY` 与 bind module graph 中稳定、版本化的 module identity 暴露 wrapper、patched frp 和本地兼容代码。因此正式 `gomobile bind` 不会编码 checkout 路径 replacement。脚本通过 `cmd/normalizezip` 规范化 AAR 与 sources JAR 的顺序和时间戳，将内嵌文本 metadata 的换行符统一为 LF，并发布已规范化的文本 sidecar；要求两个 archive 都存在，将结果输出到 `frpc-stcp-visitor/libs/frpc-stcp-visitor.aar`，并以不可变坐标 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6` 把完整 Maven 制品集合发布到 `frpc-stcp-visitor-go/build/repo/`。同一坐标若字节变化必须拒绝覆盖。该集合包括 AAR、必需的 sources JAR、POM、SHA-256、Java API signature、bridge provenance、frp patch provenance 和 native validation metadata。
 
 `cmd/checkaar` 会读取四个 ABI library 的 Go BuildInfo，校验固定 Go identity 以及稳定的 module identity、version 与 sum，拒绝本地 module identity 和内嵌的仓库/cache 路径，并要求各 ABI 使用同一个 canonical module graph digest。Schema 2 内嵌 bridge provenance 与外部 native sidecar 会绑定 module graph digest 和无本地路径证明。AAR 的 `META-INF/OCDECK/` 还会内嵌项目法律文本、逐份第三方许可证、精确 Java API 和 bridge/frp provenance。GoMobile linker 固定使用 16KB max page size 并移除 DWARF/静态符号表；`cmd/checkaar` 还会校验四个预期 ABI、ELF machine、全部 `PT_LOAD` 对齐和 stripped 状态。
 

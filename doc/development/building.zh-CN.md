@@ -163,15 +163,15 @@ macOS/Linux：
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.18-frp0.69.1-p6`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
+当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
 
 ## Release 构建
 
 应用版本只来自根目录 `gradle.properties`：
 
 ```properties
-VERSION_CODE=9
-VERSION_NAME=0.3.0
+VERSION_CODE=10
+VERSION_NAME=0.4.0
 ```
 
 本地正式 Release 构建需要发布签名输入，但不需要 GoMobile AAR。使用 `signing.properties.example` 记录的配置键或等价环境变量。Keystore、密码、alias、证书材料和本机路径不得进入 Git、日志、shell 历史、截图或 artifact。正式 Debug 与 Release 使用纯 Kotlin 且不含 bridge。Canary 与 Kotlin Release-Like 是 Kotlin 验证 variant；GoMobile Release-Like 是带 suffix、使用 Debug 签名的对称对比 variant。受保护的手动 workflow 还可以使用正式身份、稳定版本与 Release signer 构建 `goMobileEmergencyRelease`。稳定 tag 只选择 `kotlin-release` artifact profile 并运行 `verifyReleasePackaging`；`gomobile-emergency-release` 仅允许手动运行。backend-aware release verifier 除了 output metadata 外，还会直接读取每个 APK manifest 中的 application ID 与版本，对两个签名 profile 执行公共签名/ABI/对齐/法律/checksum 校验；emergency GoMobile 会把 `libgojni.so` 绑定到 AAR sidecar，正式 Kotlin profile 会拒绝 bridge class 与 `libgojni.so`，并继续校验所有其他 native library。

@@ -163,15 +163,15 @@ macOS/Linux:
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.18-frp0.69.1-p6`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
 
 ## Release Builds
 
 Application versions come only from root `gradle.properties`:
 
 ```properties
-VERSION_CODE=9
-VERSION_NAME=0.3.0
+VERSION_CODE=10
+VERSION_NAME=0.4.0
 ```
 
 Local formal Release builds require release-signing inputs but do not require a GoMobile AAR. Use the keys documented by `signing.properties.example` or equivalent environment variables. Keep keystores, passwords, aliases, certificate material, and local paths out of Git, logs, shell history, screenshots, and artifacts. Formal Debug and Release use pure Kotlin and are bridge-free. Canary and Kotlin Release-Like are Kotlin verification variants; GoMobile Release-Like is the suffixed, Debug-signed symmetric comparison variant. A protected manual workflow may additionally build `goMobileEmergencyRelease` with the formal identity, stable version, and Release signer. Stable tags select only the `kotlin-release` artifact profile and run `verifyReleasePackaging`; `gomobile-emergency-release` is manual-only. The backend-aware release verifier reads application ID and version directly from every APK manifest in addition to output metadata, applies common signing/ABI/alignment/legal/checksum checks to both signed profiles, binds emergency GoMobile `libgojni.so` to the AAR sidecar, and makes the formal Kotlin profile reject the bridge class and `libgojni.so` while still validating every other native library.
