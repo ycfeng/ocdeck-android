@@ -28,12 +28,12 @@ OC Deck 是独立社区维护的 pre-1.0 OpenCode Server Android 客户端。它
 | Android 系统 | 低于 Android 8.0 / API 26 | Known incompatible | 低于 `minSdk`，APK 无法安装。 |
 | 发布 ABI | `arm64-v8a`、`armeabi-v7a`、`x86_64` | Supported | Release workflow 为每个 ABI 构建独立 APK，并静态校验 ABI 内容。 |
 | 发布 ABI | `x86`、`riscv64` 和其他未列出的 ABI | Known incompatible | 当前发布流程不提供匹配 APK，也不提供 universal APK。 |
-| 构建环境 | Ubuntu 24.04、JDK 21、Go 1.26.4、SDK 36、Build Tools 36.0.0、NDK 27.1.12297006 | Tested | GitHub Actions CI 与 Release workflow 固定使用这套工具链。 |
+| 构建环境 | Ubuntu 24.04、JDK 21、SDK 36、Build Tools 36.0.0；retained GoMobile 额外使用 Go 1.26.4 与 NDK 27.1.12297006 | Tested | 普通 CI 与稳定 Kotlin Release 固定 Java/Android 工具链，不安装 Go 或 NDK。按路径触发的 retained GoMobile workflow 与手动 emergency profile 额外固定 Go 和 NDK。 |
 | OpenCode Server | `1.17.7` | Observed only | 编写 Web UI 交互文档时曾观察到健康检查返回该版本。这不是服务端支持声明，也不是端到端回归套件结果。 |
 | OpenCode Server | 其他任意版本 | Unknown | API 兼容性仍在演进，当前没有持续维护的服务端版本矩阵。 |
 | HTTP(S) 直连 | URL 有效且可访问的服务端，可选 Basic 认证 | Supported | 客户端已实现该连接模式；网络、TLS、认证和服务端行为仍取决于实际部署。 |
 | SSH 转发 | 受支持 Android 设备与兼容 SSH 端点 | Supported | 客户端已实现本地转发、host key 校验、密码/私钥模式及相应状态单测；尚无广泛设备和服务端互操作记录。 |
-| STCP 保留验证制品 | 固定 GoMobile bridge `0.3.19-frp0.69.1-p6` | Tested | 正式 `0.4.0` APK 无 bridge 并使用纯 Kotlin；该保留制品仅用于显式 GoMobile 验证与手动 emergency profile。从 `0.3.18` 提升用于记录内嵌的 `0.4.0` 法律清单和 Go module identity `v0.3.19`；Go 源码、工具链、上游 frp、Android API、NDK 与 p6 补丁保持不变。自动门禁校验 checksum、Java API、provenance、四 ABI Go BuildInfo 中固定且版本化的 module identity/sum、无本地路径、唯一 module graph digest、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态，以及隔离 cache 后在同一平台不同 checkout 路径间的逐字节可复现性。 |
+| STCP 保留验证制品 | 固定 GoMobile bridge `0.3.19-frp0.69.1-p6` | Tested | 正式 `0.4.0` APK 无 bridge 并使用纯 Kotlin；该保留制品仅用于相关 GoMobile 验证与手动 emergency profile。该坐标记录内嵌的 `0.4.0` 法律基线、`frpc-stcp-visitor-go/legal-baseline.sha256` 中的精确法律哈希和 Go module identity `v0.3.19`，并与后续普通 App 版本相互独立。从 `0.3.18` 提升时改变的是该法律基线，Go 源码、工具链、上游 frp、Android API、NDK 与 p6 补丁保持不变。按路径触发的 retained workflow 或显式 emergency 运行会校验 checksum、Java API、provenance、四 ABI Go BuildInfo 中固定且版本化的 module identity/sum、无本地路径、唯一 module graph digest、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态，以及隔离 cache 后在同一平台不同 checkout 路径间的逐字节可复现性。AAR 字节、API、依赖或内嵌法律内容变化前必须创建新坐标。 |
 | Native 加载 | 已记录的 `0.1.0` 真机发布门禁验证 | Tested | 维护者已记录签名候选 APK 成功完成 native load 和应用启动。具体设备与 ABI 信息未公开，因此这不是完整设备或逐 ABI 矩阵；后续候选版本仍须重复执行该门禁。 |
 | 16KB page size | 已记录的 `0.1.0` 16KB page-size Android 真机发布门禁验证 | Tested | 维护者已记录应用在 16KB page-size 真机上成功启动并完成 native load。具体设备信息未公开，静态对齐检查仍只属于前置条件。 |
 | STCP 端到端 | 已记录的 `0.1.0` Android 真机经真实 frps/STCP 连接 OpenCode Server 验证 | Tested | 维护者已记录 listener readiness、隧道内 `/global/health`、代表性 REST、全局/项目 SSE，以及受控重连期间保留已有 UI 数据均通过。具体部署版本未公开；这不构成 OpenCode Server 版本支持声明。 |

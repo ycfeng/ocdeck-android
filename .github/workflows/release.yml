@@ -79,6 +79,10 @@ jobs:
         shell: bash
         run: python3 .github/scripts/audit-community.py
 
+      - name: Audit static third-party and legal inventory
+        shell: bash
+        run: python3 .github/scripts/audit-third-party.py --static
+
   prepare-notes:
     name: Prepare release notes
     needs: preflight
@@ -244,6 +248,7 @@ jobs:
           java-version: "21"
 
       - name: Set up Go 1.26.4
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: 1.26.4
@@ -263,36 +268,52 @@ jobs:
           set +o pipefail
           yes | "$SDKMANAGER" --licenses >/dev/null
           set -o pipefail
-          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install Android NDK for GoMobile emergency build
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKMANAGER" "ndk;27.1.12297006"
 
       - name: Prepare frp
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         working-directory: frpc-stcp-visitor-go
         shell: bash
         run: go run ./cmd/preparefrp
 
       - name: Validate Go race environment
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         shell: bash
-        run: python3 .github/scripts/check-go-race-environment.py
+        run: |
+          python3 .github/scripts/test_check_go_race_environment.py
+          python3 .github/scripts/check-go-race-environment.py
 
       - name: Audit third-party and legal inventory
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         shell: bash
         run: python3 .github/scripts/audit-third-party.py
 
       - name: Run Go race tests
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         working-directory: frpc-stcp-visitor-go
         shell: bash
         run: go test -race -modfile=build/frp-patched.mod ./...
 
       - name: Run patched frp client race tests
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         working-directory: frpc-stcp-visitor-go/build/frp-v0.69.1-p6
         shell: bash
         run: go test -race ./client/...
 
       - name: Verify reproducible GoMobile bridge
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         shell: bash
         run: bash .github/scripts/verify-bridge-reproducibility.sh
 
       - name: Run Android tests and build verification APKs
+        if: ${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -339,6 +360,7 @@ jobs:
           set -euo pipefail
           case "$ARTIFACT_PROFILE" in
             kotlin-release)
+              gradle_args=()
               gradle_tasks=(
                 :app:testReleaseUnitTest
                 :app:assembleRelease
@@ -346,6 +368,7 @@ jobs:
               )
               ;;
             gomobile-emergency-release)
+              gradle_args=(-PrequireGoMobileBridge=true)
               gradle_tasks=(
                 :app:testGoMobileEmergencyReleaseUnitTest
                 :app:assembleGoMobileEmergencyRelease
@@ -359,7 +382,7 @@ jobs:
           bash ./gradlew --no-daemon \
             :app:validateReleaseSigning \
             "${gradle_tasks[@]}" \
-            -PrequireGoMobileBridge=true
+            "${gradle_args[@]}"
 
       - name: Verify and stage release assets
         shell: bash

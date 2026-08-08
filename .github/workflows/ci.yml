@@ -71,6 +71,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up JDK 21
@@ -78,13 +79,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-
-      - name: Set up Go 1.26.4
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version: 1.26.4
-          cache: true
-          cache-dependency-path: frpc-stcp-visitor-go/go.sum
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
@@ -98,74 +92,32 @@ jobs:
           set +o pipefail
           yes | "$SDKMANAGER" --licenses >/dev/null
           set -o pipefail
-          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
-
-      - name: Verify pure Kotlin APKs without GoMobile bridge
-        shell: bash
-        run: >-
-          bash ./gradlew --no-daemon
-          :app:testDebugUnitTest
-          :app:testCanaryUnitTest
-          :app:testKotlinReleaseUnitTest
-          :app:verifyPureKotlinPackaging
-
-      - name: Prepare frp
-        working-directory: frpc-stcp-visitor-go
-        shell: bash
-        run: go run ./cmd/preparefrp
-
-      - name: Validate Go race environment
-        shell: bash
-        run: |
-          python3 .github/scripts/test_check_go_race_environment.py
-          python3 .github/scripts/check-go-race-environment.py
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Audit community and documentation metadata
         shell: bash
         run: python3 .github/scripts/audit-community.py
 
-      - name: Audit third-party and legal inventory
+      - name: Audit static third-party and legal inventory
         shell: bash
-        run: python3 .github/scripts/audit-third-party.py
+        run: >-
+          python3 .github/scripts/audit-third-party.py --static
+          --base-revision "${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}"
 
-      - name: Run Go race tests
-        working-directory: frpc-stcp-visitor-go
-        shell: bash
-        run: go test -race -modfile=build/frp-patched.mod ./...
-
-      - name: Run patched frp client race tests
-        working-directory: frpc-stcp-visitor-go/build/frp-v0.69.1-p6
-        shell: bash
-        run: go test -race ./client/...
-
-      - name: Verify reproducible GoMobile bridge
-        shell: bash
-        run: bash .github/scripts/verify-bridge-reproducibility.sh
-
-      - name: Run Android tests and build verification APKs
+      - name: Run pure Kotlin tests and build verification APKs
         shell: bash
         run: |
           set -euo pipefail
           bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
-            :frpc-stcp-visitor:checkGoMobileBridgeAar \
             :app:testDebugUnitTest \
             :app:testCanaryUnitTest \
-            :app:testGoMobileReleaseUnitTest \
-            :app:testGoMobileEmergencyReleaseUnitTest \
             :app:testKotlinReleaseUnitTest \
             :frpc-stcp-visitor:testDebugUnitTest \
             :app:assembleDebug \
             :app:assembleCanary \
-            -PrequireGoMobileBridge=true
-          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
-            :app:assembleGoMobileRelease \
-            :app:assembleGoMobileReleaseAndroidTest \
-            -PrequireGoMobileBridge=true
-          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
             :app:assembleKotlinRelease \
             :app:assembleKotlinReleaseAndroidTest \
-            :app:verifyPureKotlinPackaging \
-            -PrequireGoMobileBridge=true
+            :app:verifyPureKotlinPackaging
 
   k6v-android-interop-bootstrap:
     name: Run exact-SHA K6V Android interoperability

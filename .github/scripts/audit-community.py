@@ -316,11 +316,71 @@ def audit_release_metadata(version_name: str) -> None:
     require("--dry-run" in version_check_run, "manual release preflight must use dry-run version semantics")
     require("git fetch" not in version_check_run, "preflight must rely on authenticated checkout instead of an unauthenticated fetch")
 
-    reproducibility_run = step_named(build_job, "Verify reproducible GoMobile bridge").get("run")
+    emergency_condition = "${{ needs.preflight.outputs.artifact_profile == 'gomobile-emergency-release' }}"
+    preflight_static_audit = step_named(preflight_job, "Audit static third-party and legal inventory").get("run")
+    require(
+        preflight_static_audit == "python3 .github/scripts/audit-third-party.py --static",
+        "release preflight must run the static third-party audit",
+    )
+    reproducibility_step = step_named(build_job, "Verify reproducible GoMobile bridge")
+    reproducibility_run = reproducibility_step.get("run")
     require(isinstance(reproducibility_run, str), "bridge reproducibility gate must use a run script")
     require(
         reproducibility_run.strip() == "bash .github/scripts/verify-bridge-reproducibility.sh",
         "release workflow does not use the canonical cross-checkout bridge reproducibility gate",
+    )
+    require(
+        reproducibility_step.get("if") == emergency_condition,
+        "release bridge reproducibility gate must be limited to the GoMobile emergency profile",
+    )
+    for name in (
+        "Set up Go 1.26.4",
+        "Install Android NDK for GoMobile emergency build",
+        "Prepare frp",
+        "Validate Go race environment",
+        "Audit third-party and legal inventory",
+        "Run Go race tests",
+        "Run patched frp client race tests",
+        "Run Android tests and build verification APKs",
+    ):
+        require(
+            step_named(build_job, name).get("if") == emergency_condition,
+            f"release step {name!r} must be limited to the GoMobile emergency profile",
+        )
+    release_forbidden_tokens = (
+        "actions/setup-go@",
+        "ndk;27.1.12297006",
+        "go run ./cmd/preparefrp",
+        "go test -race",
+        "python3 .github/scripts/audit-third-party.py",
+        "verify-bridge-reproducibility.sh",
+        "-PrequireGoMobileBridge=true",
+        ":app:testGoMobileReleaseUnitTest",
+        ":app:testGoMobileEmergencyReleaseUnitTest",
+        ":app:assembleGoMobileRelease",
+    )
+    for step in build_job.get("steps", []):
+        if not isinstance(step, dict) or step.get("name") == "Build signed APKs":
+            continue
+        step_text = str(step.get("uses", "")) + "\n" + str(step.get("run", ""))
+        if any(token in step_text for token in release_forbidden_tokens):
+            require(
+                step.get("if") == emergency_condition,
+                f"release step {step.get('name')!r} contains unguarded retained GoMobile work",
+            )
+    signed_build_run = step_named(build_job, "Build signed APKs").get("run")
+    require(isinstance(signed_build_run, str), "Build signed APKs must use a run script")
+    require(
+        re.search(r"kotlin-release\)\s*\n\s*gradle_args=\(\)", signed_build_run) is not None,
+        "stable Kotlin release must not require the GoMobile bridge",
+    )
+    require(
+        re.search(
+            r"gomobile-emergency-release\)\s*\n\s*gradle_args=\(-PrequireGoMobileBridge=true\)",
+            signed_build_run,
+        )
+        is not None,
+        "GoMobile emergency release must explicitly require the bridge",
     )
 
     ci_workflow = load_yaml(".github/workflows/ci.yml")
@@ -334,6 +394,10 @@ def audit_release_metadata(version_name: str) -> None:
     require(isinstance(ci_interop_job, dict), "CI workflow has no frpc-interop job")
     require(isinstance(ci_android_bootstrap_job, dict), "CI workflow has no K6V Android bootstrap job")
     require("environment" not in ci_interop_job, "CI frpc-interop must not access an environment")
+    require(
+        ci_verify_job.get("name") == "Test and build verification APKs",
+        "CI verify job display name must remain compatible with the main ruleset",
+    )
     require("environment" not in ci_android_bootstrap_job, "CI K6V bootstrap must not access an environment")
     require(
         ci_android_bootstrap_job.get("uses") == "./.github/workflows/frpc-kotlin-android-interop.yml",
@@ -366,18 +430,67 @@ def audit_release_metadata(version_name: str) -> None:
     bootstrap_sha_input = ci_dispatch_inputs.get("candidate_sha")
     require(isinstance(bootstrap_sha_input, dict), "CI workflow_dispatch has no candidate_sha input")
     require(bootstrap_sha_input.get("type") == "string", "CI bootstrap candidate_sha must be a string")
-    ci_reproducibility_steps = [
-        step
-        for step in ci_verify_job.get("steps", [])
-        if isinstance(step, dict) and step.get("name") == "Verify reproducible GoMobile bridge"
-    ]
-    require(len(ci_reproducibility_steps) == 1, "CI workflow must contain exactly one bridge reproducibility gate")
-    ci_reproducibility_run = ci_reproducibility_steps[0].get("run")
-    require(isinstance(ci_reproducibility_run, str), "CI bridge reproducibility gate must use a run script")
-    require(
-        ci_reproducibility_run.strip() == "bash .github/scripts/verify-bridge-reproducibility.sh",
-        "CI workflow does not use the canonical cross-checkout bridge reproducibility gate",
+    ci_verify_steps = ci_verify_job.get("steps")
+    require(isinstance(ci_verify_steps, list), "CI verify job must define steps")
+    ci_verify_text = "\n".join(
+        str(step.get("uses", "")) + "\n" + str(step.get("run", ""))
+        for step in ci_verify_steps
+        if isinstance(step, dict)
     )
+    ci_workflow_text = "\n".join(
+        str(job.get("uses", ""))
+        + "\n"
+        + "\n".join(
+            str(step.get("uses", "")) + "\n" + str(step.get("run", ""))
+            for step in job.get("steps", [])
+            if isinstance(step, dict)
+        )
+        for job in ci_jobs.values()
+        if isinstance(job, dict)
+    )
+    for forbidden in (
+        "actions/setup-go@",
+        "go run ./cmd/preparefrp",
+        "verify-bridge-reproducibility.sh",
+        "-PrequireGoMobileBridge=true",
+        ":app:testGoMobileReleaseUnitTest",
+        ":app:testGoMobileEmergencyReleaseUnitTest",
+        ":app:assembleGoMobileRelease",
+        "ndk;27.1.12297006",
+    ):
+        require(forbidden not in ci_workflow_text, f"ordinary CI must not run retained GoMobile work: {forbidden}")
+    ci_checkout_steps = [
+        step
+        for step in ci_verify_steps
+        if isinstance(step, dict) and step.get("name") == "Check out repository"
+    ]
+    require(len(ci_checkout_steps) == 1, "CI verify must contain exactly one checkout step")
+    ci_checkout_with = ci_checkout_steps[0].get("with")
+    require(isinstance(ci_checkout_with, dict), "CI verify checkout must define inputs")
+    require(ci_checkout_with.get("fetch-depth") == 0, "CI static audit requires complete Git history")
+    ci_static_audit_steps = [
+        step
+        for step in ci_verify_steps
+        if isinstance(step, dict) and step.get("name") == "Audit static third-party and legal inventory"
+    ]
+    require(len(ci_static_audit_steps) == 1, "CI must contain exactly one static third-party audit")
+    expected_ci_static_audit = (
+        "python3 .github/scripts/audit-third-party.py --static "
+        "--base-revision \"${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}\""
+    )
+    require(ci_static_audit_steps[0].get("run") == expected_ci_static_audit, "CI must use the canonical history-aware static third-party audit")
+    for required_task in (
+        ":app:testDebugUnitTest",
+        ":app:testCanaryUnitTest",
+        ":app:testKotlinReleaseUnitTest",
+        ":frpc-stcp-visitor:testDebugUnitTest",
+        ":app:assembleDebug",
+        ":app:assembleCanary",
+        ":app:assembleKotlinRelease",
+        ":app:assembleKotlinReleaseAndroidTest",
+        ":app:verifyPureKotlinPackaging",
+    ):
+        require(required_task in ci_verify_text, f"ordinary CI verify omits pure Kotlin gate: {required_task}")
     release_interop_run = step_named(interop_job, "Run fixed-frp interoperability tests").get("run")
     ci_interop_steps = [
         step
@@ -393,6 +506,107 @@ def audit_release_metadata(version_name: str) -> None:
         str(step.get("run", "")) for step in build_job.get("steps", []) if isinstance(step, dict)
     )
     require("frpcInteropTest" not in build_step_text, "signed build-release must not launch downloaded frp binaries")
+
+    retained_workflow_path = ".github/workflows/retained-gomobile.yml"
+    retained_workflow_text = read_text(retained_workflow_path)
+    retained_workflow = load_yaml(retained_workflow_path)
+    require(isinstance(retained_workflow, dict), "retained GoMobile workflow must be an object")
+    require(
+        retained_workflow.get("permissions") == {"contents": "read"},
+        "retained GoMobile workflow must have only read-only contents permission",
+    )
+    require("secrets." not in retained_workflow_text, "retained GoMobile workflow must not access secrets")
+    require("environment:" not in retained_workflow_text, "retained GoMobile workflow must not access an Environment")
+    retained_trigger = retained_workflow.get("on", retained_workflow.get(True))
+    require(isinstance(retained_trigger, dict), "retained GoMobile workflow trigger must be an object")
+    require(
+        set(retained_trigger) == {"pull_request", "push", "workflow_dispatch"},
+        "retained GoMobile workflow must run only for path-filtered main changes or manual dispatch",
+    )
+    retained_pull_request = retained_trigger.get("pull_request")
+    retained_push = retained_trigger.get("push")
+    require(isinstance(retained_pull_request, dict), "retained GoMobile pull_request trigger must define paths")
+    require(isinstance(retained_push, dict), "retained GoMobile push trigger must define paths")
+    require(retained_pull_request.get("branches") == ["main"], "retained GoMobile PR trigger must target main")
+    require(retained_push.get("branches") == ["main"], "retained GoMobile push trigger must target main")
+    retained_paths = retained_pull_request.get("paths")
+    require(isinstance(retained_paths, list) and retained_paths, "retained GoMobile PR trigger has no paths")
+    require(retained_push.get("paths") == retained_paths, "retained GoMobile PR and push paths must match")
+    for required_path in (
+        "frpc-stcp-visitor-go/**",
+        "frpc-stcp-visitor-go/legal-baseline.sha256",
+        "frpc-stcp-visitor/build.gradle.kts",
+        "frpc-stcp-visitor/src/**/*GoMobile*.kt",
+        "frpc-stcp-visitor/src/**/FrpcStcpVisitorClient.kt",
+        "frpc-stcp-visitor/src/androidTest/**",
+        "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorClientContractFixtures.kt",
+        "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorClientDifferentialContractTest.kt",
+        "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorFixtureContractTest.kt",
+        "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorSerializationContractTest.kt",
+        "app/build.gradle.kts",
+        ".github/scripts/audit-third-party.py",
+        ".github/scripts/verify-bridge-reproducibility.sh",
+        ".github/workflows/release.yml",
+        ".github/workflows/retained-gomobile.yml",
+    ):
+        require(required_path in retained_paths, f"retained GoMobile paths omit {required_path}")
+    for forbidden_path in ("gradle.properties", "THIRD_PARTY_NOTICES.txt", "third_party/components.toml"):
+        require(forbidden_path not in retained_paths, f"routine version metadata must not trigger GoMobile: {forbidden_path}")
+    retained_jobs = retained_workflow.get("jobs")
+    require(isinstance(retained_jobs, dict) and set(retained_jobs) == {"verify"}, "retained GoMobile workflow must have one verify job")
+    retained_job = retained_jobs["verify"]
+    require(isinstance(retained_job, dict), "retained GoMobile verify job must be an object")
+    retained_steps = retained_job.get("steps")
+    require(isinstance(retained_steps, list), "retained GoMobile verify job must define steps")
+    for step in retained_steps:
+        if not isinstance(step, dict) or "uses" not in step:
+            continue
+        require(
+            re.fullmatch(r"[^@]+@[0-9a-f]{40}", str(step["uses"])) is not None,
+            f"retained GoMobile action is not pinned to a full commit SHA: {step['uses']}",
+        )
+    retained_setup_go = [
+        step for step in retained_steps if isinstance(step, dict) and step.get("name") == "Set up Go 1.26.4"
+    ]
+    require(len(retained_setup_go) == 1, "retained GoMobile workflow must set up Go exactly once")
+    require(
+        retained_setup_go[0].get("uses") == "actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16"
+        and retained_setup_go[0].get("with", {}).get("go-version") == "1.26.4",
+        "retained GoMobile workflow must use the pinned Go toolchain",
+    )
+    retained_step_text = "\n".join(
+        str(step.get("run", "")) for step in retained_steps if isinstance(step, dict)
+    )
+    for required_command in (
+        "go run ./cmd/preparefrp",
+        "python3 .github/scripts/test_check_go_race_environment.py",
+        "python3 .github/scripts/check-go-race-environment.py",
+        "python3 .github/scripts/audit-third-party.py",
+        "go test -race -modfile=build/frp-patched.mod ./...",
+        "go test -race ./client/...",
+        ":frpc-stcp-visitor:frpcInteropTest",
+        "bash .github/scripts/verify-bridge-reproducibility.sh",
+        ":frpc-stcp-visitor:checkGoMobileBridgeAar",
+        ":app:testGoMobileReleaseUnitTest",
+        ":app:testGoMobileEmergencyReleaseUnitTest",
+        ":app:assembleGoMobileRelease",
+        ":app:assembleGoMobileReleaseAndroidTest",
+        ":app:assembleKotlinRelease",
+        ":app:assembleKotlinReleaseAndroidTest",
+        ":app:verifyPureKotlinPackaging",
+        "ndk;27.1.12297006",
+        "-PrequireGoMobileBridge=true",
+    ):
+        require(required_command in retained_step_text, f"retained GoMobile workflow omits gate: {required_command}")
+    require(
+        retained_step_text.count("-PrequireGoMobileBridge=true") == 3,
+        "each retained Android Gradle invocation must explicitly require the bridge",
+    )
+    require(
+        "legal-baseline.sha256" in read_text("frpc-stcp-visitor-go/build-aar.sh")
+        and "legal-baseline.sha256" in read_text("frpc-stcp-visitor-go/build-aar.ps1"),
+        "canonical bridge builds must verify the immutable legal baseline manifest",
+    )
 
     android_workflow_path = ".github/workflows/frpc-kotlin-android-interop.yml"
     android_workflow_text = read_text(android_workflow_path)

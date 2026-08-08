@@ -26,13 +26,11 @@
 ## 自动门禁
 
 - [ ] 精确候选 commit 的 `main` CI 已通过。
-- [ ] 使用固定输入完成 `go run ./cmd/preparefrp`。
-- [ ] 外层 wrapper 与生成的 patched frp `client/...` race tests 已通过。
-- [ ] 社区/文档与第三方/法律清单审计均已通过。
+- [ ] 社区/文档与静态第三方/法律清单审计已在不依赖 Go generated input 的情况下通过。
 - [ ] 精确候选版本的 `:frpc-stcp-visitor:frpcInteropTest` 已使用固定官方 frp asset 通过，包括 wire v1/v2、四种 payload 模式、并发双向超窗口流、长期 global/project SSE、负例和重启/control epoch 恢复。
-- [ ] Bridge 可复现门禁已在同一主机平台构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，并隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 逐字节一致。
-- [ ] AAR checksum、精确 Java API、bridge/frp provenance、四 ABI BuildInfo module identity/version/sum、无本地路径与跨 ABI graph digest 证明、预期 ABI、ELF machine、16KB `PT_LOAD` 对齐、stripped 状态、内嵌法律文件和 sidecar 已通过。
-- [ ] `:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testGoMobileEmergencyReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:testReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest`、`:app:assembleRelease`、`:app:assembleGoMobileEmergencyRelease`、`:app:verifyPureKotlinPackaging`、`:app:verifyReleasePackaging` 和强制 bridge 门禁已通过；variant factory 测试确认 Debug/Kotlin、Canary/Kotlin、正式 Release/Kotlin、GoMobile Release-Like/GoMobile、Kotlin Release-Like/Kotlin 与 GoMobile Emergency Release/GoMobile 选择，两个共享 Release-Like AndroidTest APK 均已编译，打包门禁已覆盖正式 Kotlin Release，并确认每个 Kotlin runtime classpath 和 ABI APK 都排除 GoMobile bridge 与 `libgojni.so`。
+- [ ] 普通纯 Kotlin 任务已通过：`:app:testDebugUnitTest`、`:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:testReleaseUnitTest`、`:frpc-stcp-visitor:testDebugUnitTest`、`:app:assembleDebug`、`:app:assembleCanary`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest`、`:app:assembleRelease`、`:app:verifyPureKotlinPackaging` 与 `:app:verifyReleasePackaging`。Variant factory 测试确认 Debug/Kotlin、Canary/Kotlin、Kotlin Release-Like/Kotlin 与正式 Release/Kotlin 选择；每个 Kotlin runtime classpath 和 ABI APK 都排除 GoMobile bridge 与 `libgojni.so`。
+- [ ] 如果 bridge/frp/GoMobile adapter/build 路径发生变化，或该候选使用 `gomobile-emergency-release`，GoMobile 保留 workflow 或等价显式运行已通过：固定 `preparefrp`、完整第三方 Go module 审计、外层与 patched-frp `go test -race`、不同 checkout 路径可复现性、AAR checksum/API/provenance/BuildInfo/ABI/ELF/法律检查、`testGoMobileReleaseUnitTest`、`testGoMobileEmergencyReleaseUnitTest`、`assembleGoMobileRelease`、`assembleGoMobileReleaseAndroidTest` 和强制 bridge 门禁。否则本项明确记录为不适用。
+- [ ] 如果该候选使用 `gomobile-emergency-release`，受保护签名 profile 已通过 `:app:testGoMobileEmergencyReleaseUnitTest`、`:app:assembleGoMobileEmergencyRelease` 和 GoMobile 专用制品检查。否则本项明确记录为不适用。
 - [ ] 如果该候选用于评估 K7/Kotlin 默认装配，已对其精确完整 commit SHA 运行 `K6V Android STCP Interop`：可直接手动触发，首次引入时也可通过人工显式启用的 CI reusable bootstrap。API 26 x86_64 `compat` lane 精确通过 `success-v1-00`；API 36 x86_64 `full` lane 通过全部八个 wire/加密/压缩成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。Renderer preflight tests 已通过，fail-closed 双语报告与规范化 evidence 完整校验 suite/profile identity、参数、`gomobile,kotlin` 顺序、精确 checks、等价性和 `authorizesKotlinDefault=false`，而不是依赖 Gradle task success。否则本项明确记录为不适用。
 - [ ] 已审查 K6V 报告限制：模拟器证据不能替代分离的目标 ABI 真机与 16KB runtime lane、App 的真实 Store/快照/reconciliation 链路、Doze/网络与前后台切换、性能、资源泄漏、长期 soak、正式稳定发布周期或发布设备 STCP 证据；这些仍是 Kotlin 默认决策前的必要条件。两个设备 lane 可以使用不同设备；无法获得物理 ARM 16KB 硬件记录为残余风险，而不是 K7 开发阻塞项。
 - [ ] Canary 与 Kotlin Release-Like APK 只作为无 bridge 验证输出，GoMobile Release-Like 只作为带 suffix、使用 Debug 证书的对比输出；三者均未暂存或发布，正式 Debug 与 Release 保持无 bridge 的 Kotlin 构建。
@@ -53,7 +51,7 @@
 - [x] API 31 物理性能设备完成一组 8 小时成对 soak。harness 仍允许最长 24 小时诊断，但 `k7-resource-v4` 不要求 24 小时验收运行。
 - [x] 已构建更高 `versionCode` 的 GoMobile emergency build 并覆盖安装 Kotlin 候选，确认 DataStore、Keystore 支持的 credential reference、服务器配置和更新身份保持兼容。维护者已记录回滚触发条件、负责人、响应目标与构建/签名/发布流程；回滚不依赖 Android downgrade 安装。
 
-K10 继续阻塞，直到 Kotlin-default 完成一个完整稳定公开发布周期。
+Kotlin 成为正式默认后，`v0.3.0` 已完成 K10 稳定周期条件，`v0.4.0` 又完成了一轮稳定周期。GoMobile 保留验证不再阻塞普通 CI 或稳定 Kotlin 发布。
 
 ## 设备与连接门禁
 

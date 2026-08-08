@@ -87,7 +87,7 @@ macOS/Linux：
 - `OCDeck_<version>-kotlin-release_armeabi-v7a.apk`
 - `OCDeck_<version>-kotlin-release_x86_64.apk`
 
-该 variant 精确解析无 bridge 的 `:frpc-stcp-visitor` Kotlin Release-Like variant，因此其 runtime classpath 与 APK 会排除 GoMobile bridge 和 `libgojni.so`；`verifyKotlinReleasePackaging` 会强制执行这两项约束。该 variant 仅用于真机 Release 模式 class loading、STCP 恢复、性能与 soak 验证。其 Debug 测试签名有意与公开 App 身份和证书不兼容。CI 与 Release 自动化会把它构建为验证输出，但绝不暂存或发布。正式 `assembleRelease` 独立使用纯 Kotlin backend、公开身份、稳定版本和 Release signer。
+该 variant 精确解析无 bridge 的 `:frpc-stcp-visitor` Kotlin Release-Like variant，因此其 runtime classpath 与 APK 会排除 GoMobile bridge 和 `libgojni.so`；`verifyKotlinReleasePackaging` 会强制执行这两项约束。该 variant 仅用于真机 Release 模式 class loading、STCP 恢复、性能与 soak 验证。其 Debug 测试签名有意与公开 App 身份和证书不兼容。普通 CI 与 retained GoMobile workflow 会把它构建为验证输出，但绝不暂存或发布。稳定 Release 自动化改为构建正式 `assembleRelease`，后者独立使用纯 Kotlin backend、公开身份、稳定版本和 Release signer。
 
 ## GoMobile Release-Like 真机构建
 
@@ -115,7 +115,7 @@ macOS/Linux：
 
 ## 构建固定 GoMobile Bridge
 
-Bridge 脚本会准备固定并打过补丁的 frp 源码，并安装固定 x/mobile 工具。在执行 `gomobile bind` 前，`cmd/preparemoduleproxy` 会创建稳定、版本化的本地 `GOPROXY` 与 bind module graph，使正式 AAR 不记录 checkout 路径 replacement。Bind 必须同时生成 AAR 及配套 sources JAR；缺少任一制品都会使构建失败。两个 archive 都会先规范化，再将 AAR、sources JAR、POM、checksum、API、provenance 与 native metadata 写入本地 Maven 仓库。
+Bridge 脚本首先要求 `bridge_audited_app_version` 等于当前 `VERSION_NAME`，并要求每个内嵌法律文件匹配 `frpc-stcp-visitor-go/legal-baseline.sha256`；过期的 App 版本基线或变化的法律字节会在 Go 运行前失败。因此准备新构建时，必须同时使用新的不可变 `BRIDGE_VERSION` 并更新相应基线。随后脚本会准备固定并打过补丁的 frp 源码，并安装固定 x/mobile 工具。在执行 `gomobile bind` 前，`cmd/preparemoduleproxy` 会创建稳定、版本化的本地 `GOPROXY` 与 bind module graph，使正式 AAR 不记录 checkout 路径 replacement。Bind 必须同时生成 AAR 及配套 sources JAR；缺少任一制品都会使构建失败。两个 archive 都会先规范化，再将 AAR、sources JAR、POM、checksum、API、provenance 与 native metadata 写入本地 Maven 仓库。
 
 `cmd/checkaar` 会读取四个 `libgojni.so` 的 Go BuildInfo，校验固定 module identity、version 与 sum，拒绝本地 module identity 以及内嵌的仓库/cache 路径，并要求 canonical module graph digest 在各 ABI 间一致。Schema 2 bridge provenance 与 native metadata 会绑定这项证明。生成的 AAR 和本地构建仓库属于构建输出，不得提交。
 
@@ -133,7 +133,7 @@ bash frpc-stcp-visitor-go/build-aar.sh
 
 ### 验证跨 Checkout 可复现性
 
-从仓库根目录的干净 checkout 运行等价 CI 可复现门禁。脚本会拒绝存在任何 tracked 或 untracked 工作树变更的 checkout。
+从仓库根目录的干净 checkout 运行 retained GoMobile 可复现门禁。脚本会拒绝存在任何 tracked 或 untracked 工作树变更的 checkout。
 
 Windows：
 
@@ -163,7 +163,7 @@ macOS/Linux：
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6`。Bridge 字节变化时必须修改 `BRIDGE_VERSION`；不得在同一坐标下发布不同字节。
+当前不可变 bridge 坐标为 `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6`，其内嵌法律基线为 OC Deck `0.4.0`，精确法律字节由 `frpc-stcp-visitor-go/legal-baseline.sha256` 固定。该坐标表示最后一次完整审计的 retained/emergency AAR，与后续普通 App 版本相互独立。普通 App 版本升级不轮换 `BRIDGE_VERSION`，并可继续保留两项历史基线。之后每次重建 AAR 前，完整审计与构建脚本都要求 App 版本基线等于当前 App 版本且法律文件匹配哈希清单；只能在同时创建新坐标时更新任一基线。如果 native/AAR 字节、Java API、依赖或内嵌法律内容发生变化，必须创建该新坐标；不得在同一坐标下发布不同字节。
 
 ## Release 构建
 
@@ -188,7 +188,7 @@ VERSION_NAME=0.4.0
 
 - JDK 不一致可能导致 Gradle 或 Kotlin toolchain 失败。确认 `java -version` 和 Gradle 都使用 JDK 21。
 - Go 或 NDK 与 `bridge-versions.properties` 不一致时，bridge 构建会立即失败。
-- 正式 Debug、Release 与 Kotlin 验证 variant 允许缺少 bridge；只有 GoMobile Release-Like 与 GoMobile Emergency Release 需要 bridge。完整等价 CI 门禁会为 GoMobile 路径校验 AAR，同时单独证明 Debug、Canary、Kotlin Release-Like 与正式 Release 都排除该依赖。
+- 正式 Debug、Release 与 Kotlin 验证 variant 允许缺少 bridge；只有 GoMobile Release-Like 与 GoMobile Emergency Release 需要 bridge。Retained GoMobile 门禁会在相关 bridge 路径变化或显式 emergency 运行时校验 AAR；普通 CI 与稳定 Kotlin 发布则在不安装 Go/NDK 的情况下，单独证明 Debug、Canary、Kotlin Release-Like 与正式 Release 都排除该依赖。
 - Backend 选择由 `BuildConfig`/factory 测试验证，其中 Debug 预期选择 Kotlin。打包隔离是另一项独立约束：普通 Kotlin variant 使用 `verifyPureKotlinPackaging`，正式签名 Kotlin Release 使用 `verifyReleasePackaging`。
 - Bridge 坐标未变化但生成 AAR 字节变化时，会因不可变性违规而被拒绝。
 - AAR 门禁通过但 APK native 字节绑定失败时，应确认 App 打包仍将已经 stripped 的 `libgojni.so` 排除在 Android Gradle Plugin 的 native strip transform 之外；不得降低字节绑定校验或替换 AAR hash。
