@@ -53,6 +53,60 @@ $ExternalProvenance = Join-Path $StagingDir 'bridge-provenance-with-hash.json'
 $ApiCheckDir = Join-Path $StagingDir 'api-check'
 $ExpectedApi = Join-Path $ScriptDir 'api\frpcstcpvisitor.txt'
 $BridgeClass = 'io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor'
+$LegalBaseline = Join-Path $ScriptDir 'legal-baseline.sha256'
+
+$GradleProperties = @{}
+Get-Content -LiteralPath (Join-Path $RootDir 'gradle.properties') | ForEach-Object {
+    if ($_ -and -not $_.StartsWith('#')) {
+        $Parts = $_.Split('=', 2)
+        if ($Parts.Count -eq 2) {
+            $GradleProperties[$Parts[0]] = $Parts[1]
+        }
+    }
+}
+$AppVersion = $GradleProperties['VERSION_NAME']
+if (-not $AppVersion) {
+    throw 'VERSION_NAME is missing from gradle.properties'
+}
+$ComponentsText = [IO.File]::ReadAllText((Join-Path $RootDir 'third_party\components.toml'))
+$BridgeLegalBaselineMatches = [regex]::Matches(
+    $ComponentsText,
+    '(?m)^bridge_audited_app_version = "([^"]+)"$'
+)
+if ($BridgeLegalBaselineMatches.Count -ne 1) {
+    throw 'third_party/components.toml must define bridge_audited_app_version exactly once'
+}
+$BridgeLegalBaseline = $BridgeLegalBaselineMatches[0].Groups[1].Value
+if ($BridgeLegalBaseline -ne $AppVersion) {
+    throw "GoMobile bridge legal baseline $BridgeLegalBaseline does not match current app version $AppVersion. Create a new immutable BRIDGE_VERSION and update bridge_audited_app_version before rebuilding the AAR."
+}
+if (-not (Test-Path -LiteralPath $LegalBaseline -PathType Leaf)) {
+    throw 'GoMobile bridge legal baseline manifest is missing'
+}
+foreach ($Line in [IO.File]::ReadAllLines($LegalBaseline)) {
+    if ($Line -notmatch '^([0-9a-f]{64})  (.+)$') {
+        throw "Invalid GoMobile bridge legal baseline entry: $Line"
+    }
+    $ExpectedHash = $Matches[1]
+    $RelativePath = $Matches[2].Replace('/', [IO.Path]::DirectorySeparatorChar)
+    $SourcePath = Join-Path $RootDir $RelativePath
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+        throw "GoMobile bridge legal baseline file is missing: $RelativePath"
+    }
+    $SourceBytes = [IO.File]::ReadAllBytes($SourcePath)
+    $NormalizedText = [Text.Encoding]::UTF8.GetString($SourceBytes).Replace("`r`n", "`n").Replace("`r", "`n")
+    $NormalizedBytes = [Text.Encoding]::UTF8.GetBytes($NormalizedText)
+    $Hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $ActualHash = ([BitConverter]::ToString($Hasher.ComputeHash($NormalizedBytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $Hasher.Dispose()
+    }
+    if ($ActualHash -ne $ExpectedHash) {
+        throw "Embedded GoMobile legal file differs from the immutable bridge baseline: $RelativePath. Create a new BRIDGE_VERSION and legal baseline before rebuilding the AAR."
+    }
+}
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +

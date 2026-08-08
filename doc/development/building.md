@@ -87,7 +87,7 @@ ABI-split APKs are written under `app/build/outputs/apk/kotlinRelease/` as:
 - `OCDeck_<version>-kotlin-release_armeabi-v7a.apk`
 - `OCDeck_<version>-kotlin-release_x86_64.apk`
 
-This variant resolves the matching bridge-free `:frpc-stcp-visitor` Kotlin Release-Like variant. Its runtime classpath and APKs therefore exclude the GoMobile bridge and `libgojni.so`; `verifyKotlinReleasePackaging` enforces both conditions. It is for physical-device Release-mode class loading, STCP recovery, performance, and soak validation only. Its Debug test signature is intentionally incompatible with the public application identity and certificate. CI and Release automation build it as a verification output but never stage or publish it. Formal `assembleRelease` independently uses the pure Kotlin backend with the public identity, stable version, and Release signer.
+This variant resolves the matching bridge-free `:frpc-stcp-visitor` Kotlin Release-Like variant. Its runtime classpath and APKs therefore exclude the GoMobile bridge and `libgojni.so`; `verifyKotlinReleasePackaging` enforces both conditions. It is for physical-device Release-mode class loading, STCP recovery, performance, and soak validation only. Its Debug test signature is intentionally incompatible with the public application identity and certificate. Ordinary CI and the retained GoMobile workflow build it as a verification output but never stage or publish it. Stable Release automation instead builds formal `assembleRelease`, which independently uses the pure Kotlin backend with the public identity, stable version, and Release signer.
 
 ## GoMobile Release-Like Device Build
 
@@ -115,7 +115,7 @@ It downloads only the current host's official frp `v0.69.1` archive pinned by UR
 
 ## Build the Fixed GoMobile Bridge
 
-The bridge scripts prepare the pinned and patched frp source and install the pinned x/mobile tools. Before `gomobile bind`, `cmd/preparemoduleproxy` creates a stable, versioned local `GOPROXY` and bind module graph so the formal AAR does not record checkout-path replacements. The bind must produce both the AAR and its companion sources JAR; either one missing is a build failure. Both archives are normalized before the AAR, sources JAR, POM, checksum, API, provenance, and native metadata are written to the local Maven repository.
+The bridge scripts first require `bridge_audited_app_version` to equal the current `VERSION_NAME` and every embedded legal file to match `frpc-stcp-visitor-go/legal-baseline.sha256`; a stale App-version baseline or changed legal byte fails before Go runs. Preparing a new build therefore requires a new immutable `BRIDGE_VERSION` together with any updated baseline. The scripts then prepare the pinned and patched frp source and install the pinned x/mobile tools. Before `gomobile bind`, `cmd/preparemoduleproxy` creates a stable, versioned local `GOPROXY` and bind module graph so the formal AAR does not record checkout-path replacements. The bind must produce both the AAR and its companion sources JAR; either one missing is a build failure. Both archives are normalized before the AAR, sources JAR, POM, checksum, API, provenance, and native metadata are written to the local Maven repository.
 
 `cmd/checkaar` reads Go BuildInfo from all four `libgojni.so` files, verifies fixed module identities, versions, and sums, rejects local module identities and embedded repository/cache paths, and requires the canonical module-graph digest to match across ABIs. Schema-2 bridge provenance and native metadata bind this proof. Generated AARs and local build repositories are build outputs and must not be committed.
 
@@ -133,7 +133,7 @@ bash frpc-stcp-visitor-go/build-aar.sh
 
 ### Verify Cross-Checkout Reproducibility
 
-Run the CI-equivalent reproducibility gate from the repository root in a clean checkout. The scripts reject any tracked or untracked worktree changes.
+Run the retained GoMobile reproducibility gate from the repository root in a clean checkout. The scripts reject any tracked or untracked worktree changes.
 
 Windows:
 
@@ -163,7 +163,7 @@ macOS/Linux:
 ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6`. If bridge bytes change, `BRIDGE_VERSION` must change; never publish different bytes under the same coordinate.
+The current immutable bridge coordinate is `io.github.ycfeng.ocdeck:frpc-stcp-visitor-gobridge:0.3.19-frp0.69.1-p6`, whose embedded legal baseline is OC Deck `0.4.0` and whose exact legal bytes are pinned by `frpc-stcp-visitor-go/legal-baseline.sha256`. This coordinate records the last fully audited retained/emergency AAR and is independent of later ordinary App versions. Ordinary App version updates do not rotate `BRIDGE_VERSION` and may leave both historical baselines unchanged. Before any later AAR rebuild, the full audit and build scripts require the App-version baseline to equal the current App version and the legal files to match the hash manifest; update either only together with a new coordinate. Create that coordinate whenever native/AAR bytes, the Java API, dependencies, or embedded legal content change; never publish different bytes under the same coordinate.
 
 ## Release Builds
 
@@ -188,7 +188,7 @@ It does not produce a universal APK, AAB, or Play upload artifact. See the [rele
 
 - A JDK mismatch can cause Gradle or Kotlin toolchain failures. Confirm `java -version` and Gradle use JDK 21.
 - A bridge build fails immediately if Go or NDK differs from `bridge-versions.properties`.
-- An absent bridge is permitted for formal Debug and Release and for the Kotlin verification variants. Only GoMobile Release-Like and GoMobile Emergency Release require it. The full CI-equivalent gate validates the AAR for GoMobile paths while separately proving that Debug, Canary, Kotlin Release-Like, and formal Release exclude it.
+- An absent bridge is permitted for formal Debug and Release and for the Kotlin verification variants. Only GoMobile Release-Like and GoMobile Emergency Release require it. The retained GoMobile gate validates the AAR for relevant bridge paths or an explicit emergency run, while ordinary CI and stable Kotlin publication separately prove that Debug, Canary, Kotlin Release-Like, and formal Release exclude it without installing Go or the NDK.
 - Backend selection is verified through `BuildConfig`/factory tests, with Debug expected to select Kotlin. Packaging isolation is a separate invariant enforced by `verifyPureKotlinPackaging` for ordinary Kotlin variants and by `verifyReleasePackaging` for the formally signed Kotlin release.
 - A changed generated AAR under an unchanged bridge coordinate is rejected as an immutability violation.
 - If APK native-byte binding fails while the AAR gate passes, confirm that App packaging still excludes the already-stripped `libgojni.so` from Android Gradle Plugin's native strip transform. Do not weaken the byte-binding check or replace the AAR hash.

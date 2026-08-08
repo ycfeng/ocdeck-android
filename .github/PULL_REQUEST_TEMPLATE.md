@@ -61,14 +61,14 @@ Select one expected label. These labels must be created and configured in GitHub
 
 ## Bridge Gate / Bridge 门禁
 
-- [ ] Not applicable; this change does not touch either STCP backend, App backend selection, the bridge, patched frp, or bridge version inputs. / 不适用；本改动不涉及任一 STCP backend、App backend 选择、bridge、patched frp 或 bridge 版本输入。
+- [ ] Not applicable; this change does not touch the retained GoMobile backend/adapter, App backend selection, bridge build/dependencies, patched frp, or bridge version inputs. / 不适用；本改动不涉及保留的 GoMobile backend/adapter、App backend 选择、bridge 构建/依赖、patched frp 或 bridge 版本输入。
 - [ ] `go run ./cmd/preparefrp` passed in `frpc-stcp-visitor-go/`. / 已通过。
 - [ ] Wrapper and patched frp client `go test -race` gates passed. / wrapper 与 patched frp client 的竞态测试已通过。
 - [ ] `build-aar.sh` or `build-aar.ps1` passed. / 已通过。
 - [ ] The retained full Gradle gate passed: `:frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true`. / 已通过保留的完整 Gradle 门禁。
 - [ ] If the emergency path changed, the protected manual `gomobile-emergency-release` profile ran `:app:testGoMobileEmergencyReleaseUnitTest` and Release-signed `:app:assembleGoMobileEmergencyRelease`; it was not published. / emergency 路径变化时，受保护手动 profile 已运行 emergency 单测与 Release 签名构建，且未发布。
-- [ ] A bridge byte change uses a new bridge version and Maven coordinate. / bridge 字节变化已使用新的 bridge 版本与 Maven 坐标。
-- [ ] GoMobile retained gates remain intact through K10; historical evidence still reports `authorizesKotlinDefault=false`. / GoMobile 保留门禁持续到 K10；历史证据仍报告 `authorizesKotlinDefault=false`。
+- [ ] A new emergency AAR whose bytes, Java API, dependencies, or embedded legal content differ uses a new bridge version and Maven coordinate; an ordinary App version update does not rotate it. / 新 emergency AAR 的字节、Java API、依赖或内嵌法律内容变化时已使用新的 bridge 版本与 Maven 坐标；普通 App 版本升级不轮换该坐标。
+- [ ] The K10 stable-cycle condition is complete; retained GoMobile gates ran only because this change affects their paths or an explicit emergency verification was requested. Historical evidence still reports `authorizesKotlinDefault=false`. / K10 稳定周期条件已完成；仅因本改动影响相关路径或显式请求 emergency 验证才运行 GoMobile 保留门禁。历史证据仍报告 `authorizesKotlinDefault=false`。
 
 ## Documentation and Third Parties / 文档与第三方
 

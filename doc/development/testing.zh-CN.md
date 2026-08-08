@@ -71,7 +71,7 @@ macOS/Linux：
 ./gradlew :app:testDebugUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:verifyPureKotlinPackaging
 ```
 
-这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建内部或 Release-Like variant。修改 STCP backend 选择、纯 Kotlin backend、共享 STCP manager 集成、共享 Release-Like instrumentation 或 CI/Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testGoMobileReleaseUnitTest`、`:app:testGoMobileEmergencyReleaseUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleGoMobileRelease`、`:app:assembleGoMobileReleaseAndroidTest`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest` 与 `:app:verifyPureKotlinPackaging`。两个 AndroidTest assembly 会分别为两种 backend 编译并打包共享 Release-Like 测试源码与 manifest。打包任务会解析两个 Kotlin runtime classpath 并检查每个 ABI APK，拒绝 GoMobile bridge module 或任何 `libgojni.so` 条目。下方完整 bridge/等价 CI 门禁始终运行这组扩展验证。
+这仍是普通小型 App 改动的最低门禁，并不要求每项此类改动都构建内部或 Release-Like variant。修改纯 Kotlin backend、共享 STCP manager 集成、共享 Release-Like instrumentation 或普通 CI/稳定 Release variant 验证时，还需运行 `:app:testCanaryUnitTest`、`:app:testKotlinReleaseUnitTest`、`:app:assembleCanary`、`:app:assembleKotlinRelease`、`:app:assembleKotlinReleaseAndroidTest` 与 `:app:verifyPureKotlinPackaging`。这些普通检查保持无 bridge，且不安装或编译 Go/NDK。修改 GoMobile backend 选择、adapter 或 bridge contract、bridge 构建/依赖配置、downstream frp patch 或 bridge version 时，还必须运行下方 retained GoMobile 门禁；该门禁会增加 GoMobile Release-Like 与 Emergency 单测/装配任务，并强制要求生成的 AAR。AndroidTest assembly 会为适用 backend 编译并打包共享 Release-Like 测试源码与 manifest。打包任务会解析 Kotlin runtime classpath 并检查每个 ABI APK，拒绝普通 Kotlin variant 包含 GoMobile bridge module 或任何 `libgojni.so` 条目。
 
 开发期间可按测试类运行聚焦测试，例如：
 
@@ -228,7 +228,7 @@ App result schema 12 由 Host 在生成 summary schema 10 前校验；离线 val
   "-Pocdeck.frp.appResource.evidenceDirectory=<existing-directory>"
 ```
 
-`k7-resource-v4` 只接受 Host 校验 App result schema 12 后生成的 summary schema 10，并把 `baseline` 视为短时结构/安全 profile。既有有界四检查点生命周期 histogram，以及 CPU/wall/PSS、FD/thread、增长与 quiescence 上限保持不变。已完成的 API 31 重复矩阵和主设备 8 小时 soak 继续作为 K7 资源 evidence。目标 ABI 物理加载与 API 36 16KB runtime 仍是发布门禁；默认切换后，K10 前仍要求一个完整稳定公开发布周期。后文若出现“当前 v1”“当前 v2”或“当前 v3”措辞，仅记录旧运行当时的评估语境；当前合同是 v4。
+`k7-resource-v4` 只接受 Host 校验 App result schema 12 后生成的 summary schema 10，并把 `baseline` 视为短时结构/安全 profile。既有有界四检查点生命周期 histogram，以及 CPU/wall/PSS、FD/thread、增长与 quiescence 上限保持不变。已完成的 API 31 重复矩阵和主设备 8 小时 soak 继续作为 K7 资源 evidence。目标 ABI 物理加载与 API 36 16KB runtime 仍是发布门禁。默认切换后，`v0.3.0` 已满足 K10 稳定周期条件，`v0.4.0` 又完成一轮稳定发布；retained GoMobile 验证不再阻塞普通 CI 或稳定 Kotlin 发布。后文若出现“当前 v1”“当前 v2”或“当前 v3”措辞，仅记录旧运行当时的评估语境；当前合同是 v4。
 
 开发候选筛选独立于单 pair 的 v4 validator。使用 `stress` 与 `leak` 的 Kotlin 进程绝对 CPU 比较候选和 retained baseline：任一 profile 不得退化超过 3%；至少一个 profile 改善不低于 5%，或者两个 candidate-to-baseline CPU ratio 的几何平均改善不低于 5%时才保留。正确性、wall、PSS、FD/线程、quiescence 与生命周期行为均不得退化。该规则只用于实验筛选，不授权 Kotlin 默认装配。
 
@@ -268,7 +268,9 @@ Harness、Host 校验和两个 backend instrumentation variant 已实现并通�
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-## 完整 Bridge 与等价 CI 门禁
+## Retained GoMobile Bridge 门禁
+
+`.github/workflows/retained-gomobile.yml` 会在面向 `main` 的 pull request 或 push 涉及相关 GoMobile/bridge 路径时自动运行这套完整未签名门禁，也支持显式手动 dispatch。受保护的 `gomobile-emergency-release` profile 会在生成正式签名 emergency APK 前运行同一套 retained 检查。普通 CI 与稳定 `kotlin-release` 发布不运行本节。
 
 准备 patched frp，并运行两组 Go race tests：
 
@@ -325,11 +327,11 @@ Invoke-NativeChecked { .\.github\scripts\verify-bridge-reproducibility.ps1 }
 Invoke-NativeChecked { .\gradlew.bat :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true }
 ```
 
-可复现脚本要求干净 checkout。它们会在当前主机平台构建当前 checkout，以及位于不同绝对路径的 detached worktree；两个构建分别隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较完整的 AAR、必需 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 集合。脚本会删除临时 checkout 与 cache，但保留当前 checkout 中的主构建输出供 Gradle 门禁使用。这不代表 Windows 与 Linux 之间的字节一致性声明。CI 与 Release 使用 shell 脚本；Windows 开发者可运行对应 PowerShell 脚本。
+可复现脚本要求干净 checkout。它们会在当前主机平台构建当前 checkout，以及位于不同绝对路径的 detached worktree；两个构建分别隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`，并逐字节比较完整的 AAR、必需 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar 集合。脚本会删除临时 checkout 与 cache，但保留当前 checkout 中的主构建输出供 Gradle 门禁使用。这不代表 Windows 与 Linux 之间的字节一致性声明。Retained GoMobile 与 emergency Release workflow 使用 shell 脚本；Windows 开发者可运行对应 PowerShell 脚本。
 
 固定 Go、x/mobile、Android API 与 NDK 版本必须来自 `bridge-versions.properties`。
 
-修改 Go wrapper、downstream frp patch、Android bridge 模块、任一 STCP backend、App backend 选择、bridge API、失败处理或版本 metadata 时，必须执行固定 frp 互操作任务与完整 bridge 门禁，不能只运行 Android 单元测试。Android 门禁会验证 Debug/Kotlin、Canary/Kotlin、Kotlin Release-Like/Kotlin、GoMobile Release-Like/GoMobile 与 GoMobile Emergency Release/GoMobile 的选择和装配，编译并打包两个共享 Release-Like AndroidTest variant，并验证普通 Kotlin variant 的无 bridge runtime/APK 打包。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过上述任何门禁；native 或生成 AAR 字节发生变化时必须递增 `BRIDGE_VERSION`。
+修改 Go wrapper、downstream frp patch、Android bridge 模块、GoMobile adapter 或 bridge contract、App backend 选择、bridge 构建/依赖配置、bridge version 或 `frpc-stcp-visitor-go/legal-baseline.sha256` 时，必须执行固定 frp 互操作任务与完整 retained bridge 门禁，不能只运行 Android 单元测试。Android 门禁会验证 Debug/Kotlin、Canary/Kotlin、Kotlin Release-Like/Kotlin、GoMobile Release-Like/GoMobile 与 GoMobile Emergency Release/GoMobile 的选择和装配，编译并打包两个共享 Release-Like AndroidTest variant，并验证普通 Kotlin variant 的无 bridge runtime/APK 打包。纯 Kotlin backend 改动仍需运行固定 frp 互操作任务和扩展纯 Kotlin 检查，但除非同时跨越上述 retained bridge 边界，否则不会自动要求编译 Go。仅修改 Kotlin bridge API 或失败处理时，生成 AAR 字节与 `BRIDGE_VERSION` 可以保持不变，但不能跳过 retained 门禁。普通 App 版本升级不轮换 `BRIDGE_VERSION` 或改写 retained 法律哈希清单；native/generated AAR 字节、Java API、依赖或内嵌法律内容变化时，必须在构建 emergency AAR 前创建新坐标。
 
 ## 安全与边界测试
 

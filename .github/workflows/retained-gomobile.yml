@@ -1,0 +1,170 @@
+name: Retained GoMobile Verification
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "frpc-stcp-visitor-go/**"
+      - "frpc-stcp-visitor-go/legal-baseline.sha256"
+      - "frpc-stcp-visitor/build.gradle.kts"
+      - "frpc-stcp-visitor/src/**/*GoMobile*.kt"
+      - "frpc-stcp-visitor/src/**/UnavailableFrpcStcpVisitorClient.kt"
+      - "frpc-stcp-visitor/src/**/FrpcStcpVisitorClient.kt"
+      - "frpc-stcp-visitor/src/androidTest/**"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorClientContractFixtures.kt"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorClientDifferentialContractTest.kt"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorFixtureContractTest.kt"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorSerializationContractTest.kt"
+      - "app/build.gradle.kts"
+      - "app/src/**/AppContainer.kt"
+      - "app/src/**/FrpcStcpVisitorClientFactoryTest.kt"
+      - "app/src/**/OpenCodeFailure.kt"
+      - "app/src/**/OpenCodeFailureTest.kt"
+      - "app/src/**/OpenCodeEventClientLifecycleTest.kt"
+      - "settings.gradle.kts"
+      - ".github/scripts/audit-community.py"
+      - ".github/scripts/audit-third-party.py"
+      - ".github/scripts/check-go-race-environment.py"
+      - ".github/scripts/test_check_go_race_environment.py"
+      - ".github/scripts/verify-bridge-reproducibility.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/retained-gomobile.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "frpc-stcp-visitor-go/**"
+      - "frpc-stcp-visitor-go/legal-baseline.sha256"
+      - "frpc-stcp-visitor/build.gradle.kts"
+      - "frpc-stcp-visitor/src/**/*GoMobile*.kt"
+      - "frpc-stcp-visitor/src/**/UnavailableFrpcStcpVisitorClient.kt"
+      - "frpc-stcp-visitor/src/**/FrpcStcpVisitorClient.kt"
+      - "frpc-stcp-visitor/src/androidTest/**"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorClientContractFixtures.kt"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorClientDifferentialContractTest.kt"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorFixtureContractTest.kt"
+      - "frpc-stcp-visitor/src/test/**/FrpcStcpVisitorSerializationContractTest.kt"
+      - "app/build.gradle.kts"
+      - "app/src/**/AppContainer.kt"
+      - "app/src/**/FrpcStcpVisitorClientFactoryTest.kt"
+      - "app/src/**/OpenCodeFailure.kt"
+      - "app/src/**/OpenCodeFailureTest.kt"
+      - "app/src/**/OpenCodeEventClientLifecycleTest.kt"
+      - "settings.gradle.kts"
+      - ".github/scripts/audit-community.py"
+      - ".github/scripts/audit-third-party.py"
+      - ".github/scripts/check-go-race-environment.py"
+      - ".github/scripts/test_check_go_race_environment.py"
+      - ".github/scripts/verify-bridge-reproducibility.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/retained-gomobile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retained-gomobile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify retained GoMobile bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5.5.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Go 1.26.4
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: 1.26.4
+          cache: true
+          cache-dependency-path: frpc-stcp-visitor-go/go.sum
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses >/dev/null
+          set -o pipefail
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+
+      - name: Prepare frp
+        working-directory: frpc-stcp-visitor-go
+        shell: bash
+        run: go run ./cmd/preparefrp
+
+      - name: Validate Go race environment
+        shell: bash
+        run: |
+          python3 .github/scripts/test_check_go_race_environment.py
+          python3 .github/scripts/check-go-race-environment.py
+
+      - name: Audit community and documentation metadata
+        shell: bash
+        run: python3 .github/scripts/audit-community.py
+
+      - name: Audit third-party and legal inventory
+        shell: bash
+        run: python3 .github/scripts/audit-third-party.py
+
+      - name: Run Go race tests
+        working-directory: frpc-stcp-visitor-go
+        shell: bash
+        run: go test -race -modfile=build/frp-patched.mod ./...
+
+      - name: Run patched frp client race tests
+        working-directory: frpc-stcp-visitor-go/build/frp-v0.69.1-p6
+        shell: bash
+        run: go test -race ./client/...
+
+      - name: Run fixed-frp interoperability tests
+        shell: bash
+        run: bash ./gradlew --no-daemon :frpc-stcp-visitor:frpcInteropTest
+
+      - name: Verify reproducible GoMobile bridge
+        shell: bash
+        run: bash .github/scripts/verify-bridge-reproducibility.sh
+
+      - name: Run retained GoMobile Android verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
+            :frpc-stcp-visitor:checkGoMobileBridgeAar \
+            :app:testDebugUnitTest \
+            :app:testCanaryUnitTest \
+            :app:testGoMobileReleaseUnitTest \
+            :app:testGoMobileEmergencyReleaseUnitTest \
+            :app:testKotlinReleaseUnitTest \
+            :frpc-stcp-visitor:testDebugUnitTest \
+            :app:assembleDebug \
+            :app:assembleCanary \
+            -PrequireGoMobileBridge=true
+          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
+            :app:assembleGoMobileRelease \
+            :app:assembleGoMobileReleaseAndroidTest \
+            -PrequireGoMobileBridge=true
+          bash ./gradlew --no-daemon --no-parallel --max-workers=2 \
+            :app:assembleKotlinRelease \
+            :app:assembleKotlinReleaseAndroidTest \
+            :app:verifyPureKotlinPackaging \
+            -PrequireGoMobileBridge=true

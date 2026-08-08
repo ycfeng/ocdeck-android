@@ -6,9 +6,10 @@
 
 ## 1. 目标与边界
 
-仓库使用三条 GitHub Actions 工作流：
+仓库使用四条 GitHub Actions 工作流：
 
-- `.github/workflows/ci.yml`：在 `main` push、面向 `main` 的 Pull Request 和手动触发时运行，不读取发布签名材料。手动 dispatch 可显式启用分支内 reusable K6V workflow；push 与 Pull Request 运行绝不会自动启用该 bootstrap。
+- `.github/workflows/ci.yml`：在 `main` push、面向 `main` 的 Pull Request 和手动触发时运行 required 纯 Kotlin 检查，不安装 Go 或 NDK，也不读取发布签名材料。手动 dispatch 可显式启用分支内 reusable K6V workflow；push 与 Pull Request 运行绝不会自动启用该 bootstrap。
+- `.github/workflows/retained-gomobile.yml`：仅在 bridge/frp/adapter/build 相关路径变化时，或由维护者显式手动触发时，运行无签名的 GoMobile 保留门禁。它只有只读仓库权限，不访问签名 Environment 或 secret。
 - `.github/workflows/frpc-kotlin-android-interop.yml`：显式请求、精确 SHA 的 Android STCP backend K6V 门禁。该 workflow 进入默认分支后支持直接手动触发，首次引入时也可通过只读 reusable call bootstrap。其固定 x86_64 矩阵在 API 26 运行单 profile `compat` suite，在 API 36 运行 12-profile `full` suite，先执行真实 GoMobile AAR，再执行纯 Kotlin client，并在不读取签名材料的情况下生成有界双语验收报告 artifact。
 - `.github/workflows/release.yml`：稳定版本 tag 或手动签名运行触发。它先在不读取签名 secret 的情况下准备发布说明并运行固定 frp 互操作，再使用受保护的 `release` Environment 构建并校验签名制品。手动 dispatch 必须通过 `artifact_profile` 在 `kotlin-release` 与 `gomobile-emergency-release` 之间选择。稳定 tag 始终强制 `kotlin-release`，且只有 tag 触发的该 profile 可以创建 GitHub Release；GoMobile emergency profile 仅允许手动运行。
 
@@ -21,7 +22,7 @@
 
 工作流不生成 universal APK、AAB 或 Play 上传制品。GitHub 侧载用户应下载与设备 ABI 对应的 APK。
 
-正式 `debug` 与 `release` 选择纯 Kotlin 且不含 bridge。内部 `canary` 与 `kotlinRelease` 是 Kotlin 验证 variant；`goMobileRelease` 是对称的 GoMobile 验证 variant。Canary 使用带 suffix 的 Debug 身份；两个 Release-Like variant 继承 Release 配置，分别使用 `.kotlinrelease`/`-kotlin-release` 与 `.gomobilerelease`/`-gomobile-release`，并使用 Android Debug 测试证书。CI 与 Release 自动化可以构建这些验证 variant，但绝不应用 Release 签名，也不会暂存或发布其 APK。`goMobileEmergencyRelease` 与它们分离：它选择 GoMobile，使用正式 application ID、稳定版本和 Release signer，并且只能通过受保护的手动 emergency profile 运行。
+正式 `debug` 与 `release` 选择纯 Kotlin 且不含 bridge。内部 `canary` 与 `kotlinRelease` 是 Kotlin 验证 variant；`goMobileRelease` 是对称的 GoMobile 验证 variant。Canary 使用带 suffix 的 Debug 身份；两个 Release-Like variant 继承 Release 配置，分别使用 `.kotlinrelease`/`-kotlin-release` 与 `.gomobilerelease`/`-gomobile-release`，并使用 Android Debug 测试证书。普通 CI 只构建纯 Kotlin variant；GoMobile 保留 workflow 构建对称对比 variant；Release 仅在受保护手动 emergency profile 中构建 GoMobile。验证 variant 绝不应用 Release 签名，也不会暂存或发布。`goMobileEmergencyRelease` 使用正式 application ID、稳定版本和 Release signer。
 
 应用 ID 为 `io.github.ycfeng.ocdeck`，版本 `0.4.0` 最低支持 Android API 26。OC Deck 是独立社区客户端。发布说明必须明确用户需要自行提供可访问的 OpenCode Server，而且 pre-1.0 行为和兼容性仍可能变化。
 
@@ -44,15 +45,15 @@ VERSION_NAME=0.4.0
 
 ## 3. CI 门禁
 
-普通 CI 固定使用 Ubuntu 24.04、JDK 21、Go 1.26.4、Android SDK 36、Build Tools 36.0.0 和 NDK 27.1.12297006，并包含以下门禁：
+普通 CI 固定使用 Ubuntu 24.04、JDK 21、Android SDK 36 和 Build Tools 36.0.0，不安装 Go 或 NDK，并包含以下门禁：
 
-1. 审计社区/文档 metadata，生成 patched frp，并审计第三方/法律清单、四个 Android Go 目标依赖并集、资源哈希和完整 modified/added provenance。
+1. 审计社区/文档 metadata，并在不依赖 generated frp 内容或 Go 工具链的情况下运行静态第三方/法律审计。
 2. 在独立只读 job 中运行 `:frpc-stcp-visitor:frpcInteropTest`。任务只下载当前主机对应、由仓库固定并经哈希校验的官方 frp `v0.69.1` archive，安全解压 `frpc`/`frps`，并覆盖 wire v1/v2、四种 payload 模式、并发双向超窗口流、REST 与长期 global/project SSE、类型化负例、TLS 以及重启/control epoch 恢复。
-3. 运行外层 Go race tests，并在生成的 frp module 中单独运行 `client/...` race tests。
-4. 在 Ubuntu runner 上运行 canonical shell 可复现门禁。它会构建干净的候选 checkout，以及位于不同绝对路径的 detached checkout，隔离 `GOCACHE`、`GOMODCACHE` 与 `GOPATH`；校验法律/API/provenance/native metadata 和四 ABI 固定且无本地路径的 Go BuildInfo module graph；并逐字节比较 AAR、必需的 sources JAR、POM、checksum、API、bridge/frp provenance 和 native sidecar。
-5. 生成 bridge 前，先构建并测试 Debug、Canary 与 Kotlin Release-Like，并运行 `verifyPureKotlinPackaging`，证明干净 checkout 中普通 Kotlin variant 不需要 GoMobile AAR。生成 bridge 后，再执行 bridge AAR 门禁、App 的 Debug、Canary、GoMobile Release-Like 与 Kotlin Release-Like 单元测试、`:frpc-stcp-visitor` 单元测试、四个普通验证 APK 构建、两个 Release-Like AndroidTest APK assembly，并再次运行同一打包门禁。编译两个 AndroidTest variant 可确保共享 Release-Like 源码与测试 manifest 始终处于自动门禁内。受保护 Release workflow 还会为 emergency profile 运行 `testGoMobileEmergencyReleaseUnitTest`；正式 Kotlin profile 则运行 `testReleaseUnitTest`、`assembleRelease` 与 `verifyReleasePackaging`。
+3. 构建并测试 Debug、Canary 与 Kotlin Release-Like，装配共享的 Kotlin Release-Like AndroidTest APK，运行 `:frpc-stcp-visitor` 单元测试和 `verifyPureKotlinPackaging`。这些任务证明普通 variant 不需要 GoMobile AAR，并拒绝任一 Kotlin runtime classpath 或 APK 中的 bridge 与 `libgojni.so`。
 
-Debug factory 测试确认 Kotlin 选择，Canary、Kotlin Release-Like 与正式 Release 也确认 Kotlin；GoMobile Release-Like 与 GoMobile Emergency Release 确认 GoMobile 选择。每个 Kotlin variant 都会解析无 bridge 的精确同名 library variant。打包门禁会拒绝 Kotlin runtime classpath 中的 GoMobile bridge，并拒绝 Kotlin APK 中的 `libgojni.so`，包括生成 AAR 后的正式签名 Release APK。
+按路径过滤或手动触发的 GoMobile 保留 workflow 还会固定 Go 1.26.4 与 NDK 27.1.12297006，生成 patched frp，运行完整第三方 Go module 审计、外层与 patched-frp race tests、bridge 可复现门禁、AAR 检查以及对称 GoMobile/Kotlin Android 验证矩阵。受保护 Release workflow 仅对 `gomobile-emergency-release` 运行同一保留门禁。稳定 `kotlin-release` 不运行 Go、NDK、bridge 生成或 GoMobile task，而是直接执行 `testReleaseUnitTest`、`assembleRelease` 与 `verifyReleasePackaging`。
+
+Debug factory 测试确认 Kotlin 选择，Canary、Kotlin Release-Like 与正式 Release 也确认 Kotlin；保留的 GoMobile 测试确认 GoMobile Release-Like 与 GoMobile Emergency Release 选择。每个 Kotlin variant 都会解析无 bridge 的精确同名 library variant。打包门禁会拒绝 Kotlin runtime classpath 中的 GoMobile bridge，并拒绝 Kotlin APK 中的 `libgojni.so`，包括正式签名 Release APK。
 
 K6V workflow 要求小写 40 字符 `candidate_sha`、`github.sha`、`github.workflow_sha` 与检出的 `HEAD` 指向同一 commit。该 workflow 进入默认分支后可直接手动触发。首次引入时，手动触发 `CI` 并设置 `run_frpc_android_interop=true`，同时可选填写精确 `candidate_sha`；留空时使用所触发 ref 的 SHA，并调用同一个分支内 reusable workflow。普通 push 与 Pull Request CI 绝不会调用该 job。每个模拟器 lane 先构建真实 GoMobile bridge，再在新的 Gradle invocation 中显式指定 suite 与新的 summary 目标运行 `:frpc-stcp-visitor:frpcAndroidInteropTest`。矩阵固定为：API 26 x86_64 使用只含 `success-v1-00` 的 `compat`；API 36 x86_64 使用 `full`，包含八个 wire v1/v2 × 加密关闭/开启 × 压缩关闭/开启成功 profile、错误 token、错误 STCP secret、bind 冲突和 `restart-v2-11`。
 
@@ -142,7 +143,7 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 ## 7. 发布步骤
 
 1. 更新 `gradle.properties` 中的 `VERSION_NAME` 和递增后的 `VERSION_CODE`。
-2. 更新变更日志和 `release-notes/v${VERSION_NAME}.md`。按实际变化同步 README、隐私、安全、支持、商标、`THIRD_PARTY_NOTICES.txt` 和 `third_party/`，重新核对依赖、音效、Gradle wrapper、frp patch 及本地 SHA-256。
+2. 更新变更日志和 `release-notes/v${VERSION_NAME}.md`。按实际变化同步 README、隐私、安全、支持、商标、`THIRD_PARTY_NOTICES.txt` 和 `third_party/`，重新核对依赖、音效、Gradle wrapper、frp patch 及本地 SHA-256。普通 App 版本升级不轮换 `BRIDGE_VERSION`，并可让 `bridge_audited_app_version` 与 `frpc-stcp-visitor-go/legal-baseline.sha256` 保持为 retained artifact 的历史基线。之后准备任何 emergency AAR 前，完整审计与构建脚本都要求 App 版本基线等于当前 `VERSION_NAME`，并要求每个内嵌法律文件匹配哈希清单；AAR 字节、Java API、依赖或内嵌法律内容变化时，只能在同时创建新不可变坐标时更新任一基线。
 3. 完成[发布检查清单](checklist.zh-CN.md)，包括目标 ABI 真机 native load、在官方 Android 测试镜像或真机上的 16KB runtime 验证，以及真实 STCP 验证。这些维度可以使用不同设备；缺少任一必要维度时仍必须阻止正式发布。
 4. 合并到 `main`，确认 CI 通过。
 5. 可先从 `main` 手动运行 `Release` workflow：正式纯 Kotlin profile 选择 `artifact_profile=kotlin-release`；只有受保护的 emergency 演练才选择 `artifact_profile=gomobile-emergency-release`。两条路径都会准备可审阅说明，重新构建、签名、校验并保留三天 artifact，且都不会创建 GitHub Release。手动 dispatch 绝不会自动发布。
@@ -152,7 +153,7 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 7. `preflight` 校验源码版本、tag、`origin/main` 祖先关系、最高版本规则和历史 `VERSION_CODE` 单调递增。
 8. `prepare-notes` 在不读取签名 secret 的情况下生成并上传最终 `release-notes.md`。真实 tag 会追加 GitHub 自动说明。
 9. `frpc-interop` 在无 release Environment 或签名材料的只读 job 中运行固定官方 frp host 矩阵。
-10. `preflight` 与 `frpc-interop` 均通过且 Environment 获批后，`build-release` 重新运行 Debug/Kotlin、Canary/Kotlin、GoMobile Release-Like/GoMobile 与 Kotlin Release-Like/Kotlin App 验证，并装配两个共享 Release-Like AndroidTest APK。门禁拆分为独立的无 daemon、禁用并行且限制 worker 数量的 Gradle invocation：先运行普通测试与 Debug/Canary，再打包 GoMobile Release-Like，最后打包 Kotlin Release-Like。这样既保留完整门禁，又避免多个 variant 的 Kotlin 编译、ART profile、dex 和打包工作并发耗尽 runner heap。它使用 shell 可复现门禁，在同一个 Ubuntu runner 上构建干净的候选 checkout 和位于不同绝对路径的 detached checkout，同时隔离 Go cache。完整 bridge 制品/sidecar 集合必须逐字节一致，随后构建 allowlist profile：`kotlin-release` 运行 `testReleaseUnitTest`、`assembleRelease` 与 `verifyReleasePackaging`；`gomobile-emergency-release` 运行 `testGoMobileEmergencyReleaseUnitTest` 与 `assembleGoMobileEmergencyRelease`。两者都使用正式身份、版本、signer 与证书校验。
+10. `preflight` 与 `frpc-interop` 均通过且 Environment 获批后，`build-release` 按 allowlist profile 分支。`kotlin-release` 不安装 Go 或 NDK，不生成或要求 bridge AAR，只运行 `testReleaseUnitTest`、`assembleRelease` 与 `verifyReleasePackaging`，然后执行签名校验。`gomobile-emergency-release` 会先运行完整 GoMobile 保留门禁，包括完整依赖/provenance 审计、race tests、可复现性、AAR 检查和对称验证 variant，再执行 `testGoMobileEmergencyReleaseUnitTest` 与 `assembleGoMobileEmergencyRelease`。两个签名 profile 都使用正式身份、版本、signer 与证书校验。
 11. `publish` 只在稳定 tag 且 profile 为 `kotlin-release` 时运行。它下载两组已验证 artifact，使用 `GITHUB_TOKEN` 和 `gh release create --verify-tag --notes-file`。所有 `0.x` 版本创建为 prerelease，从 `1.0.0` 开始创建普通 release；GoMobile emergency artifact 绝不能进入该 job。
 
 ## 8. 制品检查
@@ -164,7 +165,7 @@ Tag push 触发时，`prepare-notes` 对已经通过校验且确实存在的 tag
 - 每个 APK 通过 `apksigner` 和 16KB `zipalign`，native library 只允许目标 ABI；每个 native library 使用单库最大 256 MiB 的有界 reader 校验 ELF machine、全部 `PT_LOAD` 16KB 对齐和 stripped 状态。
 - GoMobile profile 要求生成的 bridge 定义 class，以及目标 ABI 中恰好一个 SHA-256 与 AAR native sidecar 一致的 `libgojni.so`。Kotlin profile 要求 bridge 定义 class 和全部 `libgojni.so` 都不存在；其他 native library 仍完整校验。
 - 每个 APK 中的 `assets/legal/` 与当前 LICENSE、NOTICE、第三方通知、商标声明、合并许可证和每份单独许可证逐字节一致。
-- AAR 的 `META-INF/OCDECK/` 包含当前法律文本、许可证、精确 Java API 和 bridge/frp provenance，其中包括 schema 2 native module graph digest 与无本地路径证明。
+- AAR 的 `META-INF/OCDECK/` 包含该不可变 bridge 坐标记录的法律基线、许可证、精确 Java API 和 bridge/frp provenance，其中包括 schema 2 native module graph digest 与无本地路径证明。完整 retained/emergency 构建会在 App 版本基线不等于当前 App 版本或任一内嵌法律文件不匹配 `frpc-stcp-visitor-go/legal-baseline.sha256` 时于 Go 运行前失败；更新任一基线都必须使用新坐标。
 - 外部 checksum/API/provenance/native sidecar 与内嵌内容及精确 AAR 字节相互绑定；schema 2 native metadata 还证明固定 BuildInfo module identity/version/sum，以及四个 ABI 使用同一个 graph digest。
 - `SHA256SUMS` 只覆盖所选 profile 的三个签名 APK；只有 tag 触发的 `kotlin-release` profile 可以发布它们。
 

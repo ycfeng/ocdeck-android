@@ -83,9 +83,9 @@
 :app:verifyPureKotlinPackaging
 ```
 
-聚合打包任务会构建并检查正式 Debug、Canary 与 Kotlin Release-Like，拒绝 GoMobile bridge 依赖或 `libgojni.so`。这些保留的 Kotlin 与 GoMobile 对比门禁持续到 K10，即 Kotlin 成为正式默认后完成一个完整稳定公开发布周期。
+聚合打包任务会构建并检查正式 Debug、Canary 与 Kotlin Release-Like，拒绝 GoMobile bridge 依赖或 `libgojni.so`。这些纯 Kotlin 门禁会在普通 CI 与稳定发布中运行，不安装 Go 或 NDK。`v0.3.0` 已满足 K10 的稳定周期条件，`v0.4.0` 又完成了一轮稳定周期。
 
-如果改动涉及 `frpc-stcp-visitor-go/`、`frpc-stcp-visitor/`、frp patch、bridge API、bridge 依赖或 bridge 版本，还必须执行与 CI 等价的额外门禁：
+如果改动涉及 `frpc-stcp-visitor-go/`、GoMobile adapter 或 bridge contract、frp patch、bridge 构建/依赖配置或 bridge 版本，还必须执行保留的 GoMobile 门禁。`.github/workflows/retained-gomobile.yml` 会按相关路径自动运行，也支持手动触发：
 
 ```text
 frpc-stcp-visitor-go: go run ./cmd/preparefrp
@@ -99,7 +99,7 @@ frpc-stcp-visitor-go/build/frp-v0.69.1-p6: go test -race ./client/...
 仓库根目录: ./gradlew :frpc-stcp-visitor:checkGoMobileBridgeAar :app:testDebugUnitTest :app:testCanaryUnitTest :app:testGoMobileReleaseUnitTest :app:testGoMobileEmergencyReleaseUnitTest :app:testKotlinReleaseUnitTest :frpc-stcp-visitor:testDebugUnitTest :app:assembleDebug :app:assembleCanary :app:assembleGoMobileRelease :app:assembleGoMobileReleaseAndroidTest :app:assembleKotlinRelease :app:assembleKotlinReleaseAndroidTest :app:verifyPureKotlinPackaging -PrequireGoMobileBridge=true
 ```
 
-Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。Go race 门禁必须在具备受支持 CGO 工具链的原生 Windows、WSL2、原生 Linux 或 Ubuntu CI runner 上运行。WSL1 的 socket 翻译可能允许重复绑定 loopback listener，不能作为替代环境；环境检查会在测试前给出明确错误并失败。`frpcInteropTest` 只会显式下载当前主机对应、经哈希固定的官方 frp release asset，保存在 Gradle cache 中，并在发布签名 environment 之外运行；普通单元测试不会启动它。完整 Android 门禁会验证无 bridge 的正式 Debug、Canary 与 Kotlin Release-Like，以及对称 GoMobile Release-Like 边界。改动 emergency 路径时，受保护的手动 `gomobile-emergency-release` workflow profile 还必须运行 `:app:testGoMobileEmergencyReleaseUnitTest` 和 Release 签名的 `:app:assembleGoMobileEmergencyRelease`；不要把该签名构建强行加入无签名普通 CI。验证 APK 均不因此成为发布制品。历史机器证据继续保持 `authorizesKotlinDefault=false`，因为它记录的是授权前证据 contract。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。bridge 字节发生变化时必须递增 bridge 版本；不得在同一 Maven 坐标下发布不同字节。
+Windows 下按需使用 `frpc-stcp-visitor-go/build-aar.ps1` 和 `gradlew.bat`。Go race 门禁必须在具备受支持 CGO 工具链的原生 Windows、WSL2、原生 Linux 或 Ubuntu CI runner 上运行。WSL1 的 socket 翻译可能允许重复绑定 loopback listener，不能作为替代环境；环境检查会在测试前给出明确错误并失败。`frpcInteropTest` 只会显式下载当前主机对应、经哈希固定的官方 frp release asset，保存在 Gradle cache 中，并在发布签名 environment 之外运行；普通单元测试不会启动它。完整保留 Android 门禁会验证无 bridge 的正式 Debug、Canary 与 Kotlin Release-Like，以及对称 GoMobile Release-Like 边界。改动 emergency 路径时，受保护的手动 `gomobile-emergency-release` workflow profile 还必须运行 `:app:testGoMobileEmergencyReleaseUnitTest` 和 Release 签名的 `:app:assembleGoMobileEmergencyRelease`；不要把该签名构建强行加入无签名普通 CI。验证 APK 均不因此成为发布制品。历史机器证据继续保持 `authorizesKotlinDefault=false`，因为它记录的是授权前证据 contract。bridge 校验必须继续覆盖 AAR checksum、Java API signature、provenance、预期 ABI、ELF machine、16 KiB `PT_LOAD` 对齐、stripped 状态和可复现性。普通应用版本升级不轮换 `BRIDGE_VERSION`，并可保持 `bridge_audited_app_version` 与 `frpc-stcp-visitor-go/legal-baseline.sha256` 不变。重建 AAR 前，完整审计与构建脚本要求 App 版本基线等于当前 `VERSION_NAME`，并要求每个内嵌法律文件匹配该不可变哈希清单；native/AAR 字节、Java API、依赖或内嵌法律内容变化时，只能在同时创建新的不可变 bridge 坐标时更新任一基线。不得在同一 Maven 坐标下发布不同字节。
 
 ## 敏感信息与测试 Fixture
 

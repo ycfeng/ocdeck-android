@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 THIRD_PARTY = ROOT / "third_party"
 GO_ROOT = ROOT / "frpc-stcp-visitor-go"
+BRIDGE_LEGAL_BASELINE = GO_ROOT / "legal-baseline.sha256"
 EXPECTED_GO_TARGETS = [
     "android/arm64",
     "android/arm",
@@ -120,6 +122,142 @@ def read_properties(path: Path) -> dict[str, str]:
     return result
 
 
+def git_file(revision: str, path: str) -> str:
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        check=False,
+    )
+    require(
+        result.returncode == 0,
+        f"cannot read {path} at base revision {revision!r}: {result.stderr.strip()}",
+    )
+    return result.stdout
+
+
+def git_file_bytes(revision: str, path: str, *, required: bool = True) -> bytes | None:
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 and not required:
+        return None
+    require(
+        result.returncode == 0,
+        f"cannot read {path} at base revision {revision!r}: {result.stderr.decode(errors='replace').strip()}",
+    )
+    return result.stdout
+
+
+def parse_bridge_legal_baseline(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        match = re.fullmatch(r"([0-9a-f]{64})  ([^\\]+)", line)
+        require(match is not None, f"invalid bridge legal baseline entry at line {line_number}")
+        digest, relative_path = match.groups()
+        path = PurePosixPath(relative_path)
+        require(not path.is_absolute() and ".." not in path.parts, f"unsafe bridge legal baseline path: {relative_path}")
+        require(relative_path not in result, f"duplicate bridge legal baseline path: {relative_path}")
+        result[relative_path] = digest
+    expected_paths = {
+        "LICENSE",
+        "NOTICE",
+        "THIRD_PARTY_NOTICES.txt",
+        "TRADEMARKS.md",
+        *(
+            f"third_party/licenses/{path.name}"
+            for path in (THIRD_PARTY / "licenses").iterdir()
+            if path.is_file()
+        ),
+    }
+    require_equal(set(result), expected_paths, "bridge legal baseline files")
+    return result
+
+
+def normalized_text_sha256(data: bytes) -> str:
+    return hashlib.sha256(data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")).hexdigest()
+
+
+def audit_bridge_legal_baseline(base_revision: str | None, *, include_current: bool) -> None:
+    baseline_text = read_text(BRIDGE_LEGAL_BASELINE)
+    entries = parse_bridge_legal_baseline(baseline_text)
+    if include_current:
+        for relative_path, expected_digest in entries.items():
+            require_equal(
+                normalized_text_sha256((ROOT / relative_path).read_bytes()),
+                expected_digest,
+                f"bridge legal baseline hash for {relative_path}",
+            )
+    if base_revision is None:
+        return
+    base_baseline = git_file_bytes(
+        base_revision,
+        "frpc-stcp-visitor-go/legal-baseline.sha256",
+        required=False,
+    )
+    if base_baseline is None:
+        for relative_path, expected_digest in entries.items():
+            base_data = git_file_bytes(base_revision, relative_path)
+            require(base_data is not None, f"missing bridge legal baseline source: {relative_path}")
+            require_equal(
+                normalized_text_sha256(base_data),
+                expected_digest,
+                f"initial bridge legal baseline hash for {relative_path}",
+            )
+
+
+def audit_bridge_version_change(
+    base_revision: str,
+    manifest: dict[str, Any],
+    bridge_version: str,
+) -> None:
+    try:
+        base_manifest = tomllib.loads(git_file(base_revision, "third_party/components.toml"))
+    except tomllib.TOMLDecodeError as error:
+        raise AuditError(f"invalid components.toml at base revision {base_revision!r}: {error}") from error
+    base_bridge_version = one_match(
+        r"^BRIDGE_VERSION=(.+)$",
+        git_file(base_revision, "frpc-stcp-visitor-go/bridge-versions.properties"),
+        "base bridge version",
+        re.MULTILINE,
+    )
+    current_baseline = manifest.get("bridge_audited_app_version")
+    base_baseline = base_manifest.get("bridge_audited_app_version")
+    current_legal_baseline = read_text(BRIDGE_LEGAL_BASELINE)
+    base_legal_baseline_bytes = git_file_bytes(
+        base_revision,
+        "frpc-stcp-visitor-go/legal-baseline.sha256",
+        required=False,
+    )
+    legal_baseline_changed = (
+        base_legal_baseline_bytes is not None
+        and current_legal_baseline.encode("utf-8") != base_legal_baseline_bytes
+    )
+    if base_baseline is None:
+        require_equal(
+            current_baseline,
+            base_manifest.get("app_version"),
+            "initial retained bridge legal baseline",
+        )
+        return
+    if current_baseline != base_baseline:
+        require(
+            bridge_version != base_bridge_version,
+            "bridge_audited_app_version changed without a new BRIDGE_VERSION",
+        )
+    if legal_baseline_changed:
+        require(
+            bridge_version != base_bridge_version,
+            "bridge legal baseline changed without a new BRIDGE_VERSION",
+        )
+
+
 def one_match(pattern: str, text: str, label: str, flags: int = 0) -> str:
     matches = re.findall(pattern, text, flags)
     require(len(matches) == 1, f"{label} must appear exactly once, found {len(matches)}")
@@ -198,6 +336,13 @@ def audit_versions(
     bridge_version = bridge_properties.get("BRIDGE_VERSION", "")
     require(bridge_version, "bridge-versions.properties must define BRIDGE_VERSION")
     require_equal(manifest.get("bridge_version"), bridge_version, "components.toml bridge_version")
+    bridge_audited_app_version = manifest.get("bridge_audited_app_version")
+    require(
+        isinstance(bridge_audited_app_version, str)
+        and re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", bridge_audited_app_version)
+        is not None,
+        "components.toml bridge_audited_app_version must be stable SemVer",
+    )
     artifact_id = "frpc-stcp-visitor-gobridge"
     coordinate = f"{application_id}:{artifact_id}:{bridge_version}"
     require_equal(
@@ -241,6 +386,12 @@ def audit_versions(
         require(
             f"<artifactId>{artifact_id}</artifactId>" in script,
             f"{script_name} Maven artifactId is missing or inconsistent",
+        )
+        require(
+            "bridge_audited_app_version" in script
+            and "legal-baseline.sha256" in script
+            and "Create a new immutable BRIDGE_VERSION" in script,
+            f"{script_name} does not fail closed on a stale bridge legal baseline",
         )
 
     return version_name, application_id, bridge_version, coordinate
@@ -454,7 +605,7 @@ def parse_patch_files(path: Path) -> tuple[set[str], set[str]]:
 
 
 def audit_frp(
-    components: dict[str, dict[str, Any]], bridge_version: str
+    components: dict[str, dict[str, Any]], bridge_version: str, include_generated: bool
 ) -> tuple[dict[str, Any], dict[str, Any], int, int]:
     component = components["frp-patched"]
     source_path = component_path(component["provenance_file"], "frp provenance_file")
@@ -463,13 +614,6 @@ def audit_frp(
     require(isinstance(downstream, str) and downstream.startswith("v"), "invalid frp downstreamVersion")
     manifest_path = GO_ROOT / "downstream" / f"frp-{downstream}" / "manifest.json"
     manifest = load_json(manifest_path)
-    generated_path = GO_ROOT / "build/frp-patch-provenance.json"
-    require(
-        generated_path.is_file(),
-        "generated frp provenance is missing; run 'go run ./cmd/preparefrp' in frpc-stcp-visitor-go",
-    )
-    generated = load_json(generated_path)
-
     require_equal(source.get("schemaVersion"), 1, "frp source schemaVersion")
     require_equal(source.get("component"), manifest.get("module"), "frp module")
     require_equal(source.get("license"), component.get("license"), "frp license")
@@ -565,8 +709,15 @@ def audit_frp(
         "modifiedFiles": sorted(all_modified),
         "addedFiles": sorted(all_added),
     }
-    for key, expected in generated_expected.items():
-        require_equal(generated.get(key), expected, f"generated frp provenance {key}")
+    if include_generated:
+        generated_path = GO_ROOT / "build/frp-patch-provenance.json"
+        require(
+            generated_path.is_file(),
+            "generated frp provenance is missing; run 'go run ./cmd/preparefrp' in frpc-stcp-visitor-go",
+        )
+        generated = load_json(generated_path)
+        for key, expected in generated_expected.items():
+            require_equal(generated.get(key), expected, f"generated frp provenance {key}")
     return source, manifest, len(all_patched), audit_frp_interop_assets(source)
 
 
@@ -814,6 +965,36 @@ def audit_go_modules(
     return len(union), len(declared_modules)
 
 
+def audit_go_inventory_metadata(
+    manifest: dict[str, Any], components: dict[str, dict[str, Any]]
+) -> int:
+    audit = manifest.get("audit")
+    require(isinstance(audit, dict), "components.toml must contain [audit]")
+    require("go_target" not in audit, "[audit].go_target is obsolete; declare go_targets")
+    require_equal(audit.get("go_targets"), EXPECTED_GO_TARGETS, "[audit].go_targets")
+    require_equal(
+        audit.get("android_configuration"),
+        ":app:releaseRuntimeClasspath",
+        "[audit].android_configuration",
+    )
+    modfile_value = audit.get("go_modfile")
+    require(isinstance(modfile_value, str), "[audit].go_modfile must be a path")
+    safe_root_path(modfile_value, "[audit].go_modfile")
+
+    declared_modules: set[str] = set()
+    for component_id, component in components.items():
+        modules = component.get("modules", [])
+        require(isinstance(modules, list), f"component {component_id} modules must be an array")
+        for module in modules:
+            require(
+                isinstance(module, str) and re.fullmatch(r"[^@\s]+@[^@\s]+", module) is not None,
+                f"component {component_id} has an invalid module entry: {module!r}",
+            )
+            require(module not in declared_modules, f"Go module is declared more than once: {module}")
+            declared_modules.add(module)
+    return len(declared_modules)
+
+
 def audit_release_legal_files(
     manifest: dict[str, Any],
     version_name: str,
@@ -921,7 +1102,6 @@ def audit_release_legal_files(
         bridge_version,
         "Chinese third-party notice bridge version",
     )
-
     vector_count = vectors.get("assetCount")
     require(isinstance(vector_count, int) and vector_count > 0, "vector source assetCount must be positive")
     require(
@@ -1018,7 +1198,26 @@ def audit_release_legal_files(
         )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--static",
+        action="store_true",
+        help="skip generated frp provenance and Go dependency walks",
+    )
+    parser.add_argument(
+        "--base-revision",
+        help="compare retained bridge baseline changes with this Git revision",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+    require(
+        args.base_revision is None or args.static,
+        "--base-revision is supported only with --static",
+    )
     manifest = load_toml(THIRD_PARTY / "components.toml")
     require_equal(manifest.get("schema_version"), 1, "components.toml schema_version")
     components = components_by_id(manifest)
@@ -1036,12 +1235,26 @@ def main() -> None:
     version_name, _application_id, bridge_version, _coordinate = audit_versions(
         manifest, components
     )
+    if args.base_revision is not None:
+        audit_bridge_version_change(args.base_revision, manifest, bridge_version)
+    audit_bridge_legal_baseline(args.base_revision, include_current=not args.static)
+    if not args.static:
+        require_equal(
+            manifest.get("bridge_audited_app_version"),
+            version_name,
+            "retained bridge legal baseline app version",
+        )
     audit_component_files(components)
     audio, vectors, audio_count, vector_count = audit_assets(components)
     audit_forbidden_assets()
     audit_gradle_wrapper(components)
-    frp, frp_manifest, patched_file_count, interop_asset_count = audit_frp(components, bridge_version)
-    go_union_count, listed_go_count = audit_go_modules(manifest, components, frp_manifest)
+    frp, frp_manifest, patched_file_count, interop_asset_count = audit_frp(
+        components, bridge_version, include_generated=not args.static
+    )
+    listed_go_count = audit_go_inventory_metadata(manifest, components)
+    go_union_count = None
+    if not args.static:
+        go_union_count, listed_go_count = audit_go_modules(manifest, components, frp_manifest)
     audit_release_legal_files(
         manifest,
         version_name,
@@ -1051,13 +1264,22 @@ def main() -> None:
         frp,
     )
 
-    print(
-        "Third-party audit passed: "
-        f"{len(components)} components, {audio_count} audio assets, {vector_count} OpenCode-derived vectors, "
-        f"{patched_file_count} patched frp files, {interop_asset_count} pinned test-only frp release assets, "
-        f"and {go_union_count} external Go modules "
-        f"({listed_go_count} grouped in modules arrays) across {len(EXPECTED_GO_TARGETS)} Android targets."
-    )
+    if args.static:
+        print(
+            "Static third-party audit passed: "
+            f"{len(components)} components, {audio_count} audio assets, "
+            f"{vector_count} OpenCode-derived vectors, {patched_file_count} patched frp files, "
+            f"{interop_asset_count} pinned test-only frp release assets, and "
+            f"{listed_go_count} declared external Go modules."
+        )
+    else:
+        print(
+            "Third-party audit passed: "
+            f"{len(components)} components, {audio_count} audio assets, {vector_count} OpenCode-derived vectors, "
+            f"{patched_file_count} patched frp files, {interop_asset_count} pinned test-only frp release assets, "
+            f"and {go_union_count} external Go modules "
+            f"({listed_go_count} grouped in modules arrays) across {len(EXPECTED_GO_TARGETS)} Android targets."
+        )
 
 
 if __name__ == "__main__":

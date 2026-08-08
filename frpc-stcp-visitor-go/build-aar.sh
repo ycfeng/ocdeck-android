@@ -32,6 +32,51 @@ EXTERNAL_PROVENANCE="$STAGING_DIR/bridge-provenance-with-hash.json"
 API_CHECK_DIR="$STAGING_DIR/api-check"
 EXPECTED_API="$SCRIPT_DIR/api/frpcstcpvisitor.txt"
 BRIDGE_CLASS='io.github.ycfeng.ocdeck.frpcstcpvisitor.gobridge.frpcstcpvisitor.Frpcstcpvisitor'
+LEGAL_BASELINE="$SCRIPT_DIR/legal-baseline.sha256"
+
+APP_VERSION=$(sed -n 's/^VERSION_NAME=//p' "$ROOT_DIR/gradle.properties")
+BRIDGE_LEGAL_BASELINE=$(sed -n 's/^bridge_audited_app_version = "\([^"]*\)"$/\1/p' "$ROOT_DIR/third_party/components.toml")
+[[ -n "$APP_VERSION" ]] || { echo "VERSION_NAME is missing from gradle.properties" >&2; exit 1; }
+[[ -n "$BRIDGE_LEGAL_BASELINE" ]] || {
+  echo "bridge_audited_app_version is missing from third_party/components.toml" >&2
+  exit 1
+}
+if [[ "$BRIDGE_LEGAL_BASELINE" != "$APP_VERSION" ]]; then
+  echo "GoMobile bridge legal baseline $BRIDGE_LEGAL_BASELINE does not match current app version $APP_VERSION" >&2
+  echo "Create a new immutable BRIDGE_VERSION and update bridge_audited_app_version before rebuilding the AAR" >&2
+  exit 1
+fi
+[[ -f "$LEGAL_BASELINE" ]] || { echo "GoMobile bridge legal baseline manifest is missing" >&2; exit 1; }
+if command -v sha256sum >/dev/null 2>&1; then
+  LEGAL_HASH_COMMAND=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  LEGAL_HASH_COMMAND=(shasum -a 256)
+else
+  echo "sha256sum or shasum is required to verify the GoMobile bridge legal baseline" >&2
+  exit 1
+fi
+(
+  cd "$ROOT_DIR"
+  while IFS= read -r baseline_entry; do
+    [[ "$baseline_entry" =~ ^([0-9a-f]{64})\ \ (.+)$ ]] || {
+      echo "Invalid GoMobile bridge legal baseline entry: $baseline_entry" >&2
+      exit 1
+    }
+    expected_hash=${BASH_REMATCH[1]}
+    legal_path=${BASH_REMATCH[2]}
+    [[ -f "$legal_path" ]] || { echo "GoMobile bridge legal baseline file is missing: $legal_path" >&2; exit 1; }
+    hash_output=$(sed 's/\r$//' "$legal_path" | "${LEGAL_HASH_COMMAND[@]}")
+    actual_hash=${hash_output%% *}
+    [[ "$actual_hash" == "$expected_hash" ]] || {
+      echo "Embedded GoMobile legal file differs from the immutable bridge baseline: $legal_path" >&2
+      exit 1
+    }
+  done < "frpc-stcp-visitor-go/legal-baseline.sha256"
+) || {
+  echo "Embedded GoMobile legal files differ from the immutable bridge baseline" >&2
+  echo "Create a new BRIDGE_VERSION and legal baseline before rebuilding the AAR" >&2
+  exit 1
+}
 
 if ! command -v go >/dev/null 2>&1; then
   echo "go was not found on PATH" >&2
